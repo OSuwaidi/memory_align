@@ -176,6 +176,7 @@ def main(
             epochs=epochs,
             batch_size=batch_size,
             weight_decay=weight_decay,
+            mem_align=True,
         ),
     )  # individual runs are forced into the parent sweep's project name
 
@@ -186,7 +187,7 @@ def main(
     lr = config.lr
     seed = config.seed
 
-    run.name = f"ema:{ema}_coup:{couple}_per:{per}_{lr}_{seed}"
+    run.name = f"mem_ema:{ema}_coup:{couple}_per:{per}_{lr}_{seed}"
 
     set_seed(seed)
 
@@ -235,7 +236,14 @@ def main(
         pin_memory=True,
     )
 
-    optimizer = SGD(model.parameters(), lr=lr, weight_decay=weight_decay, EMA=ema)
+    optimizer = SGD(
+        model.parameters(),
+        lr=lr,
+        weight_decay=weight_decay,
+        EMA=ema,
+        couple=couple,
+        per=per,
+    )
 
     steps_per_epoch = len(train_loader)
     total_steps = steps_per_epoch * epochs
@@ -279,5 +287,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
 
-    args, unknown = parser.parse_known_args()  # W&B agent translates sweep config into command-line arguments; ignore them and use via "run.config"
+    args, unknown = (
+        parser.parse_known_args()
+    )  # W&B appends sweep configs into command-line arguments; ignore them and use via "run.config"
     raise SystemExit(main(**vars(args)))

@@ -1,6 +1,6 @@
 import wandb
 
-# To run: $uv run create_sweeps.py --> prints <entity/project/sweep_id>
+# To run: $ uv run create_sweep.py --> prints <entity/project/sweep_id>
 
 PROJECT_NAME = "momentum-cifar10"
 SEEDS = (77, 433, 1024)
