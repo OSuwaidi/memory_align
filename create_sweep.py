@@ -21,7 +21,7 @@ if __name__ == "__main__":
         "parameters": {
             "mem_align": {"values": (True,)},
             "couple": {"values": (True, False)},
-            "tau": {"values": (0.0, 0.26, 0.5)},
+            "tau": {"values": (0.0, 0.26,)},
             "batch_size": {"values": BATCH_SIZES},
             "lr": {"values": LRs},
             "seed": {"values": SEEDS},
