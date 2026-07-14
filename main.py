@@ -121,7 +121,6 @@ def main():
     parser.add_argument("--data_dir", type=str, default="./data")
     parser.add_argument("--arch", type=str, default="resnet18")
     parser.add_argument("--epochs", type=int, default=200)
-    parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
 
     # "parse_known_args" only parses CLI args that are defined above; doesn't capture/prarse all args that are present in the command
@@ -178,10 +177,9 @@ def main():
             config=dict(
                     model=args.arch,
                     epochs=args.epochs,
-                    batch_size=args.batch_size,
                     weight_decay=args.weight_decay,
                     ema=False,
-                    tags="latest",
+                    tags="batch_sizes",
                     ),
             )  # individual runs are forced into the parent sweep's project name
 
@@ -189,6 +187,7 @@ def main():
     mem_align = config.mem_align
     couple = config.couple
     tau = config.tau
+    bs = config.batch_size
     lr = config.lr
     seed = config.seed
 
@@ -224,7 +223,7 @@ def main():
 
     train_loader = DataLoader(
             train_ds,
-            batch_size=args.batch_size,
+            batch_size=bs,
             shuffle=True,
             num_workers=NUM_WORKERS,  # torch pickles "worker_init_fn" + dataset + all its transforms and sends serialized copy to each worker
             persistent_workers=NUM_WORKERS > 0,
