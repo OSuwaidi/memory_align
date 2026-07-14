@@ -5,13 +5,14 @@ import wandb
 
 PROJECT_NAME = "momentum-cifar10"
 SEEDS = (77, 433, 1024)
-LRs = (0.1, 0.5, 0.7)
+LRs = (0.1, 0.5,)
+BATCH_SIZES = (32, 64, 128, 512, 1024)
 
 if __name__ == "__main__":
     # 1. Define the sweep configuration
     sweep_configuration = {
         "program": "main.py",
-        "name": "heavy_mem_align",
+        "name": "mem_align_bs",
         "method": "grid",  # 'grid' tries every combination. Use 'bayes' or 'random' for large searches.
         "metric": {
             "name": "test_acc",
@@ -21,6 +22,7 @@ if __name__ == "__main__":
             "mem_align": {"values": (True,)},
             "couple": {"values": (True, False)},
             "tau": {"values": (0.0, 0.26, 0.5)},
+            "batch_size": {"values": BATCH_SIZES},
             "lr": {"values": LRs},
             "seed": {"values": SEEDS},
             },
