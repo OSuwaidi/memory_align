@@ -124,7 +124,8 @@ def main():
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
 
-    args, unknown = parser.parse_known_args()  # W&B appends sweep configs into command-line arguments; ignore them and use via "run.config"
+    # "parse_known_args" only parses CLI args that are defined above; doesn't capture/prarse all args that are present in the command
+    args, unknown = parser.parse_known_args()  # W&B appends sweep configs as CLI args; ignore them here as they're captured via "run.config"
 
     train_transform = v2.Compose(
             [
