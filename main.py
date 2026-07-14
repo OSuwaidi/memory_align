@@ -180,12 +180,12 @@ def main():
                     batch_size=args.batch_size,
                     weight_decay=args.weight_decay,
                     ema=False,
+                    tags="latest",
                     ),
             )  # individual runs are forced into the parent sweep's project name
 
     config = run.config
     mem_align = config.mem_align
-    absorb = config.absorb
     couple = config.couple
     tau = config.tau
     lr = config.lr
@@ -193,7 +193,7 @@ def main():
 
     f = lambda truth: str(truth)[0]
 
-    run.name = f"mem:{f(mem_align)}_abs:{f(absorb)}_coup:{f(couple)}_tau:{tau}_{lr}_{seed}"
+    run.name = f"mem:{f(mem_align)}_coup:{f(couple)}_tau:{tau}_{lr}_{seed}"
 
     set_seed(seed)
 
@@ -249,7 +249,6 @@ def main():
             EMA=False,
             couple=couple,
             weight_decay=args.weight_decay,
-            absorb=absorb,
             tau=tau,
             )
 

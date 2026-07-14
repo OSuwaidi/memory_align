@@ -19,7 +19,6 @@ if __name__ == "__main__":
             },
         "parameters": {
             "mem_align": {"values": (True,)},
-            "absorb": {"values": (True, False)},
             "couple": {"values": (True, False)},
             "tau": {"values": (0.0, 0.26, 0.5)},
             "lr": {"values": LRs},

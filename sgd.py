@@ -15,7 +15,6 @@ class SGD(Optimizer):
             EMA: bool = False,
             couple: bool = True,
             mem_align: bool = True,
-            absorb: bool = True,
             tau: float = 0.0,
             ) -> None:
         if lr < 0.0:
@@ -28,7 +27,6 @@ class SGD(Optimizer):
         self.EMA = EMA
         self.couple = couple
         self.mem_align = mem_align
-        self.absorb = absorb
         self.tau = tau
 
         decay_params: list[torch.nn.Parameter] = []
@@ -133,11 +131,10 @@ class SGD(Optimizer):
                     else:
                         p.mul_(1.0 - lr * wd)
 
-                if self.absorb:
-                    if self.EMA:
-                        m.lerp_(g, weight=1.0 - beta)
-                    else:
-                        m.mul_(beta).add_(g)
+                if self.EMA:
+                    m.lerp_(g, weight=1.0 - beta)
+                else:
+                    m.mul_(beta).add_(g)
 
                 if self.mem_align:
                     bounce_cond = self.bounce(m.view(-1), g.view(-1), self.tau).item()
@@ -147,12 +144,6 @@ class SGD(Optimizer):
                             m.copy_(g).mul_(1.0 - beta)
                         else:
                             m.copy_(g)
-
-                if not self.absorb and not bounce_cond:
-                    if self.EMA:
-                        m.lerp_(g, weight=1.0 - beta)
-                    else:
-                        m.mul_(beta).add_(g)
 
                 unbias_m = m / (1.0 - beta ** ts[i]) if self.EMA else m
                 p.sub_(unbias_m, alpha=lr)
