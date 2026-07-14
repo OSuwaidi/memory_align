@@ -183,7 +183,6 @@ def main():
             )  # individual runs are forced into the parent sweep's project name
 
     config = run.config
-    mem_align = config.mem_align
     couple = config.couple
     tau = config.tau
     bs = config.batch_size
@@ -192,7 +191,7 @@ def main():
 
     f = lambda truth: str(truth)[0]
 
-    run.name = f"mem:{f(mem_align)}_coup:{f(couple)}_tau:{tau}_{lr}_{seed}"
+    run.name = f"{bs}_coup:{f(couple)}_tau:{tau}_{lr}_{seed}"
 
     set_seed(seed)
 
@@ -244,7 +243,7 @@ def main():
     optimizer = SGD(
             model.parameters(),
             lr=lr,
-            mem_align=mem_align,
+            mem_align=True,
             EMA=False,
             couple=couple,
             weight_decay=args.weight_decay,

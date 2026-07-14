@@ -137,8 +137,7 @@ class SGD(Optimizer):
                     m.mul_(beta).add_(g)
 
                 if self.mem_align:
-                    bounce_cond = self.bounce(m.view(-1), g.view(-1), self.tau).item()
-                    if bounce_cond:
+                    if self.bounce(m.view(-1), g.view(-1), self.tau):
                         ts[i] = 1
                         if self.EMA:
                             m.copy_(g).mul_(1.0 - beta)
