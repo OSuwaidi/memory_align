@@ -131,6 +131,7 @@ class SGD(Optimizer):
                     else:
                         p.mul_(1.0 - lr * wd)
 
+                # Absorb current gradient into momentum:
                 if self.EMA:
                     m.lerp_(g, weight=1.0 - beta)
                 else:
@@ -138,8 +139,8 @@ class SGD(Optimizer):
 
                 if self.mem_align:
                     if self.bounce(m.view(-1), g.view(-1), self.tau):
-                        ts[i] = 1
                         if self.EMA:
+                            ts[i] = 1
                             m.copy_(g).mul_(1.0 - beta)
                         else:
                             m.copy_(g)
