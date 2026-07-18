@@ -63,7 +63,7 @@ class SGD(Optimizer):
                     {
                         "params": no_decay_params,
                         "momentum": no_decay_momentum,
-                        "t": [0] * len(no_decay_params),
+                        "t": [0.0] * len(no_decay_params),
                         "weight_decay": 0.0,
                         }
                     )
@@ -72,7 +72,7 @@ class SGD(Optimizer):
                     {
                         "params": decay_params,
                         "momentum": decay_momentum,
-                        "t": [0] * len(decay_params),
+                        "t": [0.0] * len(decay_params),
                         "weight_decay": weight_decay,
                         },
                     )
@@ -123,7 +123,6 @@ class SGD(Optimizer):
                     continue
 
                 g = p.grad
-                ts[i] += 1
 
                 if wd > 0.0:
                     if self.couple:
@@ -138,12 +137,13 @@ class SGD(Optimizer):
                     m.mul_(beta).add_(g)
 
                 if self.mem_align:
-                    if self.bounce(m.view(-1), g.view(-1), self.tau):
-                        if self.EMA:
-                            ts[i] = 1
-                            m.copy_(g).mul_(1.0 - beta)
-                        else:
-                            m.copy_(g)
+                    bounce_cond = self.bounce(m.view(-1), g.view(-1), self.tau).to(g.dtype)
+                    if self.EMA:
+                        ts[i] *= (1.0 - bounce_cond)
+                        m.lerp_(g.mul_(1.0 - beta), weight=bounce_cond)
+                    else:
+                        m.lerp_(g, weight=bounce_cond)
 
+                ts[i] += 1.0
                 unbias_m = m / (1.0 - beta ** ts[i]) if self.EMA else m
                 p.sub_(unbias_m, alpha=lr)
