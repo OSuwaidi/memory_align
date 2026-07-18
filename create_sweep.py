@@ -3,25 +3,29 @@ import wandb
 # To initialize W&B sweep config: $ uv run create_sweep.py --> prints <entity/project/sweep_id>
 # To assign/tag a run agent to a sweep: $ CUDA_VISIBLE_DEVICES=0 uv run wandb agent --forward-signals <entity/project/sweep_id>
 
-PROJECT_NAME = "momentum-cifar10"
+PROJECT_NAME = "new_momentum_cifar10"
 SEEDS = (77, 433, 1024)
 LRs = (0.1, 0.5,)
-BATCH_SIZES = (32, 64, 128, 512, 1024)
+BATCH_SIZES = (32, 64, 128, 256, 512, 1024)
+ALIGNMENT_CONFIGS = (
+    "align_T_couple_T_tau_0.0",
+    "align_T_couple_F_tau_0.26",
+    "align_F",
+)
 
 if __name__ == "__main__":
     # 1. Define the sweep configuration
     sweep_configuration = {
         "program": "main.py",
-        "name": "mem_align_bs",
+        "name": "bs_sweep",
         "method": "grid",  # 'grid' tries every combination. Use 'bayes' or 'random' for large searches.
         "metric": {
             "name": "test_acc",
             "goal": "maximize",
             },
         "parameters": {
-            "mem_align": {"values": (True,)},
-            "couple": {"values": (True, False)},
-            "tau": {"values": (0.0, 0.26,)},
+            "alignment": {"values": ALIGNMENT_CONFIGS},
+            "ema": {"values": (True, False)},
             "batch_size": {"values": BATCH_SIZES},
             "lr": {"values": LRs},
             "seed": {"values": SEEDS},
