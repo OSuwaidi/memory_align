@@ -93,7 +93,8 @@ def train_val(model, opt, epochs, train_loader, val_loader, run, lr_scheduler=No
                 step=epoch,
                 )
 
-    run.summary["best_val_acc"] = best_val_acc
+    run.summary["final_val_acc"] = round(val_acc, 2)
+    run.summary["best_val_acc"] = round(best_val_acc, 2)
     run.summary["best_train_loss"] = round(best_train_loss, 2)
     run.summary["best_val_epoch"] = best_val_epoch
     return best_model
@@ -112,8 +113,8 @@ def eval_model(model, eval_loader) -> float:
         correct += (preds.eq_(y)).sum().item()
         total += y.size(0)
 
-    acc = round(100.0 * correct / total, 2)
-    return acc
+    acc = 100.0 * correct / total
+    return round(acc, 2)
 
 
 class TransformDataset(Dataset):
@@ -293,7 +294,7 @@ def main():
 
     model.load_state_dict(best_model)
     test_acc = eval_model(model, test_loader)
-    run.summary["test_acc"] = test_acc
+    run.summary["test_acc"] = round(test_acc, 2)
 
     run.finish(exit_code=0)
     return 0
