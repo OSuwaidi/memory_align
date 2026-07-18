@@ -23,6 +23,19 @@ import timm
 DEVICE = "cuda"
 WARMUP_EPOCHS = 5
 NUM_WORKERS = cpu_count() // 4
+ALIGNMENT_CONFIGS: dict[str, tuple[bool, bool, float | None]] = {
+    "align_T_couple_T_tau_0.0": (True, True, 0.0),
+    "align_T_couple_F_tau_0.26": (True, False, 0.26),
+    "align_F": (False, True, None),
+}
+
+
+def resolve_alignment_config(config) -> tuple[bool, bool, float | None]:
+    alignment: str | None = config.get("alignment")
+    if alignment:
+        return ALIGNMENT_CONFIGS[alignment]
+
+    return config.get("mem_align", True), config.get("couple", True), config.get("tau", 0.0)
 
 
 def set_seed(seed):
@@ -121,7 +134,7 @@ def main():
     parser.add_argument("--data_dir", type=str, default="./data")
     parser.add_argument("--arch", type=str, default="resnet18")
     parser.add_argument("--epochs", type=int, default=200)
-    parser.add_argument("--weight_decay", type=float, default=1e-4)
+    parser.add_argument("--weight_decay", type=float, default=5e-4)
 
     args, unknown = parser.parse_known_args()  # W&B appends sweep configs into command-line arguments; ignore them and use via "run.config"
 
@@ -171,27 +184,29 @@ def main():
 
     # Start W&B Sweeps (W&B Sweeps injects the configs automatically):
     run = wandb.init(
-            project="momentum-cifar10",
+            project="new_momentum_cifar10",
             job_type="train",
             config=dict(
                     model=args.arch,
                     epochs=args.epochs,
                     weight_decay=args.weight_decay,
-                    ema=False,
-                    tags="batch_sizes",
+                    tags=("batch_sizes", "improved_model"),
                     ),
             )  # individual runs are forced into the parent sweep's project name
 
     config = run.config
-    couple = config.couple
-    tau = config.tau
+
+    mem_align, couple, tau = resolve_alignment_config(config)
+    config.update(dict(mem_align=mem_align, couple=couple, tau=tau), allow_val_change=True)
+
+    ema = config.ema
     bs = config.batch_size
     lr = config.lr
     seed = config.seed
 
     f = lambda truth: str(truth)[0]
 
-    run.name = f"{bs}_coup:{f(couple)}_tau:{tau}_{lr}_{seed}"
+    run.name = f"mem:{f(mem_align)}_ema:{f(ema)}_bs:{bs}_coup:{f(couple)}_{tau}_{lr}_{seed}"
 
     set_seed(seed)
 
@@ -201,6 +216,8 @@ def main():
                         num_groups=min(32, n_channels // 4), num_channels=n_channels
                         )
                 )
+        model.conv1 = nn.Conv2d(3, 64, 3, bias=False)
+        model.maxpool = nn.Identity()
         model.fc = nn.Linear(512, len(raw_ds.classes), bias=True)
     else:
         model = timm.create_model(
@@ -243,8 +260,8 @@ def main():
     optimizer = SGD(
             model.parameters(),
             lr=lr,
-            mem_align=True,
-            EMA=False,
+            mem_align=mem_align,
+            EMA=ema,
             couple=couple,
             weight_decay=args.weight_decay,
             tau=tau,
