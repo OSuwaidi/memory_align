@@ -6,7 +6,7 @@ Differences from the CIFAR-10 script, each tailored to CIFAR-100:
   - label smoothing 0.1 on the training loss (standard on CIFAR-100; reliably
     worth ~+1% with 100 fine-grained classes)
   - stem conv gets padding=1
-  - W&B project "new_momentum_cifar100"
+  - W&B project "align_cifar100"
 Everything else (GroupNorm isolation from batch size, custom SGD, RandAugment
 recipe, warmup+cosine schedule, 85/15 stratified split, best-val checkpoint)
 matches main.py so results stay comparable across the two datasets.
@@ -39,19 +39,6 @@ WARMUP_EPOCHS = 5
 NUM_WORKERS = cpu_count() // 4
 CIFAR100_MEAN = (0.5071, 0.4865, 0.4409)
 CIFAR100_STD = (0.2673, 0.2564, 0.2762)
-ALIGNMENT_CONFIGS: dict[str, tuple[bool, bool, float | None]] = {
-    "align_T_couple_T_tau_0.0": (True, True, 0.0),
-    "align_T_couple_F_tau_0.26": (True, False, 0.26),
-    "align_F": (False, True, None),
-}
-
-
-def resolve_alignment_config(config) -> tuple[bool, bool, float | None]:
-    alignment: str | None = config.get("alignment")
-    if alignment:
-        return ALIGNMENT_CONFIGS[alignment]
-
-    return config.get("mem_align", True), config.get("couple", True), config.get("tau", 0.0)
 
 
 def set_seed(seed):
@@ -210,14 +197,14 @@ def main():
                     epochs=args.epochs,
                     weight_decay=args.weight_decay,
                     label_smoothing=args.label_smoothing,
+                    couple=True,
+                    tau=0.0
                     ),
             )  # individual runs are forced into the parent sweep's project name
 
     config = run.config
 
-    mem_align, couple, tau = resolve_alignment_config(config)
-    config.update(dict(mem_align=mem_align, couple=couple, tau=tau), allow_val_change=True)
-
+    align = config.align
     ema = config.ema
     bs = config.batch_size
     lr = config.lr
@@ -225,7 +212,7 @@ def main():
 
     f = lambda truth: str(truth)[0]
 
-    run.name = f"c100_mem:{f(mem_align)}_ema:{f(ema)}_bs:{bs}_coup:{f(couple)}_{tau}_{lr}_{seed}"
+    run.name = f"align:{f(align)}_ema:{f(ema)}_bs:{bs}_{lr}_{seed}"
 
     set_seed(seed)
 
@@ -280,11 +267,11 @@ def main():
     optimizer = SGD(
             model.parameters(),
             lr=lr,
-            mem_align=mem_align,
+            mem_align=align,
             EMA=ema,
-            couple=couple,
+            couple=True,
             weight_decay=args.weight_decay,
-            tau=tau,
+            tau=0.0,
             )
 
     steps_per_epoch = len(train_loader)

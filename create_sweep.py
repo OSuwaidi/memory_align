@@ -3,15 +3,10 @@ import wandb
 # To initialize W&B sweep config: $ uv run create_sweep.py --> prints <entity/project/sweep_id>
 # To assign/tag a run agent to a sweep: $ CUDA_VISIBLE_DEVICES=0 uv run wandb agent --forward-signals <entity/project/sweep_id>
 
-PROJECT_NAME = "new_momentum_cifar10"
+PROJECT_NAME = "align_cifar100"
 SEEDS = (77, 433, 1024)
-LRs = (0.1, 0.5,)
-BATCH_SIZES = (32, 64, 128, 256, 512, 1024)
-ALIGNMENT_CONFIGS = (
-    "align_T_couple_T_tau_0.0",
-    "align_T_couple_F_tau_0.26",
-    "align_F",
-)
+LRs = (0.02, 0.05, 0.1, 0.5, 0.7, 1.0)
+BATCH_SIZES = (64, 128, 256, 512, 1024, 2048)
 
 if __name__ == "__main__":
     # 1. Define the sweep configuration
@@ -24,7 +19,7 @@ if __name__ == "__main__":
             "goal": "maximize",
             },
         "parameters": {
-            "alignment": {"values": ALIGNMENT_CONFIGS},
+            "align": {"values": (True, False)},
             "ema": {"values": (True, False)},
             "batch_size": {"values": BATCH_SIZES},
             "lr": {"values": LRs},
