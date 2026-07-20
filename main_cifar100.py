@@ -22,7 +22,7 @@ from torchvision.models import resnet18
 import numpy as np
 import random
 from multiprocessing import cpu_count
-from tqdm import trange, tqdm
+from tqdm.auto import trange, tqdm
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 from torchvision.transforms import v2
@@ -68,7 +68,7 @@ def train_val(model, opt, epochs, train_loader, val_loader, run, lr_scheduler=No
     best_val_epoch = 0
 
     print(f"Starting training on GPU: {next(model.parameters()).get_device()}")
-    for epoch in trange(1, epochs + 1, desc="Training", unit="epoch", leave=True):
+    for epoch in trange(1, epochs + 1, desc="Training", unit="epoch", leave=True, position=0):
         model.train()
         epoch_loss = 0.0
         n_samples = 0
@@ -110,7 +110,7 @@ def eval_model(model, eval_loader) -> float:
     correct = 0
     total = 0
 
-    for x, y in tqdm(eval_loader):
+    for x, y in tqdm(eval_loader, unit="batch", leave=False, position=1):
         x, y = x.to(DEVICE, non_blocking=True), y.to(DEVICE, non_blocking=True)
         logits = model(x)
         preds = logits.argmax(dim=1)
