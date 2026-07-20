@@ -3,15 +3,16 @@ import wandb
 # To initialize W&B sweep config: $ uv run create_sweep.py --> prints <entity/project/sweep_id>
 # To assign/tag a run agent to a sweep: $ CUDA_VISIBLE_DEVICES=0 uv run wandb agent --forward-signals <entity/project/sweep_id>
 
+ENTITY_NAME = "osuwaidi-khalifa-university"
 PROJECT_NAME = "align_cifar100"
 SEEDS = (77, 433, 1024)
-LRs = (0.02, 0.05, 0.1, 0.5, 0.7, 1.0)
+LRs = (0.025, 0.05, 0.1, 0.2, 0.4, 0.8, 0.1)
 BATCH_SIZES = (64, 128, 256, 512, 1024, 2048)
 
 if __name__ == "__main__":
     # 1. Define the sweep configuration
     sweep_configuration = {
-        "program": "main.py",
+        "program": "main_cifar100.py",
         "name": "bs_sweep",
         "method": "grid",  # 'grid' tries every combination. Use 'bayes' or 'random' for large searches.
         "metric": {
@@ -41,7 +42,7 @@ if __name__ == "__main__":
             sweep=sweep_configuration,
             project=PROJECT_NAME,
             )
-    print(f"Sweep ID: {sweep_id}")
+    print(f"To run a W&B agent against the sweep: $ uv run wandb agent --forward-signals {ENTITY_NAME}/{PROJECT_NAME}/{sweep_id}")
 
     # wandb.agent(
     #         sweep_id=sweep_id,
