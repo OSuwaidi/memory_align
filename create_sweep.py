@@ -22,6 +22,7 @@ if __name__ == "__main__":
         "parameters": {
             "align": {"values": (True, False)},
             "ema": {"values": (True, False)},
+            "per": {"values": (True, False)},
             "batch_size": {"values": BATCH_SIZES},
             "lr": {"values": LRs},
             "seed": {"values": SEEDS},

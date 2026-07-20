@@ -15,18 +15,22 @@ class SGD(Optimizer):
             EMA: bool = False,
             couple: bool = True,
             mem_align: bool = True,
+            per: bool = False,
             tau: float = 0.0,
             ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if not 0.0 <= beta < 1.0:
             raise ValueError(f"Invalid beta value: {beta}")
+        if not 0.0 <= tau < 1.0:
+            raise ValueError(f"Invalid tau value: {tau}")
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
 
         self.EMA = EMA
         self.couple = couple
         self.mem_align = mem_align
+        self.per = per
         self.tau = tau
 
         decay_params: list[torch.nn.Parameter] = []
@@ -106,9 +110,13 @@ class SGD(Optimizer):
             pointer = end
 
     @staticmethod
-    def bounce(G1: torch.Tensor, G2: torch.Tensor, tau: float = 0.0) -> torch.Tensor:
+    def global_bounce(G1: torch.Tensor, G2: torch.Tensor, tau: float = 0.0) -> torch.Tensor:
         # If gradients are *misaligned*, their dot product is non-positive
         return (G1 @ G2) < (-tau * G1.norm() * G2.norm())
+
+    @staticmethod
+    def per_bounce(G1: torch.Tensor, G2: torch.Tensor,) -> torch.Tensor:
+        return (G1.mul(G2)) < 0.0
 
     @torch.no_grad()
     def step(self):
@@ -137,12 +145,20 @@ class SGD(Optimizer):
                     m.mul_(beta).add_(g)
 
                 if self.mem_align:
-                    bounce_cond = self.bounce(m.view(-1), g.view(-1), self.tau).to(g.dtype)
-                    if self.EMA:
-                        ts[i] *= (1.0 - bounce_cond)
-                        m.lerp_(g.mul_(1.0 - beta), weight=bounce_cond)
+                    if not self.per:
+                        bounce_cond = self.global_bounce(m.view(-1), g.view(-1), self.tau).to(g.dtype)
+                        if self.EMA:
+                            ts[i] *= (1.0 - bounce_cond)
+                            m.lerp_(g.mul_(1.0 - beta), weight=bounce_cond)
+                        else:
+                            m.lerp_(g, weight=bounce_cond)
+
                     else:
-                        m.lerp_(g, weight=bounce_cond)
+                        bounce_mask = self.per_bounce(m, g).to(g.dtype)
+                        if self.EMA:
+                            raise NotImplementedError()
+                        else:
+                            m.lerp_(g, weight=bounce_mask)
 
                 ts[i] += 1.0
                 unbias_m = m / (1.0 - beta ** ts[i]) if self.EMA else m

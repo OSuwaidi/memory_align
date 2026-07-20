@@ -206,13 +206,14 @@ def main():
 
     align = config.align
     ema = config.ema
+    per = config.per
     bs = config.batch_size
     lr = config.lr
     seed = config.seed
 
     f = lambda truth: str(truth)[0]
 
-    run.name = f"align:{f(align)}_ema:{f(ema)}_bs:{bs}_{lr}_{seed}"
+    run.name = f"align:{f(align)}_ema:{f(ema)}_per:{f(per)}_bs:{bs}_{lr}_{seed}"
 
     set_seed(seed)
 
@@ -267,10 +268,11 @@ def main():
     optimizer = SGD(
             model.parameters(),
             lr=lr,
-            mem_align=align,
+            weight_decay=args.weight_decay,
             EMA=ema,
             couple=True,
-            weight_decay=args.weight_decay,
+            mem_align=align,
+            per=per,
             tau=0.0,
             )
 
