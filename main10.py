@@ -8,7 +8,7 @@ from torchvision.models import resnet18
 import numpy as np
 import random
 from multiprocessing import cpu_count
-from tqdm import trange, tqdm
+from tqdm.auto import trange, tqdm
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 from torchvision.transforms import v2
@@ -23,19 +23,6 @@ import timm
 DEVICE = "cuda"
 WARMUP_EPOCHS = 5
 NUM_WORKERS = cpu_count() // 4
-ALIGNMENT_CONFIGS: dict[str, tuple[bool, bool, float | None]] = {
-    "align_T_couple_T_tau_0.0": (True, True, 0.0),
-    "align_T_couple_F_tau_0.26": (True, False, 0.26),
-    "align_F": (False, True, None),
-}
-
-
-def resolve_alignment_config(config) -> tuple[bool, bool, float | None]:
-    alignment: str | None = config.get("alignment")
-    if alignment:
-        return ALIGNMENT_CONFIGS[alignment]
-
-    return config.get("mem_align", True), config.get("couple", True), config.get("tau", 0.0)
 
 
 def set_seed(seed):
@@ -64,7 +51,7 @@ def train_val(model, opt, epochs, train_loader, val_loader, run, lr_scheduler=No
     best_val_epoch = 0
 
     print(f"Starting training on GPU: {next(model.parameters()).get_device()}")
-    for epoch in trange(1, epochs + 1, desc="Training", unit="epoch", leave=True):
+    for epoch in trange(1, epochs + 1, desc="Training", unit="epoch", leave=True, position=0):
         model.train()
         epoch_loss = 0.0
         n_samples = 0
@@ -106,7 +93,7 @@ def eval_model(model, eval_loader) -> float:
     correct = 0
     total = 0
 
-    for x, y in tqdm(eval_loader):
+    for x, y in tqdm(eval_loader, unit="batch", leave=False, position=1):
         x, y = x.to(DEVICE, non_blocking=True), y.to(DEVICE, non_blocking=True)
         logits = model(x)
         preds = logits.argmax(dim=1)
@@ -185,29 +172,30 @@ def main():
             )
 
     # Start W&B Sweeps (W&B Sweeps injects the configs automatically):
-    run = wandb.init(  # the "entity" is known from the run command and "project" is inherited from the sweep config
+    run = wandb.init(  # the "entity" is known from the run command, and "project" is inherited from the sweep config
             job_type="train",
-            tags=("batch_sizes", "improved_model",),
+            tags=("batch_sizes",),
             config=dict(
                     model=args.arch,
                     epochs=args.epochs,
                     weight_decay=args.weight_decay,
+                    couple=True,
+                    tau=0.0,
                     ),
             )  # individual runs are forced into the parent sweep's project name
 
     config = run.config
 
-    mem_align, couple, tau = resolve_alignment_config(config)
-    config.update(dict(mem_align=mem_align, couple=couple, tau=tau), allow_val_change=True)
-
+    align = config.align
     ema = config.ema
+    per = config.per
     bs = config.batch_size
     lr = config.lr
     seed = config.seed
 
     f = lambda truth: str(truth)[0]
 
-    run.name = f"mem:{f(mem_align)}_ema:{f(ema)}_bs:{bs}_coup:{f(couple)}_{tau}_{lr}_{seed}"
+    run.name = f"align:{f(align)}_ema:{f(ema)}_per:{f(per)}_bs:{bs}_{lr}_{seed}"
 
     set_seed(seed)
 
@@ -261,11 +249,12 @@ def main():
     optimizer = SGD(
             model.parameters(),
             lr=lr,
-            mem_align=mem_align,
-            EMA=ema,
-            couple=couple,
             weight_decay=args.weight_decay,
-            tau=tau,
+            EMA=ema,
+            couple=True,
+            mem_align=align,
+            per=per,
+            tau=0.0,
             )
 
     steps_per_epoch = len(train_loader)

@@ -1,4 +1,4 @@
-"""CIFAR-100 variant of main.py.
+"""CIFAR-100 variant of main10.py.
 
 Differences from the CIFAR-10 script, each tailored to CIFAR-100:
   - Datasets.CIFAR100 (100 classes; fc adapts via len(raw_ds.classes))
@@ -7,9 +7,6 @@ Differences from the CIFAR-10 script, each tailored to CIFAR-100:
     worth ~+1% with 100 fine-grained classes)
   - Stem conv gets padding=1
   - W&B project "align_cifar100"
-Everything else (GroupNorm isolation from batch size, custom SGD, RandAugment
-recipe, warmup+cosine schedule, 85/15 stratified split, best-val checkpoint)
-matches main.py so results stay comparable across the two datasets.
 """
 
 from typing import Any
@@ -142,7 +139,8 @@ def main():
     parser.add_argument("--weight_decay", type=float, default=5e-4)
     parser.add_argument("--label_smoothing", type=float, default=0.1)
 
-    args, unknown = parser.parse_known_args()  # W&B appends sweep configs into command-line arguments; ignore them and use via "run.config"
+    # "parse_known_args" only parses CLI args that are defined above; doesn't capture/prarse all args that are present in the command
+    args, unknown = parser.parse_known_args()  # W&B appends sweep configs as CLI args; ignore them here as they're captured via "run.config"
 
     train_transform = v2.Compose(
             [
@@ -189,9 +187,9 @@ def main():
             )
 
     # Start W&B Sweeps (W&B Sweeps injects the configs automatically):
-    run = wandb.init(
+    run = wandb.init(  # the "entity" is known from the run command, and "project" is inherited from the sweep config
             job_type="train",
-            tags=("batch_sizes", "improved_model",),
+            tags=("batch_sizes",),
             config=dict(
                     model=args.arch,
                     epochs=args.epochs,
