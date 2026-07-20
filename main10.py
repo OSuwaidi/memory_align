@@ -187,7 +187,6 @@ def main():
     config = run.config
 
     align = config.align
-    ema = config.ema
     per = config.per
     bs = config.batch_size
     lr = config.lr
@@ -195,7 +194,7 @@ def main():
 
     f = lambda truth: str(truth)[0]
 
-    run.name = f"align:{f(align)}_ema:{f(ema)}_per:{f(per)}_bs:{bs}_{lr}_{seed}"
+    run.name = f"align:{f(align)}_per:{f(per)}_bs:{bs}_{lr}_{seed}"
 
     set_seed(seed)
 
@@ -250,7 +249,6 @@ def main():
             model.parameters(),
             lr=lr,
             weight_decay=args.weight_decay,
-            EMA=ema,
             couple=True,
             mem_align=align,
             per=per,

@@ -12,7 +12,6 @@ class SGD(Optimizer):
             lr: float = 0.1,
             beta: float = 0.9,
             weight_decay: float = 0.0,
-            EMA: bool = False,
             couple: bool = True,
             mem_align: bool = True,
             per: bool = False,
@@ -27,7 +26,6 @@ class SGD(Optimizer):
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
 
-        self.EMA = EMA
         self.couple = couple
         self.mem_align = mem_align
         self.per = per
@@ -67,7 +65,6 @@ class SGD(Optimizer):
                     {
                         "params": no_decay_params,
                         "momentum": no_decay_momentum,
-                        "t": [0.0] * len(no_decay_params),
                         "weight_decay": 0.0,
                         }
                     )
@@ -76,7 +73,6 @@ class SGD(Optimizer):
                     {
                         "params": decay_params,
                         "momentum": decay_momentum,
-                        "t": [0.0] * len(decay_params),
                         "weight_decay": weight_decay,
                         },
                     )
@@ -111,7 +107,7 @@ class SGD(Optimizer):
 
     @staticmethod
     def global_bounce(G1: torch.Tensor, G2: torch.Tensor, tau: float = 0.0) -> torch.Tensor:
-        # If gradients are *misaligned*, their dot product is non-positive
+        # If gradients are *misaligned* ==>, their dot product is non-positive
         return (G1 @ G2) < (-tau * G1.norm() * G2.norm())
 
     @staticmethod
@@ -125,13 +121,11 @@ class SGD(Optimizer):
             wd = group["weight_decay"]
             beta = group["beta"]
 
-            ts: list[int] = group["t"]
-            for i, (p, m) in enumerate(zip(group["params"], group["momentum"])):
+            for p, m in zip(group["params"], group["momentum"]):
                 if p.grad is None:
                     continue
 
                 g = p.grad
-
                 if wd > 0.0:
                     if self.couple:
                         g.add_(p, alpha=wd)
@@ -139,27 +133,15 @@ class SGD(Optimizer):
                         p.mul_(1.0 - lr * wd)
 
                 # Absorb current gradient into momentum:
-                if self.EMA:
-                    m.lerp_(g, weight=1.0 - beta)
-                else:
-                    m.mul_(beta).add_(g)
+                m.mul_(beta).add_(g)
 
                 if self.mem_align:
                     if not self.per:
                         bounce_cond = self.global_bounce(m.view(-1), g.view(-1), self.tau).to(g.dtype)
-                        if self.EMA:
-                            ts[i] *= (1.0 - bounce_cond)
-                            m.lerp_(g.mul_(1.0 - beta), weight=bounce_cond)
-                        else:
-                            m.lerp_(g, weight=bounce_cond)
+                        m.lerp_(g, weight=bounce_cond)
 
                     else:
                         bounce_mask = self.per_bounce(m, g).to(g.dtype)
-                        if self.EMA:
-                            raise NotImplementedError()
-                        else:
-                            m.lerp_(g, weight=bounce_mask)
+                        m.lerp_(g, weight=bounce_mask)
 
-                ts[i] += 1.0
-                unbias_m = m / (1.0 - beta ** ts[i]) if self.EMA else m
-                p.sub_(unbias_m, alpha=lr)
+                p.sub_(m, alpha=lr)
