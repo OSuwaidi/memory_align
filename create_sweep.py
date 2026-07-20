@@ -1,4 +1,5 @@
 import wandb
+import argparse
 
 # To initialize W&B sweep config: $ uv run create_sweep.py --> prints <entity/project/sweep_id>
 # To assign/tag a run agent to a sweep: $ CUDA_VISIBLE_DEVICES=0 uv run wandb agent --forward-signals <entity/project/sweep_id>
@@ -10,11 +11,17 @@ LRs = (0.025, 0.05, 0.1, 0.2, 0.4, 0.8, 0.1)
 BATCH_SIZES = (64, 128, 256, 512, 1024, 2048)
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Create a dynamic W&B Sweep configuration.")
+    parser.add_argument("program", type=str, default="main.py", help="Training script to run")
+    parser.add_argument("--name", type=str, help="Name of the sweep", required=True)
+    parser.add_argument("--method", type=str, default="grid", choices=["grid", "random", "bayes"], help="Sweep search method")
+    args = parser.parse_args()
+
     # 1. Define the sweep configuration
     sweep_configuration = {
-        "program": "main_cifar100.py",
-        "name": "bs_sweep",
-        "method": "grid",  # 'grid' tries every combination. Use 'bayes' or 'random' for large searches.
+        "program": args.program,
+        "name": args.name,
+        "method": args.method,  # 'grid' tries every combination. Use 'bayes' or 'random' for large searches.
         "metric": {
             "name": "test_acc",
             "goal": "maximize",

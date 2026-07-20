@@ -1,11 +1,11 @@
 """CIFAR-100 variant of main.py.
 
 Differences from the CIFAR-10 script, each tailored to CIFAR-100:
-  - datasets.CIFAR100 (100 classes; fc adapts via len(raw_ds.classes))
+  - Datasets.CIFAR100 (100 classes; fc adapts via len(raw_ds.classes))
   - CIFAR-100 normalization statistics
-  - label smoothing 0.1 on the training loss (standard on CIFAR-100; reliably
+  - Label smoothing 0.1 on the training loss (standard on CIFAR-100; reliably
     worth ~+1% with 100 fine-grained classes)
-  - stem conv gets padding=1
+  - Stem conv gets padding=1
   - W&B project "align_cifar100"
 Everything else (GroupNorm isolation from batch size, custom SGD, RandAugment
 recipe, warmup+cosine schedule, 85/15 stratified split, best-val checkpoint)
@@ -181,7 +181,7 @@ def main():
             )
     test_loader = DataLoader(
             test_ds,
-            batch_size=500,
+            batch_size=1000,
             shuffle=False,
             num_workers=2,
             persistent_workers=False,
@@ -258,7 +258,7 @@ def main():
 
     val_loader = DataLoader(
             val_ds,
-            batch_size=500,
+            batch_size=1000,
             shuffle=False,
             num_workers=2,
             persistent_workers=False,
