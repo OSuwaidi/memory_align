@@ -275,7 +275,7 @@ def main():
             )
 
     cosine_scheduler = CosineAnnealingLR(
-            optimizer, T_max=(total_steps - warmup_steps), eta_min=1e-6
+            optimizer, T_max=(total_steps - warmup_steps), eta_min=1e-5
             )
 
     # Combine schedulers sequentially at the iteration level
