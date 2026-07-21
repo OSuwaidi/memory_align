@@ -1,4 +1,4 @@
-"""CIFAR-100 variant of main10.py.
+"""CIFAR-100 variant of main_cifar10.py.
 
 Differences from the CIFAR-10 script, each tailored to CIFAR-100:
   - Datasets.CIFAR100 (100 classes; fc adapts via len(raw_ds.classes))
@@ -23,7 +23,8 @@ from tqdm.auto import trange, tqdm
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 from torchvision.transforms import v2
-from sgd import SGD
+from mal_sgd import MAL_SGD
+from torch.optim import SGD
 import wandb
 import argparse
 import timm
@@ -137,6 +138,7 @@ def main():
     parser.add_argument("--arch", type=str, default="resnet18")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--weight_decay", type=float, default=5e-4)
+    parser.add_argument("--beta", type=float, default=0.9)
     parser.add_argument("--label_smoothing", type=float, default=0.1)
 
     # "parse_known_args" only parses CLI args that are defined above; doesn't capture/prarse all args that are present in the command
@@ -194,6 +196,7 @@ def main():
                     model=args.arch,
                     epochs=args.epochs,
                     weight_decay=args.weight_decay,
+                    beta=args.beta,
                     label_smoothing=args.label_smoothing,
                     couple=True,
                     tau=0.0
@@ -262,15 +265,26 @@ def main():
             pin_memory=True,
             )
 
-    optimizer = SGD(
-            model.parameters(),
-            lr=lr,
-            weight_decay=args.weight_decay,
-            couple=True,
-            mem_align=align,
-            per=per,
-            tau=0.0,
-            )
+    if align:
+        optimizer = MAL_SGD(
+                model.parameters(),
+                lr=lr,
+                weight_decay=args.weight_decay,
+                beta=args.beta,
+                couple=True,
+                mem_align=align,
+                per=per,
+                tau=0.0,
+                )
+    else:
+        optimizer = SGD(
+                model.parameters(),
+                lr=lr,
+                weight_decay=args.weight_decay,
+                momentum=args.beta,
+                dampening=0.0,
+                nesterov=False,
+                )
 
     steps_per_epoch = len(train_loader)
     total_steps = steps_per_epoch * args.epochs

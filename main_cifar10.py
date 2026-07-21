@@ -12,7 +12,8 @@ from tqdm.auto import trange, tqdm
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 from torchvision.transforms import v2
-from sgd import create_sgd_optimizer
+from mal_sgd import MAL_SGD
+from torch.optim import SGD
 import wandb
 import argparse
 import timm
@@ -123,6 +124,7 @@ def main():
     parser.add_argument("--arch", type=str, default="resnet18")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--weight_decay", type=float, default=5e-4)
+    parser.add_argument("--beta", type=float, default=0.9)
 
     # "parse_known_args" only parses CLI args that are defined above; doesn't capture/prarse all args that are present in the command
     args, unknown = parser.parse_known_args()  # W&B appends sweep configs as CLI args; ignore them here as they're captured via "run.config"
@@ -179,6 +181,7 @@ def main():
                     model=args.arch,
                     epochs=args.epochs,
                     weight_decay=args.weight_decay,
+                    beta=args.beta,
                     couple=True,
                     tau=0.0,
                     ),
@@ -191,8 +194,6 @@ def main():
     bs = config.batch_size
     lr = config.lr
     seed = config.seed
-    optimizer_impl = "mem_align_sgd" if align else "torch_sgdm"
-    config.update(dict(optimizer=optimizer_impl), allow_val_change=True)
 
     f = lambda truth: str(truth)[0]
 
@@ -247,14 +248,26 @@ def main():
             pin_memory=True,
             )
 
-    optimizer = create_sgd_optimizer(
-            model.parameters(),
-            lr=lr,
-            weight_decay=args.weight_decay,
-            mem_align=align,
-            per=per,
-            tau=0.0,
-            )
+    if align:
+        optimizer = MAL_SGD(
+                model.parameters(),
+                lr=lr,
+                weight_decay=args.weight_decay,
+                beta=args.beta,
+                couple=True,
+                mem_align=align,
+                per=per,
+                tau=0.0,
+                )
+    else:
+        optimizer = SGD(
+                model.parameters(),
+                lr=lr,
+                weight_decay=args.weight_decay,
+                momentum=args.beta,
+                dampening=0.0,
+                nesterov=False,
+                )
 
     steps_per_epoch = len(train_loader)
     total_steps = steps_per_epoch * args.epochs
