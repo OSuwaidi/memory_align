@@ -13,23 +13,17 @@ class MAL_SGD(Optimizer):
             beta: float = 0.9,
             weight_decay: float = 0.0,
             couple: bool = True,
-            mem_align: bool = True,
-            per: bool = False,
-            tau: float = 0.0,
+            adaptive: bool = False,
             ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if not 0.0 <= beta < 1.0:
             raise ValueError(f"Invalid beta value: {beta}")
-        if not 0.0 <= tau < 1.0:
-            raise ValueError(f"Invalid tau value: {tau}")
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
 
         self.couple = couple
-        self.mem_align = mem_align
-        self.per = per
-        self.tau = tau
+        self.adaptive = adaptive
 
         decay_params: list[torch.nn.Parameter] = []
         decay_momentum = []
@@ -66,6 +60,7 @@ class MAL_SGD(Optimizer):
                         "params": no_decay_params,
                         "momentum": no_decay_momentum,
                         "weight_decay": 0.0,
+                        "beta": [beta] * len(no_decay_params)
                         }
                     )
         if decay_params:
@@ -74,10 +69,11 @@ class MAL_SGD(Optimizer):
                         "params": decay_params,
                         "momentum": decay_momentum,
                         "weight_decay": weight_decay,
+                        "beta": [beta] * len(decay_params)
                         },
                     )
 
-        defaults = dict(lr=lr, beta=beta)  # shared across all optim/param groups
+        defaults = dict(lr=lr)  # shared across all optim/param groups
         super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
 
     @staticmethod
@@ -105,23 +101,14 @@ class MAL_SGD(Optimizer):
             param.copy_(vec[pointer:end].view_as(param))
             pointer = end
 
-    @staticmethod
-    def layer_bounce(G1: torch.Tensor, G2: torch.Tensor, tau: float = 0.0) -> torch.Tensor:
-        # If gradients are *misaligned* ==>, their dot product is negative
-        return (G1 @ G2) < (-tau * G1.norm() * G2.norm())
-
-    @staticmethod
-    def per_bounce(G1: torch.Tensor, G2: torch.Tensor, ) -> torch.Tensor:
-        return (G1.mul(G2)) < 0.0
-
     @torch.no_grad()
     def step(self):
         for group in self.param_groups:
             lr = group["lr"]
             wd = group["weight_decay"]
-            beta = group["beta"]
+            betas = group["beta"]
 
-            for p, m in zip(group["params"], group["momentum"]):
+            for i, (p, m) in enumerate(zip(group["params"], group["momentum"])):
                 if p.grad is None:
                     continue
 
@@ -133,15 +120,18 @@ class MAL_SGD(Optimizer):
                         p.mul_(1.0 - lr * wd)
 
                 # Absorb current gradient into momentum:
-                m.mul_(beta).add_(g)
+                beta = betas[i]
+                m_hat = m.mul(beta).add_(g)
 
-                if self.mem_align:
-                    if not self.per:
-                        bounce_cond = self.layer_bounce(m.view(-1), g.view(-1), self.tau).to(g.dtype)
-                        m.lerp_(g, weight=bounce_cond)
+                denom = (m_hat.norm() * g.norm()).clamp_min(1e-8)
+                cosine_sim = ((m_hat.view(-1) @ g.view(-1)) / denom).clamp(-1.0, 1.0)
+                d = (1.0 - cosine_sim) * 0.5  # normalized cosine distance
 
-                    else:
-                        bounce_mask = self.per_bounce(m, g).to(g.dtype)
-                        m.lerp_(g, weight=bounce_mask)
+                if self.adaptive:
+                    m.mul_(1.0 - d).add_(g)
+                    betas[i] = 1.0 - d
+
+                else:
+                    m.mul_(beta * (1.0 - d)).add_(g)
 
                 p.sub_(m, alpha=lr)
