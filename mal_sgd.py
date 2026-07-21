@@ -5,7 +5,7 @@ import torch
 from torch.optim import Optimizer
 
 
-class SGD(Optimizer):
+class MAL_SGD(Optimizer):
     def __init__(
             self,
             params: Iterable[torch.nn.Parameter],
@@ -111,7 +111,7 @@ class SGD(Optimizer):
         return (G1 @ G2) < (-tau * G1.norm() * G2.norm())
 
     @staticmethod
-    def per_bounce(G1: torch.Tensor, G2: torch.Tensor,) -> torch.Tensor:
+    def per_bounce(G1: torch.Tensor, G2: torch.Tensor, ) -> torch.Tensor:
         return (G1.mul(G2)) < 0.0
 
     @torch.no_grad()

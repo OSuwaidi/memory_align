@@ -12,7 +12,7 @@ from tqdm.auto import trange, tqdm
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 from torchvision.transforms import v2
-from sgd import SGD
+from sgd import create_sgd_optimizer
 import wandb
 import argparse
 import timm
@@ -191,6 +191,8 @@ def main():
     bs = config.batch_size
     lr = config.lr
     seed = config.seed
+    optimizer_impl = "mem_align_sgd" if align else "torch_sgdm"
+    config.update(dict(optimizer=optimizer_impl), allow_val_change=True)
 
     f = lambda truth: str(truth)[0]
 
@@ -245,11 +247,10 @@ def main():
             pin_memory=True,
             )
 
-    optimizer = SGD(
+    optimizer = create_sgd_optimizer(
             model.parameters(),
             lr=lr,
             weight_decay=args.weight_decay,
-            couple=True,
             mem_align=align,
             per=per,
             tau=0.0,
