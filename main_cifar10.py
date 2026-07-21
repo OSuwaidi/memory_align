@@ -176,7 +176,7 @@ def main():
     # Start W&B Sweeps (W&B Sweeps injects the configs automatically):
     run = wandb.init(  # the "entity" is known from the run command, and "project" is inherited from the sweep config
             job_type="train",
-            tags=("batch_sizes",),
+            tags=("adaptive_beta x sgdm",),
             config=dict(
                     model=args.arch,
                     epochs=args.epochs,
@@ -190,14 +190,13 @@ def main():
     config = run.config
 
     align = config.align
-    per = config.per
     bs = config.batch_size
     lr = config.lr
     seed = config.seed
 
     f = lambda truth: str(truth)[0]
 
-    run.name = f"align:{f(align)}_per:{f(per)}_bs:{bs}_{lr}_{seed}"
+    run.name = f"align:{f(align)}_bs:{bs}_{lr}_{seed}"
 
     set_seed(seed)
 
@@ -255,9 +254,7 @@ def main():
                 weight_decay=args.weight_decay,
                 beta=args.beta,
                 couple=True,
-                mem_align=align,
-                per=per,
-                tau=0.0,
+                adaptive=True
                 )
     else:
         optimizer = SGD(
