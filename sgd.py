@@ -106,8 +106,8 @@ class SGD(Optimizer):
             pointer = end
 
     @staticmethod
-    def global_bounce(G1: torch.Tensor, G2: torch.Tensor, tau: float = 0.0) -> torch.Tensor:
-        # If gradients are *misaligned* ==>, their dot product is non-positive
+    def layer_bounce(G1: torch.Tensor, G2: torch.Tensor, tau: float = 0.0) -> torch.Tensor:
+        # If gradients are *misaligned* ==>, their dot product is negative
         return (G1 @ G2) < (-tau * G1.norm() * G2.norm())
 
     @staticmethod
@@ -137,7 +137,7 @@ class SGD(Optimizer):
 
                 if self.mem_align:
                     if not self.per:
-                        bounce_cond = self.global_bounce(m.view(-1), g.view(-1), self.tau).to(g.dtype)
+                        bounce_cond = self.layer_bounce(m.view(-1), g.view(-1), self.tau).to(g.dtype)
                         m.lerp_(g, weight=bounce_cond)
 
                     else:
