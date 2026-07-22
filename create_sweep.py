@@ -27,7 +27,7 @@ if __name__ == "__main__":
             "goal": "maximize",
             },
         "parameters": {
-            "align": {"values": (True, False)},
+            "align": {"values": ("cautious",)},
             "batch_size": {"values": BATCH_SIZES},
             "lr": {"values": LRs},
             "seed": {"values": SEEDS},

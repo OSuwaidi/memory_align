@@ -13,6 +13,7 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 from torchvision.transforms import v2
 from mal_sgd import MAL_SGD
+from cautious_sgd import CAUTIOUS_SGD
 from torch.optim import SGD
 import wandb
 import argparse
@@ -125,6 +126,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--weight_decay", type=float, default=5e-4)
     parser.add_argument("--beta", type=float, default=0.9)
+    parser.add_argument("--nesterov", default=False)
 
     # "parse_known_args" only parses CLI args that are defined above; doesn't capture/prarse all args that are present in the command
     args, unknown = parser.parse_known_args()  # W&B appends sweep configs as CLI args; ignore them here as they're captured via "run.config"
@@ -194,9 +196,9 @@ def main():
     lr = config.lr
     seed = config.seed
 
-    f = lambda truth: str(truth)[0]
-
-    run.name = f"align:{f(align)}_bs:{bs}_{lr}_{seed}"
+    run.name = (
+        f"align:{str(align)[0]}_bs:{bs}_{lr}_{seed}"
+        )
 
     set_seed(seed)
 
@@ -247,16 +249,16 @@ def main():
             pin_memory=True,
             )
 
-    if align:
+    if align is True:
         optimizer = MAL_SGD(
                 model.parameters(),
                 lr=lr,
                 weight_decay=args.weight_decay,
                 beta=args.beta,
                 couple=True,
-                adaptive=True
+                adaptive=True,
                 )
-    else:
+    elif align is False:
         optimizer = SGD(
                 model.parameters(),
                 lr=lr,
@@ -265,6 +267,14 @@ def main():
                 dampening=0.0,
                 nesterov=False,
                 )
+    else:
+        optimizer = CAUTIOUS_SGD(
+                model.parameters(),
+                lr=lr,
+                weight_decay=args.weight_decay,
+                beta=args.beta,
+                )
+
 
     steps_per_epoch = len(train_loader)
     total_steps = steps_per_epoch * args.epochs
