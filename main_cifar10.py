@@ -24,7 +24,7 @@ import timm
 # -------------------------
 DEVICE = "cuda"
 WARMUP_EPOCHS = 5
-NUM_WORKERS = cpu_count() // 4
+NUM_WORKERS = cpu_count() // 2
 
 
 def set_seed(seed):
@@ -170,7 +170,7 @@ def main():
             test_ds,
             batch_size=500,
             shuffle=False,
-            num_workers=2,
+            num_workers=1,
             persistent_workers=False,
             pin_memory=True,
             )
@@ -244,7 +244,7 @@ def main():
             val_ds,
             batch_size=500,
             shuffle=False,
-            num_workers=2,
+            num_workers=1,
             persistent_workers=False,
             pin_memory=True,
             )
