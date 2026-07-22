@@ -14,6 +14,7 @@ class MAL_SGD(Optimizer):
             weight_decay: float = 0.0,
             couple: bool = True,
             adaptive: bool = True,
+            nesterov: bool = False,
             ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -21,6 +22,8 @@ class MAL_SGD(Optimizer):
             raise ValueError(f"Invalid beta value: {beta}")
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
+        if nesterov and beta <= 0.0:
+            raise ValueError("Nesterov momentum requires a positive beta")
 
         self.couple = couple
         self.adaptive = adaptive
@@ -73,7 +76,7 @@ class MAL_SGD(Optimizer):
                         },
                     )
 
-        defaults = dict(lr=lr)  # shared across all optim/param groups
+        defaults = dict(lr=lr, nesterov=nesterov)  # shared across all optim/param groups
         super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
 
     @staticmethod
@@ -107,6 +110,7 @@ class MAL_SGD(Optimizer):
             lr = group["lr"]
             wd = group["weight_decay"]
             betas = group["beta"]
+            nesterov = group["nesterov"]
 
             for i, (p, m) in enumerate(zip(group["params"], group["momentum"])):
                 if p.grad is None:
@@ -127,11 +131,17 @@ class MAL_SGD(Optimizer):
                 cosine_sim = ((m_hat.view(-1) @ g.view(-1)) / denom).clamp(-1.0, 1.0)
                 d = (1.0 - cosine_sim) * 0.5  # normalized cosine distance
 
+                # Effective (memory-aligned) momentum coefficient for this step
+                c = (1.0 - d) if self.adaptive else beta * (1.0 - d)
+                m.mul_(c).add_(g)
                 if self.adaptive:
-                    m.mul_(1.0 - d).add_(g)
-                    betas[i] = 1.0 - d
+                    betas[i] = c
 
+                if nesterov:
+                    # NAG look-ahead with the SAME aligned coefficient that decayed the memory:
+                    # u = g + c*m, so perfect alignment (d=0) recovers vanilla Nesterov exactly,
+                    # while a suspect memory gets proportionally less look-ahead
+                    p.add_(g, alpha=-lr)
+                    p.addcmul_(m, c, value=-lr)
                 else:
-                    m.mul_(beta * (1.0 - d)).add_(g)
-
-                p.sub_(m, alpha=lr)
+                    p.sub_(m, alpha=lr)

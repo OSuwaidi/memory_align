@@ -12,6 +12,7 @@ class CAUTIOUS_SGD(Optimizer):
             lr: float = 0.1,
             beta: float = 0.9,
             weight_decay: float = 0.0,
+            nesterov: bool = False,
             ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -19,6 +20,8 @@ class CAUTIOUS_SGD(Optimizer):
             raise ValueError(f"Invalid beta value: {beta}")
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
+        if nesterov and beta <= 0.0:
+            raise ValueError("Nesterov momentum requires a positive beta")
 
         decay_params: list[torch.nn.Parameter] = []
         decay_momentum = []
@@ -66,7 +69,7 @@ class CAUTIOUS_SGD(Optimizer):
                         },
                     )
 
-        defaults = dict(lr=lr, beta=beta)  # shared across all optim/param groups
+        defaults = dict(lr=lr, beta=beta, nesterov=nesterov)  # shared across all optim/param groups
         super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
 
     @torch.no_grad()
@@ -75,6 +78,7 @@ class CAUTIOUS_SGD(Optimizer):
             lr = group["lr"]
             wd = group["weight_decay"]
             beta = group["beta"]
+            nesterov = group["nesterov"]
 
             for p, m in zip(group["params"], group["momentum"]):
                 if p.grad is None:
@@ -87,8 +91,12 @@ class CAUTIOUS_SGD(Optimizer):
                 # Absorb current gradient into momentum:
                 m.mul_(beta).add_(g)
 
-                mask = (m * g) > 0.0
-                scale = mask.numel() / (mask.sum() + 1.0)
-                scaled_mask = mask.to(m.dtype).mul_(scale)
+                # The cautious mask applies to the APPLIED update (the NAG look-ahead
+                # u = g + beta*m under Nesterov); the momentum buffer is never masked
+                u = torch.add(g, m, alpha=beta) if nesterov else m
 
-                p.addcmul_(m, scaled_mask, value=-lr)
+                mask = (u * g) > 0.0
+                scale = mask.numel() / (mask.sum() + 1.0)
+                scaled_mask = mask.to(u.dtype).mul_(scale)
+
+                p.addcmul_(u, scaled_mask, value=-lr)
