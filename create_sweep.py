@@ -27,7 +27,8 @@ if __name__ == "__main__":
             "goal": "maximize",
             },
         "parameters": {
-            "align": {"values": ("cautious",)},
+            "align": {"values": ("MAL", "none", "cautious",)},
+            "nesterov": {"values": (True, False)},
             "batch_size": {"values": BATCH_SIZES},
             "lr": {"values": LRs},
             "seed": {"values": SEEDS},

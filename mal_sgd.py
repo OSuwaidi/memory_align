@@ -14,6 +14,7 @@ class MAL_SGD(Optimizer):
             weight_decay: float = 0.0,
             couple: bool = True,
             adaptive: bool = True,
+            nesterov: bool = False,
             ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -21,6 +22,8 @@ class MAL_SGD(Optimizer):
             raise ValueError(f"Invalid beta value: {beta}")
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
+        if nesterov and beta <= 0.0:
+            raise ValueError("Nesterov momentum requires a positive beta")
 
         self.couple = couple
         self.adaptive = adaptive
@@ -60,7 +63,7 @@ class MAL_SGD(Optimizer):
                         "params": no_decay_params,
                         "momentum": no_decay_momentum,
                         "weight_decay": 0.0,
-                        "beta": [torch.tensor(beta, device=device) for _ in no_decay_params]
+                        "beta": [p.new_tensor(beta) for p in no_decay_params]
                         }
                     )
         if decay_params:
@@ -69,11 +72,11 @@ class MAL_SGD(Optimizer):
                         "params": decay_params,
                         "momentum": decay_momentum,
                         "weight_decay": weight_decay,
-                        "beta": [torch.tensor(beta, device=device) for _ in decay_params]
+                        "beta": [p.new_tensor(beta) for p in decay_params]
                         },
                     )
 
-        defaults = dict(lr=lr)  # shared across all optim/param groups
+        defaults = dict(lr=lr, nesterov=nesterov)  # shared across all optim/param groups
         super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
 
     @staticmethod
@@ -107,6 +110,7 @@ class MAL_SGD(Optimizer):
             lr = group["lr"]
             wd = group["weight_decay"]
             betas = group["beta"]
+            nesterov = group["nesterov"]
 
             for i, (p, m) in enumerate(zip(group["params"], group["momentum"])):
                 if p.grad is None:

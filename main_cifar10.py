@@ -192,13 +192,12 @@ def main():
     config = run.config
 
     align = config.align
+    nest = config.nesterov
     bs = config.batch_size
     lr = config.lr
     seed = config.seed
 
-    run.name = (
-        f"align:{str(align)[0]}_bs:{bs}_{lr}_{seed}"
-        )
+    run.name = f"{align}_nest{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
 
     set_seed(seed)
 
@@ -249,7 +248,7 @@ def main():
             pin_memory=True,
             )
 
-    if align is True:
+    if align == "MAL":
         optimizer = MAL_SGD(
                 model.parameters(),
                 lr=lr,
@@ -257,23 +256,27 @@ def main():
                 beta=args.beta,
                 couple=True,
                 adaptive=True,
+                nesterov=nest,
                 )
-    elif align is False:
+    elif align == "none":
         optimizer = SGD(
                 model.parameters(),
                 lr=lr,
                 weight_decay=args.weight_decay,
                 momentum=args.beta,
                 dampening=0.0,
-                nesterov=False,
+                nesterov=nest,
                 )
-    else:
+    elif align == "cautious":
         optimizer = CAUTIOUS_SGD(
                 model.parameters(),
                 lr=lr,
                 weight_decay=args.weight_decay,
                 beta=args.beta,
+                nesterov=nest,
                 )
+    else:
+        raise ValueError(f"The given alignment method {align} is not valid.")
 
 
     steps_per_epoch = len(train_loader)
