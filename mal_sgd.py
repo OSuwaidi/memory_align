@@ -14,7 +14,6 @@ class MAL_SGD(Optimizer):
             weight_decay: float = 0.0,
             couple: bool = True,
             mem_align: bool = True,
-            per: bool = False,
             tau: float = 0.0,
             ) -> None:
         if lr < 0.0:
@@ -28,7 +27,6 @@ class MAL_SGD(Optimizer):
 
         self.couple = couple
         self.mem_align = mem_align
-        self.per = per
         self.tau = tau
 
         decay_params: list[torch.nn.Parameter] = []
@@ -136,12 +134,7 @@ class MAL_SGD(Optimizer):
                 m.mul_(beta).add_(g)
 
                 if self.mem_align:
-                    if not self.per:
-                        bounce_cond = self.layer_bounce(m.view(-1), g.view(-1), self.tau).to(g.dtype)
-                        m.lerp_(g, weight=bounce_cond)
-
-                    else:
-                        bounce_mask = self.per_bounce(m, g).to(g.dtype)
-                        m.lerp_(g, weight=bounce_mask)
+                    bounce_cond = self.layer_bounce(m.view(-1), g.view(-1), self.tau).to(g.dtype)
+                    m.lerp_(g, weight=bounce_cond)
 
                 p.sub_(m, alpha=lr)
