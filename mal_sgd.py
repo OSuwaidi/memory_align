@@ -61,7 +61,7 @@ class MAL_SGD(Optimizer):
                     "params": no_decay_params,
                     "momentum": no_decay_momentum,
                     "weight_decay": 0.0,
-                    "beta": [p.new_tensor(beta) for p in no_decay_params],
+                    "beta": [p.new_tensor(0.0) for p in no_decay_params] if adaptive else beta,
                 }
             )
         if decay_params:
@@ -70,7 +70,7 @@ class MAL_SGD(Optimizer):
                     "params": decay_params,
                     "momentum": decay_momentum,
                     "weight_decay": weight_decay,
-                    "beta": [p.new_tensor(beta) for p in decay_params],
+                    "beta": [p.new_tensor(0.0) for p in decay_params] if adaptive else beta,
                 },
             )
 
@@ -124,8 +124,11 @@ class MAL_SGD(Optimizer):
                     g.add_(p, alpha=wd)
 
                 # Absorb current gradient into momentum:
-                beta = betas[i]
-                m_hat = torch.addcmul(g, m, beta)
+                if self.adaptive:
+                    beta = betas[i]  # per-param 0-dim tensor
+                    m_hat = torch.addcmul(g, m, beta)
+                else:
+                    m_hat = torch.add(g, m, alpha=betas)  # group-level float scalar
 
                 denom = (m_hat.norm() * g.norm()).clamp_min(1e-8)
                 cosine_sim = ((m_hat.view(-1) @ g.view(-1)) / denom).clamp(-1.0, 1.0)
@@ -136,7 +139,7 @@ class MAL_SGD(Optimizer):
                 if self.adaptive:
                     betas[i] = c
                 else:
-                    c *= beta
+                    c *= betas
 
                 m.mul_(c).add_(g)
 
