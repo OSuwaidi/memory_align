@@ -7,14 +7,14 @@ from torch.optim import Optimizer
 
 class MAL_SGD(Optimizer):
     def __init__(
-            self,
-            params: Iterable[torch.nn.Parameter],
-            lr: float = 0.1,
-            beta: float = 0.9,
-            weight_decay: float = 0.0,
-            adaptive: bool = True,
-            nesterov: bool = False,
-            ) -> None:
+        self,
+        params: Iterable[torch.nn.Parameter],
+        lr: float = 0.1,
+        beta: float = 0.9,
+        weight_decay: float = 0.0,
+        adaptive: bool = True,
+        nesterov: bool = False,
+    ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if not 0.0 <= beta < 1.0:
@@ -49,53 +49,58 @@ class MAL_SGD(Optimizer):
 
         if "cuda" not in device.type:
             warnings.warn(
-                    f"Model parameters' device is not CUDA, rather is {device.type}!",
-                    stacklevel=2,
-                    )
+                f"Model parameters' device is not CUDA, rather is {device.type}!",
+                stacklevel=2,
+            )
 
         optim_groups = []
 
         if no_decay_params:
             optim_groups.append(
-                    {
-                        "params": no_decay_params,
-                        "momentum": no_decay_momentum,
-                        "weight_decay": 0.0,
-                        "beta": [beta] * len(no_decay_params)
-                        }
-                    )
+                {
+                    "params": no_decay_params,
+                    "momentum": no_decay_momentum,
+                    "weight_decay": 0.0,
+                    "beta": [beta] * len(no_decay_params),
+                }
+            )
         if decay_params:
             optim_groups.append(
-                    {
-                        "params": decay_params,
-                        "momentum": decay_momentum,
-                        "weight_decay": weight_decay,
-                        "beta": [beta] * len(decay_params)
-                        },
-                    )
+                {
+                    "params": decay_params,
+                    "momentum": decay_momentum,
+                    "weight_decay": weight_decay,
+                    "beta": [beta] * len(decay_params),
+                },
+            )
 
-        defaults = dict(lr=lr, nesterov=nesterov)  # shared across all optim/param groups
-        super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
+        defaults = dict(
+            lr=lr, nesterov=nesterov
+        )  # shared across all optim/param groups
+        super().__init__(
+            optim_groups, defaults
+        )  # exposes "self.param_groups" attribute
 
     @staticmethod
     def _params_to_vec(
-            params: Iterable[torch.nn.Parameter | torch.Tensor],
-            ) -> torch.Tensor:
+        params: Iterable[torch.nn.Parameter | torch.Tensor],
+    ) -> torch.Tensor:
         return torch.cat([p.view(-1) for p in params])
 
     @staticmethod
     def _param_grads_to_vec(params: Iterable[torch.nn.Parameter]) -> torch.Tensor:
         return torch.cat(
-                [
-                    p.grad.view(-1) if p.grad is not None else torch.zeros_like(p).view(-1)
-                    for p in params
-                    ]
-                )
+            [
+                p.grad.view(-1) if p.grad is not None else torch.zeros_like(p).view(-1)
+                for p in params
+            ]
+        )
 
     @staticmethod
     def _assign_vec_to_params(
-            vec: torch.Tensor, params: Iterable[torch.nn.Parameter],
-            ) -> None:
+        vec: torch.Tensor,
+        params: Iterable[torch.nn.Parameter],
+    ) -> None:
         pointer = 0
         for param in params:
             end = pointer + param.numel()
@@ -170,15 +175,15 @@ class MAL_ADAMW(Optimizer):
     MAX_BETA1 = 1.0 - 1e-4
 
     def __init__(
-            self,
-            params: Iterable[torch.nn.Parameter],
-            lr: float = 1e-3,
-            betas: tuple[float, float] = (0.9, 0.999),
-            eps: float = 1e-8,
-            weight_decay: float = 0.0,
-            adaptive: bool = True,
-            align_1d: bool = False,
-            ) -> None:
+        self,
+        params: Iterable[torch.nn.Parameter],
+        lr: float = 1e-3,
+        betas: tuple[float, float] = (0.9, 0.999),
+        eps: float = 1e-8,
+        weight_decay: float = 0.0,
+        adaptive: bool = True,
+        align_1d: bool = False,
+    ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if not 0.0 <= betas[0] < 1.0:
@@ -215,24 +220,27 @@ class MAL_ADAMW(Optimizer):
 
         if "cuda" not in device.type:
             warnings.warn(
-                    f"Model parameters' device is not CUDA, rather is {device.type}!",
-                    stacklevel=2,
-                    )
+                f"Model parameters' device is not CUDA, rather is {device.type}!",
+                stacklevel=2,
+            )
 
         optim_groups = []
 
-        for group_params, group_wd in ((no_decay_params, 0.0), (decay_params, weight_decay)):
+        for group_params, group_wd in (
+            (no_decay_params, 0.0),
+            (decay_params, weight_decay),
+        ):
             if group_params:
                 optim_groups.append(
-                        {
-                            "params": group_params,
-                            "m": [torch.zeros_like(p) for p in group_params],
-                            "v": [torch.zeros_like(p) for p in group_params],
-                            "weight_decay": group_wd,
-                            "beta": [p.new_tensor(beta1) for p in group_params],
-                            "bc_prod": [p.new_tensor(1.0) for p in group_params],
-                            }
-                        )
+                    {
+                        "params": group_params,
+                        "m": [torch.zeros_like(p) for p in group_params],
+                        "v": [torch.zeros_like(p) for p in group_params],
+                        "weight_decay": group_wd,
+                        "beta": [p.new_tensor(beta1) for p in group_params],
+                        "bc_prod": [p.new_tensor(1.0) for p in group_params],
+                    }
+                )
 
         defaults = dict(lr=lr)  # shared across all optim/param groups
         super().__init__(optim_groups, defaults)
@@ -240,7 +248,7 @@ class MAL_ADAMW(Optimizer):
     @torch.no_grad()
     def step(self):
         self.t += 1
-        bc2_sqrt = (1.0 - self.beta2 ** self.t) ** 0.5
+        bc2_sqrt = (1.0 - self.beta2**self.t) ** 0.5
 
         for group in self.param_groups:
             lr = group["lr"]
@@ -261,7 +269,9 @@ class MAL_ADAMW(Optimizer):
                     # Alignment of the candidate EMA with the fresh gradient:
                     m_hat = torch.lerp(g, m, beta1)  # = beta1*m + (1-beta1)*g
                     denom = (m_hat.norm() * g.norm()).clamp_min(1e-8)
-                    cosine_sim = ((m_hat.view(-1) @ g.view(-1)) / denom).clamp(-1.0, 1.0)
+                    cosine_sim = ((m_hat.view(-1) @ g.view(-1)) / denom).clamp(
+                        -1.0, 1.0
+                    )
                     d = (1.0 - cosine_sim) * 0.5  # normalized cosine distance
 
                     if self.adaptive:
