@@ -61,7 +61,7 @@ class MAL_SGD(Optimizer):
                     "params": no_decay_params,
                     "momentum": no_decay_momentum,
                     "weight_decay": 0.0,
-                    "beta": [beta] * len(no_decay_params),
+                    "beta": [p.new_tensor(beta) for p in no_decay_params],
                 }
             )
         if decay_params:
@@ -70,7 +70,7 @@ class MAL_SGD(Optimizer):
                     "params": decay_params,
                     "momentum": decay_momentum,
                     "weight_decay": weight_decay,
-                    "beta": [beta] * len(decay_params),
+                    "beta": [p.new_tensor(beta) for p in decay_params],
                 },
             )
 
@@ -125,7 +125,7 @@ class MAL_SGD(Optimizer):
 
                 # Absorb current gradient into momentum:
                 beta = betas[i]
-                m_hat = torch.add(g, m, alpha=beta)
+                m_hat = torch.addcmul(g, m, beta)
 
                 denom = (m_hat.norm() * g.norm()).clamp_min(1e-8)
                 cosine_sim = ((m_hat.view(-1) @ g.view(-1)) / denom).clamp(-1.0, 1.0)
@@ -145,7 +145,7 @@ class MAL_SGD(Optimizer):
                     # memory: u = g + c*m, so perfect alignment (d=0) recovers vanilla
                     # Nesterov exactly, while a suspect memory gets less look-ahead
                     p.sub_(g, alpha=lr)
-                    p.subcmul_(m, c, value=lr)
+                    p.addcmul_(m, c, value=-lr)
                 else:
                     p.sub_(m, alpha=lr)
 
