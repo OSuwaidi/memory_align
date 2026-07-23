@@ -24,7 +24,7 @@ import timm
 # -------------------------
 DEVICE = "cuda"
 WARMUP_EPOCHS = 5
-NUM_WORKERS = cpu_count() // 2
+NUM_WORKERS = cpu_count() // 4
 
 
 def set_seed(seed):
@@ -40,27 +40,38 @@ def set_seed(seed):
 # Must be defined on the global scope to be picklable and accessible to workers
 def set_worker_seed(worker_id):
     worker_seed = (
-            torch.initial_seed() % 2 ** 32
+        torch.initial_seed() % 2**32
     )  # PyTorch auto increments its seed (internally) to get a unique seed per worker: "torch.initial_seed()" reflects that
     random.seed(worker_seed)
     np.random.seed(worker_seed)
 
 
-def train_val(model, opt, epochs, train_loader, val_loader, run, lr_scheduler=None):
+def train_val_model(
+    model,
+    opt,
+    epochs,
+    train_loader,
+    val_loader,
+    run,
+    lr_scheduler=None,
+    label_smoothing=0.0,
+):
     best_val_acc = 0.0
     best_train_loss = 0.0
     best_model: dict[str, Any] = {}
     best_val_epoch = 0
 
     print(f"Starting training on GPU: {next(model.parameters()).get_device()}")
-    for epoch in trange(1, epochs + 1, desc="Training", unit="epoch", leave=True, position=0):
+    for epoch in trange(
+        1, epochs + 1, desc="Training", unit="epoch", leave=True, position=0
+    ):
         model.train()
         epoch_loss = 0.0
         n_samples = 0
         for x, y in train_loader:
             opt.zero_grad(set_to_none=True)
             x, y = x.to(DEVICE, non_blocking=True), y.to(DEVICE, non_blocking=True)
-            loss = F.cross_entropy(model(x), y)
+            loss = F.cross_entropy(model(x), y, label_smoothing=label_smoothing)
             loss.backward()
             opt.step()
             n_batch = y.size(0)
@@ -78,9 +89,9 @@ def train_val(model, opt, epochs, train_loader, val_loader, run, lr_scheduler=No
             best_val_epoch = epoch
 
         run.log(
-                dict(train_loss=round(epoch_loss / n_samples, 2), val_acc=val_acc),
-                step=epoch,
-                )
+            dict(train_loss=round(epoch_loss / n_samples, 2), val_acc=val_acc),
+            step=epoch,
+        )
 
     run.summary["final_val_acc"] = round(val_acc, 2)
     run.summary["best_val_acc"] = round(best_val_acc, 2)
@@ -121,183 +132,204 @@ class TransformDataset(Dataset):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--data", type=str)
     parser.add_argument("--data_dir", type=str, default="./data")
     parser.add_argument("--arch", type=str, default="resnet18")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--weight_decay", type=float, default=5e-4)
+    parser.add_argument("--label_smoothing", type=float, default=0.1)
     parser.add_argument("--beta", type=float, default=0.9)
     parser.add_argument("--nesterov", default=False)
 
     # "parse_known_args" only parses CLI args that are defined above; doesn't capture/prarse all args that are present in the command
-    args, unknown = parser.parse_known_args()  # W&B appends sweep configs as CLI args; ignore them here as they're captured via "run.config"
+    args, unknown = (
+        parser.parse_known_args()
+    )  # W&B appends sweep configs as CLI args; ignore them here as they're captured via "run.config"
+
+    if args.data == "cifar10":
+        MEAN = (0.4914, 0.4822, 0.4465)
+        STD = (0.2470, 0.2435, 0.2616)
+    elif args.data == "cifar100":
+        MEAN = (0.5071, 0.4865, 0.4409)
+        STD = (0.2673, 0.2564, 0.2762)
 
     train_transform = v2.Compose(
-            [
-                v2.PILToTensor(),
-                v2.RandomCrop(32, padding=4, padding_mode="reflect"),
-                v2.RandomHorizontalFlip(p=0.5),
-                v2.RandAugment(num_ops=2, magnitude=9),
-                v2.ToDtype(torch.float32, scale=True),
-                v2.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
-                v2.RandomErasing(p=0.1, scale=(0.02, 0.33), ratio=(0.3, 3.3)),
-                ]
-            )
+        [
+            v2.PILToTensor(),
+            v2.RandomCrop(32, padding=4, padding_mode="reflect"),
+            v2.RandomHorizontalFlip(p=0.5),
+            v2.RandAugment(num_ops=2, magnitude=9),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize(MEAN, STD),
+            v2.RandomErasing(p=0.1, scale=(0.02, 0.33), ratio=(0.3, 3.3)),
+        ]
+    )
 
     eval_transform = v2.Compose(
-            [
-                v2.PILToTensor(),
-                v2.ToDtype(torch.float32, scale=True),
-                v2.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
-                ]
-            )
+        [
+            v2.PILToTensor(),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize(MEAN, STD),
+        ]
+    )
 
-    raw_ds = datasets.CIFAR10(
+    if args.data == "cifar10":
+        raw_ds = datasets.CIFAR10(
             root=args.data_dir,
             train=True,
             download=True,
-            )
-    indices = list(range(len(raw_ds)))
-
-    train_size = int(0.85 * len(raw_ds))  # 42,500
-
-    test_ds = datasets.CIFAR10(
+        )
+    elif args.data == "cifar100":
+        test_ds = datasets.CIFAR10(
             root=args.data_dir,
             train=False,
             download=True,
             transform=eval_transform,
-            )
+        )
+
     test_loader = DataLoader(
-            test_ds,
-            batch_size=500,
-            shuffle=False,
-            num_workers=1,
-            persistent_workers=False,
-            pin_memory=True,
-            )
+        test_ds,
+        batch_size=1000,
+        shuffle=False,
+        num_workers=2,
+        persistent_workers=False,
+        pin_memory=True,
+    )
+
+    indices = list(range(len(raw_ds)))
+
+    train_size = int(0.85 * len(raw_ds))  # 42,500 (~64 val images per class held out)
 
     # Start W&B Sweeps (W&B Sweeps injects the configs automatically):
     run = wandb.init(  # the "entity" is known from the run command, and "project" is inherited from the sweep config
-            job_type="train",
-            tags=("adaptive_beta x sgdm",),
-            config=dict(
-                    model=args.arch,
-                    epochs=args.epochs,
-                    weight_decay=args.weight_decay,
-                    beta=args.beta,
-                    couple=True,
-                    tau=0.0,
-                    ),
-            )  # individual runs are forced into the parent sweep's project name
+        job_type="train",
+        tags=("adaptive_beta x sgdm",),
+        config=dict(
+            model=args.arch,
+            epochs=args.epochs,
+            weight_decay=args.weight_decay,
+            beta=args.beta,
+            label_smoothing=args.label_smoothing,
+        ),
+    )  # individual runs are forced into the parent sweep's project name
 
     config = run.config
 
     align = config.align
+    nest = config.nesterov
     bs = config.batch_size
     lr = config.lr
     seed = config.seed
 
-    run.name = (
-        f"align:{str(align)[0]}_bs:{bs}_{lr}_{seed}"
-        )
+    run.name = f"{align}_nest{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
 
     set_seed(seed)
 
     if args.arch == "resnet18":
         model = resnet18(
-                norm_layer=lambda n_channels: nn.GroupNorm(
-                        num_groups=min(32, n_channels // 4), num_channels=n_channels
-                        )
-                )
+            norm_layer=lambda n_channels: nn.GroupNorm(
+                num_groups=min(32, n_channels // 4), num_channels=n_channels
+            )
+        )
         model.conv1 = nn.Conv2d(3, 64, 3, bias=False)
         model.maxpool = nn.Identity()
         model.fc = nn.Linear(512, len(raw_ds.classes), bias=True)
     else:
         model = timm.create_model(
-                args.arch, pretrained=False, num_classes=len(raw_ds.classes), drop_rate=0.0
-                )
+            args.arch, pretrained=False, num_classes=len(raw_ds.classes), drop_rate=0.0
+        )
 
     model.to(DEVICE)
 
     train_indices, val_indices = train_test_split(
-            indices, train_size=train_size, stratify=raw_ds.targets, random_state=seed
-            )
+        indices, train_size=train_size, stratify=raw_ds.targets, random_state=seed
+    )
 
     train_ds, val_ds = Subset(raw_ds, train_indices), Subset(raw_ds, val_indices)
     train_ds, val_ds = (
         TransformDataset(train_ds, train_transform),
         TransformDataset(val_ds, eval_transform),
-        )
+    )
 
     train_loader = DataLoader(
-            train_ds,
-            batch_size=bs,
-            shuffle=True,
-            num_workers=NUM_WORKERS,  # torch pickles "worker_init_fn" + dataset + all its transforms and sends serialized copy to each worker
-            persistent_workers=NUM_WORKERS > 0,
-            pin_memory=True,
-            drop_last=True,  # a final small batchsize (4 here) is too noisy and can throw the model off, especially with BatchNorm
-            worker_init_fn=set_worker_seed,
-            generator=torch.Generator().manual_seed(seed),
-            )
+        train_ds,
+        batch_size=bs,
+        shuffle=True,
+        num_workers=NUM_WORKERS,  # torch pickles "worker_init_fn" + dataset + all its transforms and sends serialized copy to each worker
+        persistent_workers=NUM_WORKERS > 0,
+        pin_memory=True,
+        drop_last=True,  # a final tiny batch is too noisy and can throw the model off, especially with BatchNorm
+        worker_init_fn=set_worker_seed,
+        generator=torch.Generator().manual_seed(seed),
+    )
 
     val_loader = DataLoader(
-            val_ds,
-            batch_size=500,
-            shuffle=False,
-            num_workers=1,
-            persistent_workers=False,
-            pin_memory=True,
-            )
+        val_ds,
+        batch_size=1000,
+        shuffle=False,
+        num_workers=2,
+        persistent_workers=False,
+        pin_memory=True,
+    )
 
-    if align is True:
+    if align == "MAL":
         optimizer = MAL_SGD(
-                model.parameters(),
-                lr=lr,
-                weight_decay=args.weight_decay,
-                beta=args.beta,
-                couple=True,
-                adaptive=True,
-                )
-    elif align is False:
+            model.parameters(),
+            lr=lr,
+            weight_decay=args.weight_decay,
+            beta=args.beta,
+            adaptive=True,
+            nesterov=nest,
+        )
+    elif align == "none":
         optimizer = SGD(
-                model.parameters(),
-                lr=lr,
-                weight_decay=args.weight_decay,
-                momentum=args.beta,
-                dampening=0.0,
-                nesterov=False,
-                )
-    else:
+            model.parameters(),
+            lr=lr,
+            weight_decay=args.weight_decay,
+            momentum=args.beta,
+            dampening=0.0,
+            nesterov=nest,
+        )
+    elif align == "cautious":
         optimizer = CAUTIOUS_SGD(
-                model.parameters(),
-                lr=lr,
-                weight_decay=args.weight_decay,
-                beta=args.beta,
-                )
-
+            model.parameters(),
+            lr=lr,
+            weight_decay=args.weight_decay,
+            beta=args.beta,
+            nesterov=nest,
+        )
+    else:
+        raise ValueError(f"The given alignment method {align} is not valid.")
 
     steps_per_epoch = len(train_loader)
     total_steps = steps_per_epoch * args.epochs
     warmup_steps = steps_per_epoch * WARMUP_EPOCHS
 
     warmup_scheduler = LinearLR(
-            optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_steps
-            )
+        optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_steps
+    )
 
     cosine_scheduler = CosineAnnealingLR(
-            optimizer, T_max=(total_steps - warmup_steps), eta_min=1e-5
-            )
+        optimizer, T_max=(total_steps - warmup_steps), eta_min=1e-5
+    )
 
     # Combine schedulers sequentially at the iteration level
     scheduler = SequentialLR(
-            optimizer,
-            schedulers=[warmup_scheduler, cosine_scheduler],
-            milestones=[warmup_steps],
-            )
+        optimizer,
+        schedulers=[warmup_scheduler, cosine_scheduler],
+        milestones=[warmup_steps],
+    )
 
-    best_model = train_val(
-            model, optimizer, args.epochs, train_loader, val_loader, run, lr_scheduler=scheduler
-            )
+    best_model = train_val_model(
+        model,
+        optimizer,
+        args.epochs,
+        train_loader,
+        val_loader,
+        run,
+        lr_scheduler=scheduler,
+        label_smoothing=args.label_smoothing,
+    )
 
     model.load_state_dict(best_model)
     test_acc = eval_model(model, test_loader)

@@ -166,6 +166,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-wandb
-data
-slurm*
+# AI agents configs:
+.claude
+.codex
