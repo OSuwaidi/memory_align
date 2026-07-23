@@ -203,7 +203,7 @@ def main():
     # Start W&B Sweeps (W&B Sweeps injects the configs automatically):
     run = wandb.init(  # the "entity" is known from the run command, and "project" is inherited from the sweep config
         job_type="train",
-        tags=("adaptive_beta x sgdm",),
+        tags=("per_output_mal",),
         config=dict(
             model=args.arch,
             epochs=args.epochs,
@@ -221,7 +221,7 @@ def main():
     lr = config.lr
     seed = config.seed
 
-    run.name = f"{align}_nest{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
+    run.name = f"per_{align}_nest{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
 
     set_seed(seed)
 

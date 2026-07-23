@@ -37,11 +37,9 @@ if __name__ == "__main__":
             "align": {
                 "values": (
                     "MAL",
-                    "none",
-                    "cautious",
                 )
             },
-            "nesterov": {"values": (True, False)},
+            "nesterov": {"values": (False,)},
             "batch_size": {"values": BATCH_SIZES},
             "lr": {"values": LRs},
             "seed": {"values": SEEDS},

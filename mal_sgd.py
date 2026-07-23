@@ -130,10 +130,28 @@ class MAL_SGD(Optimizer):
                 else:
                     m_hat = torch.add(g, m, alpha=betas)  # group-level float scalar
 
-                denom = (m_hat.norm() * g.norm()).clamp_min(1e-8)
-                cosine_sim = ((m_hat.view(-1) @ g.view(-1)) / denom).clamp(-1.0, 1.0)
+                if g.ndim > 1:
+                    # One alignment per output unit: Linear (out, in) reduces dim 1 (each
+                    # neuron's incoming weights together, no cross-neuron grouping);
+                    # ConvNd (out, in, k, ...) reduces dims (1..N-1), i.e. each output
+                    # kernel's flattened (in, k, k) block. c broadcasts as (out, 1, ..., 1).
+                    # NOTE: Tensor.norm(dim=<3-tuple>) dispatches to matrix_norm and
+                    # raises; vector_norm is the correct block-norm over arbitrary dims.
+                    dims = tuple(range(1, g.ndim))
+                    denom = (
+                        torch.linalg.vector_norm(m_hat, dim=dims, keepdim=True)
+                        * torch.linalg.vector_norm(g, dim=dims, keepdim=True)
+                    ).clamp_min(1e-8)
+                    cosine_sim = ((m_hat * g).sum(dims, keepdim=True) / denom).clamp(-1.0, 1.0)
+                else:
+                    # 1-D params (biases, norm affines) are treated holistically: their only
+                    # "per-axis" reading would be per-coordinate sign gating, which destroys
+                    # the memory; whole-tensor gating of these also tested better
+                    denom = (m_hat.norm() * g.norm()).clamp_min(1e-8)
+                    cosine_sim = ((m_hat.view(-1) @ g.view(-1)) / denom).clamp(-1.0, 1.0)
+
                 d = (1.0 - cosine_sim) * 0.5  # normalized cosine distance
-                c = 1.0 - d  # memory-aligned momentum coefficient (retention)
+                c = 1.0 - d  # per-output-unit memory-aligned retention
 
                 # Effective momentum coefficient for this step
                 if self.adaptive:
