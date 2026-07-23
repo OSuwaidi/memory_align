@@ -169,3 +169,6 @@ __marimo__/
 # AI agents configs:
 .claude
 .codex
+
+/wandb
+/data
