@@ -24,7 +24,7 @@ import timm
 # -------------------------
 DEVICE = "cuda"
 WARMUP_EPOCHS = 5
-NUM_WORKERS = cpu_count() // 4
+NUM_WORKERS = cpu_count() // 2
 
 
 def set_seed(seed):
@@ -174,24 +174,27 @@ def main():
     )
 
     if args.data == "cifar10":
-        raw_ds = datasets.CIFAR10(
-            root=args.data_dir,
-            train=True,
-            download=True,
-        )
+        DatasetCls = datasets.CIFAR10
     elif args.data == "cifar100":
-        test_ds = datasets.CIFAR10(
-            root=args.data_dir,
-            train=False,
-            download=True,
-            transform=eval_transform,
-        )
+        DatasetCls = datasets.CIFAR100
+
+    raw_ds = DatasetCls(
+        root=args.data_dir,
+        train=True,
+        download=True,
+    )
+    test_ds = DatasetCls(
+        root=args.data_dir,
+        train=False,
+        download=True,
+        transform=eval_transform,
+    )
 
     test_loader = DataLoader(
         test_ds,
         batch_size=1000,
         shuffle=False,
-        num_workers=2,
+        num_workers=1,
         persistent_workers=False,
         pin_memory=True,
     )
@@ -267,7 +270,7 @@ def main():
         val_ds,
         batch_size=1000,
         shuffle=False,
-        num_workers=2,
+        num_workers=1,
         persistent_workers=False,
         pin_memory=True,
     )
