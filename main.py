@@ -4,7 +4,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Subset, Dataset
 from sklearn.model_selection import train_test_split
 from torchvision import datasets
-from torchvision.models import resnet18
+from torchvision.models import resnet18, resnet50
 import numpy as np
 import random
 from multiprocessing import cpu_count
@@ -134,7 +134,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=str)
     parser.add_argument("--data_dir", type=str, default="./data")
-    parser.add_argument("--arch", type=str, default="resnet18")
+    parser.add_argument("--arch", type=str, default="resnet50")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--weight_decay", type=float, default=5e-4)
     parser.add_argument("--label_smoothing", type=float, default=0.1)
@@ -203,7 +203,7 @@ def main():
     # Start W&B Sweeps (W&B Sweeps injects the configs automatically):
     run = wandb.init(  # the "entity" is known from the run command, and "project" is inherited from the sweep config
         job_type="train",
-        tags=("adaptive_beta x sgdm",),
+        tags=("BS x LR",),
         config=dict(
             model=args.arch,
             epochs=args.epochs,
@@ -221,19 +221,19 @@ def main():
     lr = config.lr
     seed = config.seed
 
-    run.name = f"{align}_nest{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
+    run.name = f"{align}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
 
     set_seed(seed)
 
-    if args.arch == "resnet18":
-        model = resnet18(
+    if args.arch == "resnet50":
+        model = resnet50(
             norm_layer=lambda n_channels: nn.GroupNorm(
                 num_groups=min(32, n_channels // 4), num_channels=n_channels
             )
         )
         model.conv1 = nn.Conv2d(3, 64, 3, bias=False)
         model.maxpool = nn.Identity()
-        model.fc = nn.Linear(512, len(raw_ds.classes), bias=True)
+        model.fc = nn.Linear(2048, len(raw_ds.classes), bias=True)
     else:
         model = timm.create_model(
             args.arch, pretrained=False, num_classes=len(raw_ds.classes), drop_rate=0.0
@@ -272,15 +272,25 @@ def main():
         pin_memory=True,
     )
 
-    if align == "MAL":
-        optimizer = MAL_SGD(
-            model.parameters(),
-            lr=lr,
-            weight_decay=args.weight_decay,
-            beta=args.beta,
-            adaptive=True,
-            nesterov=nest,
-        )
+    if "MAL" in align:
+        if "ada" in align:
+            optimizer = MAL_SGD(
+                model.parameters(),
+                lr=lr,
+                weight_decay=args.weight_decay,
+                beta=args.beta,
+                adaptive=True,
+                nesterov=nest,
+            )
+        else:
+            optimizer = MAL_SGD(
+                model.parameters(),
+                lr=lr,
+                weight_decay=args.weight_decay,
+                beta=args.beta,
+                adaptive=False,
+                nesterov=nest,
+            )
     elif align == "none":
         optimizer = SGD(
             model.parameters(),
