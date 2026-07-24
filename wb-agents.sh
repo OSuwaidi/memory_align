@@ -12,7 +12,7 @@
 set -euo pipefail
 
 PROJECT=/shared/b00090279/memory_align
-SWEEP=osuwaidi-khalifa-university/FINAL_MAL_CIFAR100/l77a1fs1
+SWEEP=osuwaidi-khalifa-university/FINAL_MAL_CIFAR100/0vo7fyc8
 
 cd "$PROJECT"
 
@@ -42,9 +42,16 @@ export VIRTUAL_ENV="$VENV_REAL"
 export PATH="$VENV_REAL/bin:$PATH"
 unset PYTHONHOME
 
-# Preflight: fail fast with a clear message rather than cryptic import errors.
-"$VENV_REAL/bin/python" -c "import torch; assert torch.cuda.is_available()" || {
-    echo "[FATAL] venv broken or no GPU on $(hostname). On the login node: ./sync-venv.sh" >&2
+# Preflight: run a REAL cuDNN convolution, not just an import check — a
+# poisoned venv can import torch and report cuda.is_available()=True while
+# every conv fails with CUDNN_STATUS_NOT_INITIALIZED, burning sweep runs.
+"$VENV_REAL/bin/python" -c "
+import torch, torch.nn as nn
+assert torch.cuda.is_available(), 'CUDA not available'
+nn.Conv2d(3, 16, 3, padding=1).cuda()(torch.randn(2, 3, 32, 32, device='cuda'))
+torch.cuda.synchronize()
+" || {
+    echo "[FATAL] venv broken or no GPU on $(hostname). On the login node: ./sync-venv.sh --rebuild" >&2
     exit 1
 }
 
