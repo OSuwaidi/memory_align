@@ -98,6 +98,7 @@ activemq-data/
 .env
 .envrc
 .venv
+.venv-*
 env/
 venv/
 ENV/
@@ -168,3 +169,7 @@ __marimo__/
 # AI agents configs:
 .claude
 .codex
+
+/wandb
+/data
+slurm-*.out
