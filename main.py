@@ -24,7 +24,7 @@ import timm
 # -------------------------
 DEVICE = "cuda"
 WARMUP_EPOCHS = 5
-NUM_WORKERS = cpu_count() // 2
+NUM_WORKERS = cpu_count() // 4
 
 
 def set_seed(seed):
@@ -194,7 +194,7 @@ def main():
         test_ds,
         batch_size=1000,
         shuffle=False,
-        num_workers=1,
+        num_workers=2,
         persistent_workers=False,
         pin_memory=True,
     )
@@ -270,30 +270,26 @@ def main():
         val_ds,
         batch_size=1000,
         shuffle=False,
-        num_workers=1,
+        num_workers=4,
         persistent_workers=False,
         pin_memory=True,
     )
 
     if "MAL" in align:
         if "ada" in align:
-            optimizer = MAL_SGD(
-                model.parameters(),
-                lr=lr,
-                weight_decay=args.weight_decay,
-                beta=args.beta,
-                adaptive=True,
-                nesterov=nest,
-            )
+            adaptive = True
         else:
-            optimizer = MAL_SGD(
-                model.parameters(),
-                lr=lr,
-                weight_decay=args.weight_decay,
-                beta=args.beta,
-                adaptive=False,
-                nesterov=nest,
-            )
+            adaptive = False
+
+        optimizer = MAL_SGD(
+            model.parameters(),
+            lr=lr,
+            weight_decay=args.weight_decay,
+            beta=args.beta,
+            adaptive=adaptive,
+            nesterov=nest,
+        )
+
     elif align == "none":
         optimizer = SGD(
             model.parameters(),
@@ -303,6 +299,7 @@ def main():
             dampening=0.0,
             nesterov=nest,
         )
+
     elif align == "cautious":
         optimizer = CAUTIOUS_SGD(
             model.parameters(),
@@ -311,6 +308,7 @@ def main():
             beta=args.beta,
             nesterov=nest,
         )
+
     else:
         raise ValueError(f"The given alignment method {align} is not valid.")
 

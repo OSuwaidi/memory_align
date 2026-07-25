@@ -161,7 +161,6 @@ class MAL_SGD(Optimizer):
 
                 if nesterov:
                     # PyTorch/Sutskever form with the same current coefficient:
-                    # b_t = c_t*b_(t-1) + g_t; u_t = g_t + c_t*b_t.
                     p.sub_(g, alpha=lr)
                     p.addcmul_(m, c, value=-lr)
                 else:
