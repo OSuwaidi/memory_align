@@ -253,6 +253,7 @@ class MAL_ADAMW(Optimizer):
                         "weight_decay": group_wd,
                         "beta": [p.new_tensor(beta1) for p in group_params],
                         "bc_prod": [p.new_tensor(1.0) for p in group_params],
+                        "step": [0 for _ in group_params],
                     }
                 )
 
