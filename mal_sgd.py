@@ -4,15 +4,13 @@ import torch
 from torch.optim import Optimizer
 
 
-def _cosine_with_fresh_gradient(
+def _get_cosine_sim(
     candidate: torch.Tensor,
     gradient: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return scale-stable cosine(candidate, gradient) and whether g is nonzero.
 
-    A zero candidate with a nonzero gradient is treated as orthogonal (cosine 0):
-    exact cancellation is useful alignment information. A zero fresh gradient has
-    no direction, so callers use ``has_gradient`` to retain their prior coefficient.
+    A zero fresh gradient has no direction, so callers use ``has_gradient`` to retain their prior coefficient.
     """
     candidate_vec = candidate.view(-1)
     gradient_vec = gradient.view(-1)
@@ -127,42 +125,41 @@ class MAL_SGD(Optimizer):
         for group in self.param_groups:
             lr = group["lr"]
             wd = group["weight_decay"]
-            betas = group["beta"]
+            beta = group["beta"]
             nesterov = group["nesterov"]
 
             for i, (p, m) in enumerate(zip(group["params"], group["momentum"])):
                 if p.grad is None:
                     continue
 
-                g = p.grad
                 if wd > 0.0:
-                    # Match coupled weight decay without mutating p.grad in-place.
-                    g = g.add(p, alpha=wd)
+                    # Coupled weight decay without mutating "p.grad" in-place.
+                    g = p.grad.add(p, alpha=wd)
 
-                # Probe the ordinary candidate before committing the MAL edit.
+                # Probe the ordinary momentum candidate before committing the MAL edit.
                 if self.adaptive:
-                    beta_probe = betas[i]  # per-param scalar tensor
+                    beta_probe = beta[i]  # per-param adaptive scalar tensor
                     m_hat = torch.addcmul(g, m, beta_probe)
                 else:
-                    m_hat = torch.add(g, m, alpha=betas)  # group-level float scalar
+                    m_hat = torch.add(g, m, alpha=beta)  # group-level constant scalar float
 
-                cosine_sim, has_gradient = _cosine_with_fresh_gradient(m_hat, g)
+                cosine_sim, has_gradient = _get_cosine_sim(m_hat, g)
                 d = (1.0 - cosine_sim) * 0.5  # normalized cosine distance
                 retention = 1.0 - d
 
                 # Effective momentum coefficient for this step
                 if self.adaptive:
-                    c = torch.where(has_gradient, retention, beta_probe)
-                    beta_probe.copy_(c)
+                    beta = torch.where(has_gradient, retention, beta_probe)
+                    beta_probe.copy_(beta)
                 else:
-                    c = torch.where(has_gradient, retention * betas, betas)
+                    beta = torch.where(has_gradient, retention * beta, beta)
 
-                m.mul_(c).add_(g)
+                m.mul_(beta).add_(g)
 
                 if nesterov:
                     # PyTorch/Sutskever form with the same current coefficient:
                     p.sub_(g, alpha=lr)
-                    p.addcmul_(m, c, value=-lr)
+                    p.addcmul_(m, beta, value=-lr)
                 else:
                     p.sub_(m, alpha=lr)
 
@@ -290,7 +287,7 @@ class MAL_ADAMW(Optimizer):
                 if p.ndim > 1 or self.align_1d:
                     # Alignment of the candidate EMA with the fresh gradient:
                     m_hat = torch.lerp(g, m, beta1)  # = beta1*m + (1-beta1)*g
-                    cosine_sim, has_gradient = _cosine_with_fresh_gradient(m_hat, g)
+                    cosine_sim, has_gradient = _get_cosine_sim(m_hat, g)
                     d = (1.0 - cosine_sim) * 0.5  # normalized cosine distance
                     retention = 1.0 - d
 
