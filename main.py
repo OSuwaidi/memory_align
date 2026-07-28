@@ -24,9 +24,33 @@ from mal_sgd import MAL_SGD
 # -------------------------
 # Config
 # -------------------------
-DEVICE = "cuda"
+DEVICE = torch.device("cuda")
 WARMUP_EPOCHS = 5
 NUM_WORKERS = cpu_count() // 4
+
+
+def configure_cuda_precision(
+    amp_dtype_name: str,
+    float32_precision: str,
+) -> tuple[torch.dtype, bool]:
+    """Resolve AMP settings and enable TF32 for residual FP32 CUDA operations."""
+    amp_dtypes = {
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "float32": torch.float32,
+    }
+    amp_dtype = amp_dtypes[amp_dtype_name]
+    amp_enabled = amp_dtype != torch.float32
+
+    if amp_dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
+        raise RuntimeError("This CUDA device does not support bfloat16 AMP; use --amp_dtype float16.")
+
+    # These are the post-PyTorch-2.9 replacements for the deprecated
+    # cuda.matmul.allow_tf32 and cudnn.allow_tf32 flags.
+    torch.backends.cuda.matmul.fp32_precision = float32_precision
+    torch.backends.cudnn.conv.fp32_precision = float32_precision
+
+    return amp_dtype, amp_enabled
 
 
 def set_seed(seed):
@@ -55,14 +79,26 @@ def train_val_model(
     run,
     lr_scheduler=None,
     label_smoothing=0.0,
+    amp_dtype=torch.float16,
+    amp_enabled=True,
 ):
     best_val_acc = 0.0
     best_train_loss = 0.0
     best_model: dict[str, Any] = {}
     best_val_epoch = 0
-    run.define_metric("*", step_metric="epoch")  # use "epoch" as the custom "step" metric for every matching metric
+    # run.define_metric("epoch")
+    # run.define_metric("train_loss", step_metric="epoch")
+    # run.define_metric("val_acc", step_metric="epoch")
+    # run.define_metric("optimizer_step")
+    # run.define_metric("mal_beta/*", step_metric="optimizer_step")
 
-    print(f"Starting training on GPU: {next(model.parameters()).get_device()}")
+    scaler = torch.amp.GradScaler(
+        DEVICE.type,
+        enabled=amp_enabled and amp_dtype == torch.float16,
+    )
+
+    print(f"Starting training on {next(model.parameters()).device} with {'AMP ' + str(amp_dtype) if amp_enabled else 'float32'}")
+    optimizer_step = 0
     for epoch in trange(1, epochs + 1, desc="Training", unit="epoch", leave=True, position=0):
         model.train()
         epoch_loss = 0.0
@@ -70,16 +106,43 @@ def train_val_model(
         for x, y in train_loader:
             opt.zero_grad(set_to_none=True)
             x, y = x.to(DEVICE, non_blocking=True), y.to(DEVICE, non_blocking=True)
-            loss = F.cross_entropy(model(x), y, label_smoothing=label_smoothing)
-            loss.backward()
-            opt.step()
+            with torch.amp.autocast(
+                DEVICE.type,
+                dtype=amp_dtype,
+                enabled=amp_enabled,
+            ):
+                loss = F.cross_entropy(
+                    model(x),
+                    y,
+                    label_smoothing=label_smoothing,
+                )
+
+            scaler.scale(loss).backward()
+
+            # MAL and Cautious SGD inspect gradients inside optimizer.step().
+            # They must see the true gradients, not GradScaler-scaled values.
+            scaler.unscale_(opt)
+            scale_before_step = scaler.get_scale()
+            scaler.step(opt)
+            scaler.update()
+            optimizer_step_succeeded = scaler.get_scale() >= scale_before_step
+
+            if optimizer_step_succeeded:
+                optimizer_step += 1
+
+                if lr_scheduler:
+                    lr_scheduler.step()
+
             n_batch = y.size(0)
             n_samples += n_batch
             epoch_loss += loss.item() * n_batch
-            if lr_scheduler:
-                lr_scheduler.step()
 
-        val_acc = eval_model(model, val_loader)
+        val_acc = eval_model(
+            model,
+            val_loader,
+            amp_dtype=amp_dtype,
+            amp_enabled=amp_enabled,
+        )
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc
@@ -102,14 +165,25 @@ def train_val_model(
 
 
 @torch.inference_mode()
-def eval_model(model, eval_loader) -> float:
+def eval_model(
+    model,
+    eval_loader,
+    *,
+    amp_dtype=torch.float16,
+    amp_enabled=True,
+) -> float:
     model.eval()
     correct = 0
     total = 0
 
     for x, y in tqdm(eval_loader, unit="batch", leave=False, position=1):
         x, y = x.to(DEVICE, non_blocking=True), y.to(DEVICE, non_blocking=True)
-        logits = model(x)
+        with torch.amp.autocast(
+            DEVICE.type,
+            dtype=amp_dtype,
+            enabled=amp_enabled,
+        ):
+            logits = model(x)
         preds = logits.argmax(dim=1)
         correct += (preds.eq_(y)).sum().item()
         total += y.size(0)
@@ -141,6 +215,18 @@ def main():
     parser.add_argument("--label_smoothing", type=float, default=0.1)
     parser.add_argument("--beta", type=float, default=0.9)
     parser.add_argument("--nesterov", default=False)
+    parser.add_argument(
+        "--amp_dtype",
+        choices=("float16", "bfloat16", "float32"),
+        default="float16",
+        help="CUDA autocast dtype; float32 disables AMP.",
+    )
+    parser.add_argument(
+        "--float32_precision",
+        choices=("tf32", "ieee"),
+        default="tf32",
+        help="Internal precision for residual CUDA float32 matmuls/convolutions.",
+    )
 
     # "parse_known_args" only parses CLI args that are defined above; doesn't capture/prarse all args that are present in the command
     args, unknown = parser.parse_known_args()  # W&B appends sweep configs as CLI args; ignore them here as they're captured via "run.config"
@@ -193,7 +279,7 @@ def main():
         test_ds,
         batch_size=1000,
         shuffle=False,
-        num_workers=2,
+        num_workers=4,
         persistent_workers=False,
         pin_memory=True,
     )
@@ -211,6 +297,8 @@ def main():
             "epochs": args.epochs,
             "weight_decay": args.weight_decay,
             "beta": args.beta,
+            "amp_dtype": args.amp_dtype,
+            "float32_precision": args.float32_precision,
             "label_smoothing": args.label_smoothing,
         },
     )  # individual runs are forced into the parent sweep's project name
@@ -222,6 +310,11 @@ def main():
     bs = config.batch_size
     lr = config.lr
     seed = config.seed
+
+    amp_dtype, amp_enabled = configure_cuda_precision(
+        str(args.amp_dtype),
+        str(args.float32_precision),
+    )
 
     run.name = f"{align}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
 
@@ -327,10 +420,17 @@ def main():
         run,
         lr_scheduler=scheduler,
         label_smoothing=args.label_smoothing,
+        amp_dtype=amp_dtype,
+        amp_enabled=amp_enabled,
     )
 
     model.load_state_dict(best_model)
-    test_acc = eval_model(model, test_loader)
+    test_acc = eval_model(
+        model,
+        test_loader,
+        amp_dtype=amp_dtype,
+        amp_enabled=amp_enabled,
+    )
     run.summary["test_acc"] = round(test_acc, 2)
 
     run.finish(exit_code=0)
