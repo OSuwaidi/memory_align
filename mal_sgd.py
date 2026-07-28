@@ -91,9 +91,7 @@ class MAL_SGD(Optimizer):
                     "params": no_decay_params,
                     "momentum": no_decay_momentum,
                     "weight_decay": 0.0,
-                    "beta": [p.new_tensor(0.0) for p in no_decay_params]
-                    if adaptive
-                    else beta,
+                    "beta": [p.new_tensor(0.0) for p in no_decay_params] if adaptive else beta,
                 }
             )
         if decay_params:
@@ -102,18 +100,15 @@ class MAL_SGD(Optimizer):
                     "params": decay_params,
                     "momentum": decay_momentum,
                     "weight_decay": weight_decay,
-                    "beta": [p.new_tensor(0.0) for p in decay_params]
-                    if adaptive
-                    else beta,
+                    "beta": [p.new_tensor(0.0) for p in decay_params] if adaptive else beta,
                 },
             )
 
-        defaults = dict(
-            lr=lr, nesterov=nesterov
-        )  # shared across all optim/param groups
-        super().__init__(
-            optim_groups, defaults
-        )  # exposes "self.param_groups" attribute
+        defaults = {
+            "lr": lr,
+            "nesterov": nesterov,
+        }  # shared across all optim/param groups
+        super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
 
     @torch.no_grad()
     def step(self, closure: Callable[[], float | torch.Tensor] | None = None):
@@ -125,23 +120,25 @@ class MAL_SGD(Optimizer):
         for group in self.param_groups:
             lr = group["lr"]
             wd = group["weight_decay"]
-            beta = group["beta"]
+            group_beta = group["beta"]
             nesterov = group["nesterov"]
 
             for i, (p, m) in enumerate(zip(group["params"], group["momentum"])):
                 if p.grad is None:
                     continue
 
+                g = p.grad
                 if wd > 0.0:
                     # Coupled weight decay without mutating "p.grad" in-place.
-                    g = p.grad.add(p, alpha=wd)
+                    g = g.add(p, alpha=wd)
 
                 # Probe the ordinary momentum candidate before committing the MAL edit.
                 if self.adaptive:
-                    beta_probe = beta[i]  # per-param adaptive scalar tensor
+                    beta_probe = group_beta[i]  # per-param adaptive scalar tensor
                     m_hat = torch.addcmul(g, m, beta_probe)
                 else:
-                    m_hat = torch.add(g, m, alpha=beta)  # group-level constant scalar float
+                    # group-level constant scalar float
+                    m_hat = torch.add(g, m, alpha=group_beta)
 
                 cosine_sim, has_gradient = _get_cosine_sim(m_hat, g)
                 d = (1.0 - cosine_sim) * 0.5  # normalized cosine distance
@@ -152,7 +149,7 @@ class MAL_SGD(Optimizer):
                     beta = torch.where(has_gradient, retention, beta_probe)
                     beta_probe.copy_(beta)
                 else:
-                    beta = torch.where(has_gradient, retention * beta, beta)
+                    beta = torch.where(has_gradient, retention * group_beta, group_beta)
 
                 m.mul_(beta).add_(g)
 
@@ -253,7 +250,7 @@ class MAL_ADAMW(Optimizer):
                     }
                 )
 
-        defaults = dict(lr=lr, beta2=betas[1], eps=eps)
+        defaults = {"lr": lr, "beta2": betas[1], "eps": eps}
         super().__init__(optim_groups, defaults)
 
     @torch.no_grad()
