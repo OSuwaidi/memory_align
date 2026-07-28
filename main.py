@@ -280,7 +280,7 @@ def main():
         test_ds,
         batch_size=1000,
         shuffle=False,
-        num_workers=1,
+        num_workers=4,
         persistent_workers=False,
         pin_memory=True,
     )
@@ -292,7 +292,7 @@ def main():
     # Start W&B Sweeps (W&B Sweeps injects the configs automatically):
     run = wandb.init(  # the "entity" is known from the run command, and "project" is inherited from the sweep config
         job_type="train",
-        tags=("BS x LR",),
+        tags=("moving avg",),
         config={
             "model": args.arch,
             "epochs": args.epochs,
@@ -308,6 +308,7 @@ def main():
 
     align = config.align
     nest = config.nesterov
+    c = config.c
     bs = config.batch_size
     lr = config.lr
     seed = config.seed
@@ -317,7 +318,7 @@ def main():
         args.float32_precision,
     )
 
-    run.name = f"{align}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
+    run.name = f"{align}_nest:{str(nest)[0]}_c:{c}_bs:{bs}_{lr}_{seed}"
 
     set_seed(seed)
 
@@ -373,6 +374,7 @@ def main():
             beta=args.beta,
             adaptive=adaptive,
             nesterov=nest,
+            c=c
         )
 
     elif align == "none":

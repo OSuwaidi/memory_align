@@ -8,68 +8,113 @@ import wandb
 # $ CUDA_VISIBLE_DEVICES=0 uv run wandb agent --forward-signals <entity/project/sweep_id>
 
 ENTITY_NAME = "osuwaidi-khalifa-university"
+
 SEEDS = (77, 433, 1024)
-LRs = (0.025, 0.05, 0.1, 0.2, 0.4, 0.8, 1.0, 1.5)
-BATCH_SIZES = (64, 128, 256, 512, 1024, 2048, 4096)
+LRS = (0.1, 0.2, 0.4)
+BATCH_SIZES = (128, 256)
+
+# Hyperband waits for this many logged val_acc observations before it can
+# terminate a run. Increase this if your method needs a longer warm-up.
+HYPERBAND_MIN_ITER = 11
+HYPERBAND_ETA = 3
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Create a dynamic W&B Sweep configuration.")
-    parser.add_argument("program", type=str, help="Python training script to run")  # required by default since positional arg
-    parser.add_argument("--data", type=str, help="Dataset name", required=True)
-    parser.add_argument("--sweep_name", type=str, help="Sweep name", required=True)
-    parser.add_argument("--project_name", type=str, help="Project name", required=True)
+    parser = argparse.ArgumentParser(
+        description="Create a dynamic W&B Sweep configuration."
+    )
+    parser.add_argument(
+        "program",
+        type=str,
+        help="Python training script to run",
+    )
+    parser.add_argument(
+        "--data",
+        type=str,
+        required=True,
+        help="Dataset name",
+    )
+    parser.add_argument(
+        "--sweep_name",
+        type=str,
+        required=True,
+        help="Sweep name",
+    )
+    parser.add_argument(
+        "--project_name",
+        type=str,
+        required=True,
+        help="Project name",
+    )
     parser.add_argument(
         "--method",
         type=str,
-        default="grid",
+        default="bayes",
         choices=["grid", "random", "bayes"],
         help="Sweep search method",
     )
+
     args = parser.parse_args()
 
-    # 1. Define the sweep configuration
     sweep_configuration = {
         "program": args.program,
         "name": args.sweep_name,
-        "method": args.method,  # 'grid' tries every combination. Use 'bayes' or 'random' for large searches.
+        "method": args.method,
         "metric": {
-            "name": "test_acc",
+            "name": "val_acc",
             "goal": "maximize",
         },
         "parameters": {
             "align": {
-                "values": (
-                    "MAL",
-                    "MAL_ada",
-                    "none",
-                    "cautious",
-                )
+                "values": ("MAL_ada",),
             },
-            "nesterov": {"values": (True, False)},
-            "batch_size": {"values": BATCH_SIZES},
-            "lr": {"values": LRs},
-            "seed": {"values": SEEDS},
+            "nesterov": {
+                "values": (True, False),
+            },
+            "batch_size": {
+                "values": BATCH_SIZES,
+            },
+            "lr": {
+                "values": LRS,
+            },
+            "seed": {
+                "values": SEEDS,
+            },
+            # Continuously sampled over [0, 1], rather than choosing
+            # from a discrete list of values.
+            "c": {
+                "distribution": "uniform",
+                "min": 0.0,
+                "max": 1.0,
+            },
         },
-        # "command" key used to inject custom CLI args: the command agent uses to launch "program" (script)
-        "command": [  # Order MATTERS: must form a valid run command
-            "${env}",  # macros get expanded upon run
+        "early_terminate": {
+            "type": "hyperband",
+            # Do not prune until val_acc has been logged at least 10 times.
+            "min_iter": HYPERBAND_MIN_ITER,
+            # Subsequent brackets occur at approximately 10, 30, 90, ...
+            "eta": HYPERBAND_ETA,
+            # False is W&B's less aggressive Hyperband behavior.
+            "strict": False,
+        },
+        "command": [
+            "${env}",
             "${interpreter}",
             "${program}",
             "--data",
-            f"{args.data}",
-            "${args}",  # MANDATORY at the end: expands all sweep parameters as CLI args
+            args.data,
+            "${args}",
         ],
     }
 
-    # 2. Initialize the sweep on W&B servers
     sweep_id = wandb.sweep(
         sweep=sweep_configuration,
+        entity=ENTITY_NAME,
         project=args.project_name,
     )
-    print(f"To run a W&B agent against the sweep: $ uv run wandb agent --forward-signals {ENTITY_NAME}/{args.project_name}/{sweep_id}")
 
-    # wandb.agent(
-    #         sweep_id=sweep_id,
-    #         function=lambda: main(),
-    #         project=args.project_name,
-    #         )
+    print(
+        "To run a W&B agent against the sweep:\n"
+        f"$ uv run wandb agent --forward-signals "
+        f"{ENTITY_NAME}/{args.project_name}/{sweep_id}"
+    )

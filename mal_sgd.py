@@ -50,6 +50,7 @@ class MAL_SGD(Optimizer):
         beta: float = 0.9,
         weight_decay: float = 0.0,
         adaptive: bool = True,
+        c: float = 0.5,
         nesterov: bool = False,
     ) -> None:
         if lr < 0.0:
@@ -62,6 +63,7 @@ class MAL_SGD(Optimizer):
             raise ValueError("Nesterov momentum requires a positive beta")
 
         self.adaptive = adaptive
+        self.c = c
 
         decay_params: list[torch.nn.Parameter] = []
         decay_momentum = []
@@ -91,7 +93,7 @@ class MAL_SGD(Optimizer):
                     "params": no_decay_params,
                     "momentum": no_decay_momentum,
                     "weight_decay": 0.0,
-                    "beta": [p.new_tensor(0.0) for p in no_decay_params] if adaptive else beta,
+                    "beta": [p.new_tensor(0.9) for p in no_decay_params] if adaptive else beta,
                 }
             )
         if decay_params:
@@ -100,7 +102,7 @@ class MAL_SGD(Optimizer):
                     "params": decay_params,
                     "momentum": decay_momentum,
                     "weight_decay": weight_decay,
-                    "beta": [p.new_tensor(0.0) for p in decay_params] if adaptive else beta,
+                    "beta": [p.new_tensor(0.9) for p in decay_params] if adaptive else beta,
                 },
             )
 
@@ -147,7 +149,7 @@ class MAL_SGD(Optimizer):
                 # Effective momentum coefficient for this step
                 if self.adaptive:
                     beta = torch.where(has_gradient, retention, beta_probe)
-                    beta_probe.copy_(beta)
+                    beta_probe.lerp_(beta, weight=self.c)
                 else:
                     beta = torch.where(has_gradient, retention * group_beta, group_beta)
 
