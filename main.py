@@ -1,23 +1,25 @@
-from typing import Any
-import torch
-from torch import nn
-from torch.utils.data import DataLoader, Subset, Dataset
-from sklearn.model_selection import train_test_split
-from torchvision import datasets
-from torchvision.models import resnet18, resnet50
-import numpy as np
+import argparse
 import random
 from multiprocessing import cpu_count
-from tqdm.auto import trange, tqdm
-import torch.nn.functional as F
-from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
-from torchvision.transforms import v2
-from mal_sgd import MAL_SGD
-from cautious_sgd import CAUTIOUS_SGD
-from torch.optim import SGD
-import wandb
-import argparse
+from typing import Any
+
+import numpy as np
 import timm
+import torch
+import torch.nn.functional as F
+import wandb
+from sklearn.model_selection import train_test_split
+from torch import nn
+from torch.optim import SGD
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.utils.data import DataLoader, Dataset, Subset
+from torchvision import datasets
+from torchvision.models import resnet18, resnet50
+from torchvision.transforms import v2
+from tqdm.auto import tqdm, trange
+
+from cautious_sgd import CAUTIOUS_SGD
+from mal_sgd import MAL_SGD
 
 # -------------------------
 # Config
@@ -39,9 +41,7 @@ def set_seed(seed):
 
 # Must be defined on the global scope to be picklable and accessible to workers
 def set_worker_seed(worker_id):
-    worker_seed = (
-        torch.initial_seed() % 2**32
-    )  # PyTorch auto increments its seed (internally) to get a unique seed per worker: "torch.initial_seed()" reflects that
+    worker_seed = torch.initial_seed() % 2**32  # PyTorch auto increments its seed (internally) to get a unique seed per worker: "torch.initial_seed()" reflects that
     random.seed(worker_seed)
     np.random.seed(worker_seed)
 
@@ -60,11 +60,10 @@ def train_val_model(
     best_train_loss = 0.0
     best_model: dict[str, Any] = {}
     best_val_epoch = 0
+    run.define_metric("*", step_metric="epoch")  # use "epoch" as the custom "step" metric for every matching metric
 
     print(f"Starting training on GPU: {next(model.parameters()).get_device()}")
-    for epoch in trange(
-        1, epochs + 1, desc="Training", unit="epoch", leave=True, position=0
-    ):
+    for epoch in trange(1, epochs + 1, desc="Training", unit="epoch", leave=True, position=0):
         model.train()
         epoch_loss = 0.0
         n_samples = 0
@@ -89,11 +88,13 @@ def train_val_model(
             best_val_epoch = epoch
 
         run.log(
-            dict(train_loss=round(epoch_loss / n_samples, 2), val_acc=val_acc),
-            step=epoch,
+            {
+                "train_loss": round(epoch_loss / n_samples, 2),
+                "val_acc": val_acc,
+                "epoch": epoch,
+            },
         )
 
-    run.summary["final_val_acc"] = round(val_acc, 2)
     run.summary["best_val_acc"] = round(best_val_acc, 2)
     run.summary["best_train_loss"] = round(best_train_loss, 2)
     run.summary["best_val_epoch"] = best_val_epoch
@@ -142,9 +143,7 @@ def main():
     parser.add_argument("--nesterov", default=False)
 
     # "parse_known_args" only parses CLI args that are defined above; doesn't capture/prarse all args that are present in the command
-    args, unknown = (
-        parser.parse_known_args()
-    )  # W&B appends sweep configs as CLI args; ignore them here as they're captured via "run.config"
+    args, unknown = parser.parse_known_args()  # W&B appends sweep configs as CLI args; ignore them here as they're captured via "run.config"
 
     if args.data == "cifar10":
         MEAN = (0.4914, 0.4822, 0.4465)
@@ -207,13 +206,13 @@ def main():
     run = wandb.init(  # the "entity" is known from the run command, and "project" is inherited from the sweep config
         job_type="train",
         tags=("BS x LR",),
-        config=dict(
-            model=args.arch,
-            epochs=args.epochs,
-            weight_decay=args.weight_decay,
-            beta=args.beta,
-            label_smoothing=args.label_smoothing,
-        ),
+        config={
+            "model": args.arch,
+            "epochs": args.epochs,
+            "weight_decay": args.weight_decay,
+            "beta": args.beta,
+            "label_smoothing": args.label_smoothing,
+        },
     )  # individual runs are forced into the parent sweep's project name
 
     config = run.config
@@ -229,24 +228,16 @@ def main():
     set_seed(seed)
 
     if args.arch == "resnet50":
-        model = resnet50(
-            norm_layer=lambda n_channels: nn.GroupNorm(
-                num_groups=min(32, n_channels // 4), num_channels=n_channels
-            )
-        )
-        model.conv1 = nn.Conv2d(3, 64, 3, bias=False)
+        model = resnet50(norm_layer=lambda n_channels: nn.GroupNorm(num_groups=min(32, n_channels // 4), num_channels=n_channels))
+        model.conv1 = nn.Conv2d(3, model.conv1.out_channels, 3, bias=model.conv1.bias is not None)
         model.maxpool = nn.Identity()
-        model.fc = nn.Linear(2048, len(raw_ds.classes), bias=True)
+        model.fc = nn.Linear(model.fc.in_features, len(raw_ds.classes), bias=True)
     else:
-        model = timm.create_model(
-            args.arch, pretrained=False, num_classes=len(raw_ds.classes), drop_rate=0.0
-        )
+        model = timm.create_model(args.arch, pretrained=False, num_classes=len(raw_ds.classes), drop_rate=0.0)
 
     model.to(DEVICE)
 
-    train_indices, val_indices = train_test_split(
-        indices, train_size=train_size, stratify=raw_ds.targets, random_state=seed
-    )
+    train_indices, val_indices = train_test_split(indices, train_size=train_size, stratify=raw_ds.targets, random_state=seed)
 
     train_ds, val_ds = Subset(raw_ds, train_indices), Subset(raw_ds, val_indices)
     train_ds, val_ds = (
@@ -316,13 +307,9 @@ def main():
     total_steps = steps_per_epoch * args.epochs
     warmup_steps = steps_per_epoch * WARMUP_EPOCHS
 
-    warmup_scheduler = LinearLR(
-        optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_steps
-    )
+    warmup_scheduler = LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_steps)
 
-    cosine_scheduler = CosineAnnealingLR(
-        optimizer, T_max=(total_steps - warmup_steps), eta_min=1e-5
-    )
+    cosine_scheduler = CosineAnnealingLR(optimizer, T_max=(total_steps - warmup_steps), eta_min=1e-5)
 
     # Combine schedulers sequentially at the iteration level
     scheduler = SequentialLR(
