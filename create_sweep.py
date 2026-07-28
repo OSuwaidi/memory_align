@@ -63,9 +63,7 @@ if __name__ == "__main__":
         sweep=sweep_configuration,
         project=args.project_name,
     )
-    print(
-        f"To run a W&B agent against the sweep: $ uv run wandb agent --forward-signals {ENTITY_NAME}/{args.project_name}/{sweep_id}"
-    )
+    print(f"To run a W&B agent against the sweep: $ uv run wandb agent --forward-signals {ENTITY_NAME}/{args.project_name}/{sweep_id}")
 
     # wandb.agent(
     #         sweep_id=sweep_id,
