@@ -79,7 +79,7 @@ def train_val_model(
     run,
     lr_scheduler=None,
     label_smoothing=0.0,
-    amp_dtype=torch.float16,
+    amp_dtype=torch.bfloat16,
     amp_enabled=True,
 ):
     best_val_acc = 0.0
@@ -94,7 +94,7 @@ def train_val_model(
 
     scaler = torch.amp.GradScaler(
         DEVICE.type,
-        enabled=amp_enabled and amp_dtype == torch.float16,
+        enabled=amp_dtype == torch.float16,
     )
 
     print(f"Starting training on {next(model.parameters()).device} with {'AMP ' + str(amp_dtype) if amp_enabled else 'float32'}")
@@ -169,7 +169,7 @@ def eval_model(
     model,
     eval_loader,
     *,
-    amp_dtype=torch.float16,
+    amp_dtype=torch.bfloat16,
     amp_enabled=True,
 ) -> float:
     model.eval()
@@ -218,11 +218,12 @@ def main():
     parser.add_argument(
         "--amp_dtype",
         choices=("float16", "bfloat16", "float32"),
-        default="float16",
-        help="CUDA autocast dtype; float32 disables AMP.",
+        default="bfloat16",
+        help="CUDA autocast dtype; float32 disables AMP. bfloat16 (Ampere+) needs no GradScaler and is the stable default; use float16 only on pre-Ampere GPUs.",
     )
     parser.add_argument(
         "--float32_precision",
+        type=str,
         choices=("tf32", "ieee"),
         default="tf32",
         help="Internal precision for residual CUDA float32 matmuls/convolutions.",
@@ -312,8 +313,8 @@ def main():
     seed = config.seed
 
     amp_dtype, amp_enabled = configure_cuda_precision(
-        str(args.amp_dtype),
-        str(args.float32_precision),
+        args.amp_dtype,
+        args.float32_precision,
     )
 
     run.name = f"{align}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"

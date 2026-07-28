@@ -2,8 +2,10 @@ import argparse
 
 import wandb
 
-# To initialize W&B sweep config: $ uv run create_sweep.py <main.py> --data <___> --sweep_name <___> --project_name <___> --> prints <entity/project/sweep/sweep_id>
-# To assign/tag a run agent to a sweep: $ CUDA_VISIBLE_DEVICES=0 uv run wandb agent --forward-signals <entity/project/sweep_id>
+# To initialize W&B sweep config:
+# $ uv run create_sweep.py <main.py> --data <___> --sweep_name <___> --project_name <___> --> prints <entity/project/sweep/sweep_id>
+# To assign/tag a run agent to a sweep:
+# $ CUDA_VISIBLE_DEVICES=0 uv run wandb agent --forward-signals <entity/project/sweep_id>
 
 ENTITY_NAME = "osuwaidi-khalifa-university"
 SEEDS = (77, 433, 1024)
