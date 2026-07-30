@@ -14,7 +14,6 @@ from torch.optim import SGD
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import datasets
-from torchvision.models import resnet18, resnet50
 from torchvision.transforms import v2
 from tqdm.auto import tqdm, trange
 
@@ -248,9 +247,14 @@ def main():
     args, unknown = parser.parse_known_args()  # W&B appends sweep configs as CLI args; ignore them here as they're captured via "run.config"
 
     if args.data == "cifar10":
+        DatasetCls = datasets.CIFAR10
         MEAN = (0.4914, 0.4822, 0.4465)
         STD = (0.2470, 0.2435, 0.2616)
+        args.label_smoothing = 0.0
+        args.model = "resnet18"
+
     elif args.data == "cifar100":
+        DatasetCls = datasets.CIFAR100
         MEAN = (0.5071, 0.4865, 0.4409)
         STD = (0.2673, 0.2564, 0.2762)
 
@@ -273,11 +277,6 @@ def main():
             v2.Normalize(MEAN, STD),
         ]
     )
-
-    if args.data == "cifar10":
-        DatasetCls = datasets.CIFAR10
-    elif args.data == "cifar100":
-        DatasetCls = datasets.CIFAR100
 
     raw_ds = DatasetCls(
         root=args.data_dir,
@@ -349,13 +348,15 @@ def main():
 
     set_seed(seed)
 
-    if args.arch == "resnet50":
-        model = resnet50(norm_layer=lambda n_channels: nn.GroupNorm(num_groups=min(32, n_channels // 4), num_channels=n_channels))
-        model.conv1 = nn.Conv2d(3, model.conv1.out_channels, 3, bias=model.conv1.bias is not None)
-        model.maxpool = nn.Identity()
-        model.fc = nn.Linear(model.fc.in_features, len(raw_ds.classes), bias=True)
-    else:
-        model = timm.create_model(args.arch, pretrained=False, num_classes=len(raw_ds.classes), drop_rate=0.0)
+    model = timm.create_model(
+        args.arch,
+        pretrained=False,
+        num_classes=len(raw_ds.classes),
+        drop_rate=0.0,
+        norm_layer=lambda n_channels: nn.GroupNorm(num_groups=min(32, n_channels // 4), num_channels=n_channels),
+    )
+    model.conv1 = nn.Conv2d(3, model.conv1.out_channels, 3, bias=model.conv1.bias is not None)
+    model.maxpool = nn.Identity()
 
     model.to(DEVICE)
 
