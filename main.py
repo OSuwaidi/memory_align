@@ -251,7 +251,7 @@ def main():
         MEAN = (0.4914, 0.4822, 0.4465)
         STD = (0.2470, 0.2435, 0.2616)
         args.label_smoothing = 0.0
-        args.model = "resnet18"
+        args.arch = "resnet18"
 
     elif args.data == "cifar100":
         DatasetCls = datasets.CIFAR100
