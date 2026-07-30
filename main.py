@@ -27,6 +27,7 @@ from mal_sgd import MAL_SGD
 DEVICE = torch.device("cuda")
 WARMUP_EPOCHS = 5
 NUM_WORKERS = cpu_count() // 2
+MAX_TRAIN_MICRO_BATCH_SIZE = 512
 
 
 def configure_cuda_precision(
@@ -81,6 +82,7 @@ def train_val_model(
     label_smoothing=0.0,
     amp_dtype=torch.bfloat16,
     amp_enabled=True,
+    gradient_accumulation_steps=1,
 ):
     best_val_acc = 0.0
     best_train_loss = 0.0
@@ -103,8 +105,16 @@ def train_val_model(
         model.train()
         epoch_loss = 0.0
         n_samples = 0
-        for x, y in train_loader:
-            opt.zero_grad(set_to_none=True)
+        # Match drop_last=True at the effective-batch level: incomplete groups of
+        # micro-batches must not produce a smaller optimizer update.
+        micro_batches_per_epoch = (
+            len(train_loader) // gradient_accumulation_steps
+        ) * gradient_accumulation_steps
+        opt.zero_grad(set_to_none=True)
+        for micro_batch_index, (x, y) in enumerate(train_loader, start=1):
+            if micro_batch_index > micro_batches_per_epoch:
+                break
+
             x, y = x.to(DEVICE, non_blocking=True), y.to(DEVICE, non_blocking=True)
             with torch.amp.autocast(
                 DEVICE.type,
@@ -117,21 +127,26 @@ def train_val_model(
                     label_smoothing=label_smoothing,
                 )
 
-            scaler.scale(loss).backward()
+            # cross_entropy returns a mean over this micro-batch. Dividing makes
+            # the accumulated gradient equal to the mean over the effective batch.
+            scaler.scale(loss / gradient_accumulation_steps).backward()
 
-            # MAL and Cautious SGD inspect gradients inside optimizer.step().
-            # They must see the true gradients, not GradScaler-scaled values.
-            scaler.unscale_(opt)
-            scale_before_step = scaler.get_scale()
-            scaler.step(opt)
-            scaler.update()
-            optimizer_step_succeeded = scaler.get_scale() >= scale_before_step
+            if micro_batch_index % gradient_accumulation_steps == 0:
+                # MAL and Cautious SGD inspect gradients inside optimizer.step().
+                # They must see the true gradients, not GradScaler-scaled values.
+                scaler.unscale_(opt)
+                scale_before_step = scaler.get_scale()
+                scaler.step(opt)
+                scaler.update()
+                optimizer_step_succeeded = scaler.get_scale() >= scale_before_step
 
-            if optimizer_step_succeeded:
-                optimizer_step += 1
+                if optimizer_step_succeeded:
+                    optimizer_step += 1
 
-                if lr_scheduler:
-                    lr_scheduler.step()
+                    if lr_scheduler:
+                        lr_scheduler.step()
+
+                opt.zero_grad(set_to_none=True)
 
             n_batch = y.size(0)
             n_samples += n_batch
@@ -313,6 +328,18 @@ def main():
     lr = config.lr
     seed = config.seed
 
+    if bs >= 2 * MAX_TRAIN_MICRO_BATCH_SIZE:
+        if bs % MAX_TRAIN_MICRO_BATCH_SIZE != 0:
+            raise ValueError(
+                f"Batch size {bs} must be divisible by "
+                f"{MAX_TRAIN_MICRO_BATCH_SIZE} for gradient accumulation."
+            )
+        train_micro_batch_size = MAX_TRAIN_MICRO_BATCH_SIZE
+        gradient_accumulation_steps = bs // MAX_TRAIN_MICRO_BATCH_SIZE
+    else:
+        train_micro_batch_size = bs
+        gradient_accumulation_steps = 1
+
     amp_dtype, amp_enabled = configure_cuda_precision(
         args.amp_dtype,
         args.float32_precision,
@@ -342,7 +369,7 @@ def main():
 
     train_loader = DataLoader(
         train_ds,
-        batch_size=bs,
+        batch_size=train_micro_batch_size,
         shuffle=True,
         num_workers=NUM_WORKERS,  # torch pickles "worker_init_fn" + dataset + all its transforms and sends serialized copy to each worker
         persistent_workers=NUM_WORKERS > 0,
@@ -399,7 +426,7 @@ def main():
     else:
         raise ValueError(f"The given alignment method {align} is not valid.")
 
-    steps_per_epoch = len(train_loader)
+    steps_per_epoch = len(train_loader) // gradient_accumulation_steps
     total_steps = steps_per_epoch * args.epochs
     warmup_steps = steps_per_epoch * WARMUP_EPOCHS
 
@@ -425,6 +452,7 @@ def main():
         label_smoothing=args.label_smoothing,
         amp_dtype=amp_dtype,
         amp_enabled=amp_enabled,
+        gradient_accumulation_steps=gradient_accumulation_steps,
     )
 
     model.load_state_dict(best_model)
