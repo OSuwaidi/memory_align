@@ -9,9 +9,9 @@ import wandb
 
 ENTITY_NAME = "osuwaidi-khalifa-university"
 
-SEEDS = (77, 433, 1024)
+SEEDS = (77,)
 LRS = (0.1, 0.2, 0.4)
-BATCH_SIZES = (128, 256)
+BATCH_SIZES = (128, 256, 512)
 
 # Hyperband waits for this many logged val_acc observations before it can
 # terminate a run. Increase this if your method needs a longer warm-up.
@@ -83,10 +83,11 @@ if __name__ == "__main__":
             # Continuously sampled over [0, 1], rather than choosing
             # from a discrete list of values.
             "c": {
-                "distribution": "uniform",
-                "min": 0.0,
-                "max": 1.0,
-            },
+                "distribution": "q_uniform",
+                "min": 0.01,
+                "max": 0.99,
+                "q": 0.01,
+            }
         },
         "early_terminate": {
             "type": "hyperband",
