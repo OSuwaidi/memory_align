@@ -1,8 +1,5 @@
 # HANDOFF — Memory-ALigned (MAL) Momentum
 
-Status snapshot: **2026-07-30**, branch `main` @ `f368ab3` (clean tree, plus one
-untracked `diagnostics/` folder — see §3.4).
-
 This document is written for a fresh Claude Code session on a different machine with
 **no access to the originating conversation**. Everything load-bearing is recorded here,
 including empirical results whose generating code no longer exists (§9).
@@ -238,25 +235,7 @@ Wiring status:
 
 ## 5. Commands
 
-### 5.1 Local (workstation / Mac)
-
-```bash
-cd /Users/omar/Python/mem_align
-uv sync --all-groups
-```
-
-⚠️ **This fails on macOS.** The cu128 pin (§6) has no darwin wheels, so `uv sync` / `uv run`
-in this project abort with *"doesn't have a source distribution or wheel for the current
-platform"*. The repo env is **Linux/CUDA-only by construction**. To do CPU/MPS prototyping on
-a Mac, either use a separate throwaway venv with stock PyPI torch, or add
-`tool.uv.required-environments` / a darwin-conditional torch source to `pyproject.toml`.
-Historical local MPS work ran via `uv run --project <a separate worktree with a Mac venv>`.
-
-Ad-hoc script (note: `python` alone is not on PATH; always go through `uv run`):
-
-```bash
-uv run python curved_ravine_demo.py
-```
+### 5.1 Local
 
 Regenerate β telemetry (edit `DEVICE` in the script for cuda vs mps):
 
@@ -286,26 +265,7 @@ Single manual run (sweep params must be supplied because `main.py` reads them fr
 uv run python main.py --data cifar10 --arch resnet50 --epochs 200 --amp_dtype bfloat16
 ```
 
-### 5.3 Cluster (SLURM) — read `sync-venv.sh` before touching the venv
-
-Project root on the cluster: `/shared/b00090279/memory_align`.
-
-```bash
-./sync-venv.sh              # build venv for current uv.lock, flip .venv symlink
-./sync-venv.sh --rebuild    # force rebuild
-./sync-venv.sh --prune      # delete unreferenced old venvs (only when no jobs queued)
-sbatch wb-agents.sh         # launch a sweep agent (1 GPU, 4 CPUs, 8G)
-```
-
-The venv scheme is **immutable + versioned by `uv.lock` hash**: `.venv-<hash>/` dirs are
-`chmod a-w` after build, `.venv` is a symlink that gets atomically flipped, and running
-jobs resolve the symlink once at start. This exists because an in-place `uv sync` on shared
-NFS previously injected a mismatched CUDA stack and broke cuDNN on **every** node
-(`CUDNN_STATUS_NOT_INITIALIZED`). Both scripts preflight with a **real convolution**, not
-an import check, because a poisoned venv can import torch and report
-`cuda.is_available() == True` while every conv fails — silently burning sweep runs.
-
-### 5.4 Tests
+### 5.3 Tests
 
 There is **no test suite in the repo.** Regression tests written during development were
 lost with a temp directory (§9.6). Recreating them is a priority task (§8, item 3). The
@@ -324,11 +284,6 @@ verification pattern that was used:
 ## 6. Assumptions and constraints
 
 - **Python 3.14**, `torch==2.11.0`, `torchvision==0.26.0`, uv-managed.
-- **CUDA 12.8 only.** The cluster driver is `570.86.15` (= CUDA 12.8). Default PyPI torch
-  wheels are CUDA-13 builds and abort with *"driver is too old"*. `pyproject.toml` pins
-  torch/torchvision to the `pytorch-cu128` index, and `sync-venv.sh` **refuses to build**
-  if `uv.lock` contains CUDA-13 wheels or lacks a `+cu128` torch. Never regenerate the
-  lock without that pin.
 - Training targets CUDA exclusively — `main.py` hardcodes `DEVICE = torch.device("cuda")`.
   MPS was used only for local prototyping (via separate scripts, not `main.py`).
 - **GroupNorm, not BatchNorm** (`num_groups = min(32, C//4)`), with a CIFAR stem
@@ -343,53 +298,7 @@ verification pattern that was used:
 
 ---
 
-## 7. Known bugs, gotchas, and pitfalls
-
-**Open issues:**
-
-1. **AdamW checkpoint resume is not device-portable.** All per-parameter state
-   (`m`, `v`, `beta`, `bc_prod`, `step`) lives in `param_groups`, **not** in
-   `self.state`. PyTorch's `load_state_dict` only device-casts entries in `self.state`, so
-   save-on-GPU → `map_location="cpu"` load → resume **crashes** with a device mismatch
-   (confirmed). Same-device save/load works. Fix = move per-param state into
-   `self.state[p]` (a real refactor; affects all four classes).
-2. **`main.py` does not wire the AdamW classes** (§4).
-3. **`--nesterov` argparse flag is dead.** `main.py` takes `nest` from `config.nesterov`
-   (the sweep). The CLI flag has no `type=`, so `--nesterov False` would yield the
-   **truthy string** `"False"`. Delete the flag or give it a proper bool parser.
-4. **fp16 slightly under-runs the LR schedule.** `total_steps` assumes no skipped steps,
-   but the fp16 scaler skips a few during calibration, so cosine never quite reaches
-   `eta_min`. Harmless; nonexistent with bf16 (no scaler → no skips).
-5. **Verify TF32 actually applied.** Confirm
-   `torch.backends.cuda.matmul.fp32_precision` exists on the installed torch — assigning
-   an unknown attribute on that object can silently no-op, losing TF32 without error.
-6. **Cautious rescale shrinks small tensors.** `scale = numel / (mask.sum() + 1)` gives
-   ×10/11 ≈ 0.91 even at *full* agreement for a 10-element bias, and is unbounded when the
-   mask is nearly empty. The official implementation clamps the mask mean at `1e-3`. If
-   you adopt `scale = numel / mask.sum().clamp_min(1e-3·numel)`, change **all three**
-   call sites in one commit so SGD/NAG/AdamW comparisons stay consistent.
-7. `scaler.unscale_(opt)` in `main.py` is **redundant** (`scaler.step` unscales
-   internally). Harmless; the adjacent comment overstates its necessity.
-
-**Historical bugs — already fixed, do not reintroduce:**
-
-- `p.subcmul_(...)` — **does not exist** in PyTorch. Use `p.addcmul_(m, c, value=-lr)`.
-- `Tensor.norm(dim=<3-tuple>)` dispatches to `matrix_norm` and **raises**
-  (`dim must be a 2-tuple`). For block norms over arbitrary axes use
-  `torch.linalg.vector_norm(x, dim=dims, keepdim=True)`.
-- `torch.add(g, m, alpha=<0-dim tensor>)` forces a host sync per parameter (§2.5). Use
-  `torch.addcmul`.
-- `"beta": [tensor] * n` — list-multiply **aliases one object** across all layers. Use a
-  comprehension: `[p.new_tensor(x) for p in params]`.
-- `MAL_ADAMW` read `group["step"]` that `__init__` never created → `KeyError: 'step'` on
-  the first call (fixed in `c7297d8`).
-- Indexing a group-level float `beta` with `betas[i]` when `adaptive=False` →
-  `TypeError: 'float' object is not subscriptable`. The two layouts are deliberate:
-  per-param tensor list when adaptive, group float when static.
-
----
-
-## 8. Remaining tasks, in priority order
+## 7. Potential tasks, in priority order
 
 1. **Check the running CIFAR-100 sweep** (`FINAL_MAL_CIFAR100/ecyt5b2h`) and decide
    whether it is answering the right question. The decisive comparisons are
@@ -614,126 +523,3 @@ objectives and figure generators, the underdamping explainer figure, `axis_mal.p
    settled questions.
 
 ---
-
-## 11. CUDA / GPU work to perform next
-
-Ordered roughly by risk-reduction value. Items 1–3 are environment validation and should be
-done **before** trusting any new sweep result.
-
-### 11.1 Validate the environment (do this first, on a compute node)
-
-```bash
-python -c "
-import torch, torch.nn as nn
-print('torch', torch.__version__, '| cuda', torch.version.cuda, '| cudnn', torch.backends.cudnn.version())
-print('device', torch.cuda.get_device_name(0), '| capability', torch.cuda.get_device_capability(0))
-print('bf16 supported:', torch.cuda.is_bf16_supported())
-nn.Conv2d(3,16,3,padding=1).cuda()(torch.randn(2,3,32,32,device='cuda')); torch.cuda.synchronize()
-print('real conv OK')
-"
-```
-Expect `cuda 12.8` and a `+cu128` torch build (§6). A conv that *runs* is the only valid
-health check — an import check passes on a venv whose cuDNN cannot initialize.
-
-**Confirm TF32 actually applied** (§7.5) — a silent no-op here costs ~2× matmul throughput:
-```bash
-python -c "
-import torch
-torch.backends.cuda.matmul.fp32_precision='tf32'; torch.backends.cudnn.conv.fp32_precision='tf32'
-print('matmul:', torch.backends.cuda.matmul.fp32_precision, '| conv:', torch.backends.cudnn.conv.fp32_precision)
-"
-```
-If either attribute is missing on torch 2.11, fall back to
-`torch.backends.cuda.matmul.allow_tf32 = True` / `torch.backends.cudnn.allow_tf32 = True`.
-
-### 11.2 Prove the optimizer is still sync-free on CUDA
-
-The §2.5 property was measured on MPS. Verify on CUDA with PyTorch's built-in detector —
-any hidden device→host sync inside `step()` will raise:
-
-```python
-torch.cuda.set_sync_debug_mode("error")   # or "warn"
-# ...run ~20 training steps of each optimizer variant...
-torch.cuda.set_sync_debug_mode("default")
-```
-Note `loss.item()` in the training loop is an intentional sync — call it outside the
-guarded region, or use `"warn"` and read the stack traces. Adaptive `MAL_SGD` and both
-AdamW classes are the ones to check (they carry per-tensor tensor state).
-
-### 11.3 Establish the per-step overhead budget
-
-`step()` is a **Python loop over ~62 parameter tensors**, each issuing ~8–12 small kernels
-(plus 3 reductions for the alignment). At small batch sizes this launch overhead can be a
-measurable fraction of step time — and it is *exactly* the regime the batch-size sweep
-explores, so an unmeasured overhead will be misread as an optimizer property.
-
-```python
-import torch
-def bench(opt, model, x, y, n=200):
-    for _ in range(20):  # warmup
-        opt.zero_grad(set_to_none=True); torch.nn.functional.cross_entropy(model(x), y).backward(); opt.step()
-    torch.cuda.synchronize(); s, e = torch.cuda.Event(True), torch.cuda.Event(True); s.record()
-    for _ in range(n):
-        opt.zero_grad(set_to_none=True); torch.nn.functional.cross_entropy(model(x), y).backward(); opt.step()
-    e.record(); torch.cuda.synchronize(); return s.elapsed_time(e)/n
-```
-Compare `MAL_SGD(adaptive=True)` against `torch.optim.SGD(..., foreach=True)` at bs 64 and
-bs 2048. Report the ratio in the paper — reviewers ask for wall-clock, not just step counts.
-
-**If overhead is material**, the optimization path is:
-- batch the elementwise work with `torch._foreach_mul_` / `_foreach_add_` (the per-tensor
-  reductions for the cosine cannot be fused as easily, but `torch._foreach_norm` covers the
-  norms);
-- consider CUDA graphs for the update (requires static shapes and no host syncs — §11.2 is
-  a prerequisite);
-- `torch.compile` on the *model* is orthogonal and safe; compiling the custom `step()` is
-  not worth it until the above is exhausted.
-
-Also worth a one-line experiment: `channels_last` memory format for the ResNet + AMP
-typically gives a free speedup on Ampere+.
-
-### 11.4 Multi-GPU correctness (needed before the LLM track)
-
-Two non-obvious facts to preserve:
-
-- **DDP is correct as-is and needs no extra communication.** DDP all-reduces gradients
-  during `backward()`, so by the time `step()` runs, `p.grad` is already the globally
-  averaged gradient. The alignment cosine is therefore computed on the true global gradient,
-  and every rank derives the *same* β from the *same* inputs — the adaptive state stays in
-  sync across ranks without any explicit synchronization. Do not add an all-reduce of β.
-- **FSDP / ZeRO optimizer-state sharding will break.** All per-parameter state lives in
-  `param_groups`, not `self.state` (§7.1), so sharding machinery will neither shard nor
-  restore `momentum`/`beta`/`v`/`bc_prod`/`step`. Fixing §7.1 (move state into
-  `self.state[p]`) is a **hard prerequisite** for FSDP, and for resuming a preemptible
-  multi-node run. Under FSDP the gate would additionally operate on *parameter shards*
-  rather than whole tensors, changing the alignment granularity — decide deliberately
-  whether that is acceptable (it is closer to the per-output-unit variant of §8.5) and
-  document it.
-
-### 11.5 Scale-up experiments (the actual science on GPU)
-
-1. **Batch-size × lr grid with the static-β ≈ 0.80 control** (§8.1–8.2). The
-   noise-adaptivity hypothesis predicts MAL's edge **grows at bs 64 and shrinks at
-   bs 2048**; Tier B (§9.3) already showed the ranking flipping at bs 512 on a small CNN.
-   This is the single most decisive vision experiment left.
-2. **β telemetry at scale** (§8.7): port `diagnostics/beta_diag.py` to
-   `DEVICE="cuda"`, log per-step histograms to W&B (§10.2). Confirm at ResNet-50/CIFAR-100
-   scale that (a) the mean still self-regulates near 0.80, (b) the β > 0.9 band is still
-   used ~⅓ of the time, and (c) β responds to batch size as predicted. The
-   per-layer β heatmap over a full 200-epoch cosine run is the paper's mechanism figure.
-3. **CIFAR-100 / ResNet-50 confirmation** of the Tier-C conclusion (`MAL_ada` matches tuned
-   SGD's peak and wins beyond it) at full 200-epoch scale with augmentation.
-4. **Then** the transformer track: wire the AdamW classes (§8.4), validate on ViT/CIFAR
-   with `betas=(0.9, 0.999)`, then LLM pretraining with `betas=(0.9, 0.95)`. For LLMs also
-   handle: tiny 1-D params (`align_1d`), and **embedding tables with row-sparse gradients**
-   — a whole-tensor cosine there is dominated by inactive rows, so per-row (per-output-unit)
-   gating is likely necessary rather than optional.
-
-### 11.6 Determinism and hygiene for publishable runs
-
-`set_seed()` seeds python/numpy/torch/cuda, and DataLoader workers get
-`set_worker_seed`, but cuDNN autotune is still nondeterministic. For the final
-paper-table runs either accept it and report seed variance (3 seeds are already in the
-sweep), or set `torch.use_deterministic_algorithms(True)` +
-`CUBLAS_WORKSPACE_CONFIG=:4096:8` and expect a slowdown. Do not mix deterministic and
-nondeterministic runs within one reported table.
