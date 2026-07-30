@@ -12,7 +12,7 @@
 set -euo pipefail
 
 PROJECT=/shared/b00090279/memory_align
-SWEEP=osuwaidi-khalifa-university/FINAL_MAL_CIFAR100/ecyt5b2h
+SWEEP=osuwaidi-khalifa-university/FINAL_MAL_CIFAR100/ug55xo6y
 
 cd "$PROJECT"
 
