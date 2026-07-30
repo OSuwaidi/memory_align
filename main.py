@@ -353,7 +353,7 @@ def main():
         pretrained=False,
         num_classes=len(raw_ds.classes),
         drop_rate=0.0,
-        norm_layer=lambda n_channels: nn.GroupNorm(num_groups=min(32, n_channels // 4), num_channels=n_channels),
+        norm_layer=lambda n_channels, **kwargs: nn.GroupNorm(num_groups=min(32, n_channels // 4), num_channels=n_channels),
     )
     model.conv1 = nn.Conv2d(3, model.conv1.out_channels, 3, bias=model.conv1.bias is not None)
     model.maxpool = nn.Identity()
