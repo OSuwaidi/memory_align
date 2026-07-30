@@ -1,13 +1,17 @@
-import wandb
 import argparse
 
-# To initialize W&B sweep config: $ uv run create_sweep.py <main.py> --data <___> --sweep_name <___> --project_name <___> --> prints <entity/project/sweep/sweep_id>
-# To assign/tag a run agent to a sweep: $ CUDA_VISIBLE_DEVICES=0 uv run wandb agent --forward-signals <entity/project/sweep_id>
+import wandb
+
+# To initialize W&B sweep config:
+# $ uv run create_sweep.py <main.py> --data <___> --sweep_name <___> --project_name <___> --> prints <entity/project/sweep/sweep_id>
+# To assign/tag a run agent to a sweep:
+# $ CUDA_VISIBLE_DEVICES=0 uv run wandb agent --forward-signals <entity/project/sweep_id>
 
 ENTITY_NAME = "osuwaidi-khalifa-university"
 SEEDS = (77, 433, 1024)
-LRs = (0.025, 0.05, 0.1, 0.2, 0.4, 0.8, 1.0)
-BATCH_SIZES = (64, 128, 256, 512, 1024, 2048)
+LRs = (0.025, 0.05, 0.1, 0.2, 0.4, 0.8, 1.0,)
+BATCH_SIZES = (64, 128, 256, 512, 1024, 2048, 4096)
+C_VALS = (0.1, 0.3)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create a dynamic W&B Sweep configuration.")
@@ -36,10 +40,11 @@ if __name__ == "__main__":
         "parameters": {
             "align": {
                 "values": (
-                    "MAL",
+                    "MAL_ada",
                 )
             },
-            "nesterov": {"values": (False,)},
+            "nesterov": {"values": (True, False)},
+            "c": {"values": C_VALS},
             "batch_size": {"values": BATCH_SIZES},
             "lr": {"values": LRs},
             "seed": {"values": SEEDS},
@@ -60,9 +65,7 @@ if __name__ == "__main__":
         sweep=sweep_configuration,
         project=args.project_name,
     )
-    print(
-        f"To run a W&B agent against the sweep: $ uv run wandb agent --forward-signals {ENTITY_NAME}/{args.project_name}/{sweep_id}"
-    )
+    print(f"To run a W&B agent against the sweep: $ uv run wandb agent --forward-signals {ENTITY_NAME}/{args.project_name}/{sweep_id}")
 
     # wandb.agent(
     #         sweep_id=sweep_id,

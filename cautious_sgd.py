@@ -7,13 +7,13 @@ from torch.optim import Optimizer
 
 class CAUTIOUS_SGD(Optimizer):
     def __init__(
-            self,
-            params: Iterable[torch.nn.Parameter],
-            lr: float = 0.1,
-            beta: float = 0.9,
-            weight_decay: float = 0.0,
-            nesterov: bool=False,
-            ) -> None:
+        self,
+        params: Iterable[torch.nn.Parameter],
+        lr: float = 0.1,
+        beta: float = 0.9,
+        weight_decay: float = 0.0,
+        nesterov: bool = False,
+    ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if not 0.0 <= beta < 1.0:
@@ -46,28 +46,28 @@ class CAUTIOUS_SGD(Optimizer):
 
         if "cuda" not in device.type:
             warnings.warn(
-                    f"Model parameters' device is not CUDA, rather is {device.type}!",
-                    stacklevel=2,
-                    )
+                f"Model parameters' device is not CUDA, rather is {device.type}!",
+                stacklevel=2,
+            )
 
         optim_groups = []
 
         if no_decay_params:
             optim_groups.append(
-                    {
-                        "params": no_decay_params,
-                        "momentum": no_decay_momentum,
-                        "weight_decay": 0.0,
-                        }
-                    )
+                {
+                    "params": no_decay_params,
+                    "momentum": no_decay_momentum,
+                    "weight_decay": 0.0,
+                }
+            )
         if decay_params:
             optim_groups.append(
-                    {
-                        "params": decay_params,
-                        "momentum": decay_momentum,
-                        "weight_decay": weight_decay,
-                        },
-                    )
+                {
+                    "params": decay_params,
+                    "momentum": decay_momentum,
+                    "weight_decay": weight_decay,
+                },
+            )
 
         defaults = dict(lr=lr, beta=beta, nesterov=nesterov)  # shared across all optim/param groups
         super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
@@ -113,13 +113,13 @@ class CAUTIOUS_ADAMW(Optimizer):
     """
 
     def __init__(
-            self,
-            params: Iterable[torch.nn.Parameter],
-            lr: float = 1e-3,
-            betas: tuple[float, float] = (0.9, 0.999),
-            eps: float = 1e-8,
-            weight_decay: float = 0.0,
-            ) -> None:
+        self,
+        params: Iterable[torch.nn.Parameter],
+        lr: float = 1e-3,
+        betas: tuple[float, float] = (0.9, 0.999),
+        eps: float = 1e-8,
+        weight_decay: float = 0.0,
+    ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if not 0.0 <= betas[0] < 1.0:
@@ -154,22 +154,22 @@ class CAUTIOUS_ADAMW(Optimizer):
 
         if "cuda" not in device.type:
             warnings.warn(
-                    f"Model parameters' device is not CUDA, rather is {device.type}!",
-                    stacklevel=2,
-                    )
+                f"Model parameters' device is not CUDA, rather is {device.type}!",
+                stacklevel=2,
+            )
 
         optim_groups = []
 
         for group_params, group_wd in ((no_decay_params, 0.0), (decay_params, weight_decay)):
             if group_params:
                 optim_groups.append(
-                        {
-                            "params": group_params,
-                            "m": [torch.zeros_like(p) for p in group_params],
-                            "v": [torch.zeros_like(p) for p in group_params],
-                            "weight_decay": group_wd,
-                            }
-                        )
+                    {
+                        "params": group_params,
+                        "m": [torch.zeros_like(p) for p in group_params],
+                        "v": [torch.zeros_like(p) for p in group_params],
+                        "weight_decay": group_wd,
+                    }
+                )
 
         defaults = dict(lr=lr)  # shared across all optim/param groups
         super().__init__(optim_groups, defaults)
@@ -177,8 +177,8 @@ class CAUTIOUS_ADAMW(Optimizer):
     @torch.no_grad()
     def step(self):
         self.t += 1
-        bc1 = 1.0 - self.beta1 ** self.t
-        bc2_sqrt = (1.0 - self.beta2 ** self.t) ** 0.5
+        bc1 = 1.0 - self.beta1**self.t
+        bc2_sqrt = (1.0 - self.beta2**self.t) ** 0.5
 
         for group in self.param_groups:
             lr = group["lr"]

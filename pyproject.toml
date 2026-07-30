@@ -17,6 +17,9 @@ dev = [
     "wandb>=0.28.0",
 ]
 
+[tool.ruff]
+line-length = 170
+
 # This machine's NVIDIA driver is 570.86.15 == CUDA 12.8. Default PyPI torch
 # wheels are CUDA 13 builds and abort with "driver is too old", so pin torch
 # to PyTorch's cu128 index to match the driver exactly.
