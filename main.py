@@ -294,7 +294,7 @@ def main():
         test_ds,
         batch_size=1000,
         shuffle=False,
-        num_workers=4,
+        num_workers=1,
         persistent_workers=False,
         pin_memory=True,
     )
@@ -384,7 +384,7 @@ def main():
         val_ds,
         batch_size=1000,
         shuffle=False,
-        num_workers=4,
+        num_workers=1,
         persistent_workers=False,
         pin_memory=True,
     )
