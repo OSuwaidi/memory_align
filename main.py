@@ -14,6 +14,7 @@ from torch.optim import SGD
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import datasets
+from torchvision.models import resnet18, resnet50
 from torchvision.transforms import v2
 from tqdm.auto import tqdm, trange
 
@@ -26,7 +27,7 @@ from mal_sgd import MAL_SGD
 DEVICE = torch.device("cuda")
 WARMUP_EPOCHS = 5
 NUM_WORKERS = cpu_count() // 2
-MAX_TRAIN_MICRO_BATCH_SIZE = 512
+MAX_MICRO_BATCH_SIZE = 512
 
 
 def configure_cuda_precision(
@@ -35,7 +36,6 @@ def configure_cuda_precision(
 ) -> tuple[torch.dtype, bool]:
     """Resolve AMP settings and enable TF32 for residual FP32 CUDA operations."""
     amp_dtypes = {
-        "float16": torch.float16,
         "bfloat16": torch.bfloat16,
         "float32": torch.float32,
     }
@@ -43,7 +43,7 @@ def configure_cuda_precision(
     amp_enabled = amp_dtype != torch.float32
 
     if amp_dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
-        raise RuntimeError("This CUDA device does not support bfloat16 AMP; use --amp_dtype float16.")
+        raise RuntimeError("This CUDA device does not support bfloat16 AMP; use --amp_dtype float32.")
 
     # These are the post-PyTorch-2.9 replacements for the deprecated
     # cuda.matmul.allow_tf32 and cudnn.allow_tf32 flags.
@@ -81,22 +81,12 @@ def train_val_model(
     label_smoothing=0.0,
     amp_dtype=torch.bfloat16,
     amp_enabled=True,
-    gradient_accumulation_steps=1,
+    grad_accumulation_steps=1,
 ):
     best_val_acc = 0.0
     best_train_loss = 0.0
     best_model: dict[str, Any] = {}
     best_val_epoch = 0
-    # run.define_metric("epoch")
-    # run.define_metric("train_loss", step_metric="epoch")
-    # run.define_metric("val_acc", step_metric="epoch")
-    # run.define_metric("optimizer_step")
-    # run.define_metric("mal_beta/*", step_metric="optimizer_step")
-
-    scaler = torch.amp.GradScaler(
-        DEVICE.type,
-        enabled=amp_dtype == torch.float16,
-    )
 
     print(f"Starting training on {next(model.parameters()).device} with {'AMP ' + str(amp_dtype) if amp_enabled else 'float32'}")
     optimizer_step = 0
@@ -106,7 +96,7 @@ def train_val_model(
         n_samples = 0
         # Match drop_last=True at the effective-batch level: incomplete groups of
         # micro-batches must not produce a smaller optimizer update.
-        micro_batches_per_epoch = (len(train_loader) // gradient_accumulation_steps) * gradient_accumulation_steps
+        micro_batches_per_epoch = (len(train_loader) // grad_accumulation_steps) * grad_accumulation_steps
         opt.zero_grad(set_to_none=True)
         for micro_batch_index, (x, y) in enumerate(train_loader, start=1):
             if micro_batch_index > micro_batches_per_epoch:
@@ -124,24 +114,14 @@ def train_val_model(
                     label_smoothing=label_smoothing,
                 )
 
-            # cross_entropy returns a mean over this micro-batch. Dividing makes
-            # the accumulated gradient equal to the mean over the effective batch.
-            scaler.scale(loss / gradient_accumulation_steps).backward()
+            (loss / grad_accumulation_steps).backward()
 
-            if micro_batch_index % gradient_accumulation_steps == 0:
-                # MAL and Cautious SGD inspect gradients inside optimizer.step().
-                # They must see the true gradients, not GradScaler-scaled values.
-                scaler.unscale_(opt)
-                scale_before_step = scaler.get_scale()
-                scaler.step(opt)
-                scaler.update()
-                optimizer_step_succeeded = scaler.get_scale() >= scale_before_step
+            if micro_batch_index % grad_accumulation_steps == 0:
+                opt.step()
+                optimizer_step += 1
 
-                if optimizer_step_succeeded:
-                    optimizer_step += 1
-
-                    if lr_scheduler:
-                        lr_scheduler.step()
+                if lr_scheduler:
+                    lr_scheduler.step()
 
                 opt.zero_grad(set_to_none=True)
 
@@ -229,9 +209,9 @@ def main():
     parser.add_argument("--nesterov", default=False)
     parser.add_argument(
         "--amp_dtype",
-        choices=("float16", "bfloat16", "float32"),
+        choices=("bfloat16", "float32"),
         default="bfloat16",
-        help="CUDA autocast dtype; float32 disables AMP. bfloat16 (Ampere+) needs no GradScaler and is the stable default; use float16 only on pre-Ampere GPUs.",
+        help="CUDA autocast dtype; defaults to bfloat16. float32 disables AMP.",
     )
     parser.add_argument(
         "--float32_precision",
@@ -304,7 +284,7 @@ def main():
     # Start W&B Sweeps (W&B Sweeps injects the configs automatically):
     run = wandb.init(  # the "entity" is known from the run command, and "project" is inherited from the sweep config
         job_type="train",
-        tags=("moving avg",),
+        tags=("per_output",),
         config={
             "model": args.arch,
             "epochs": args.epochs,
@@ -316,6 +296,8 @@ def main():
         },
     )  # individual runs are forced into the parent sweep's project name
 
+    run.define_metric("*", step_metric="epoch")  # let epoch be the default x-axis for all metrics
+
     config = run.config
 
     align = config.align
@@ -325,14 +307,14 @@ def main():
     lr = config.lr
     seed = config.seed
 
-    if bs >= 2 * MAX_TRAIN_MICRO_BATCH_SIZE:
-        if bs % MAX_TRAIN_MICRO_BATCH_SIZE != 0:
-            raise ValueError(f"Batch size {bs} must be divisible by {MAX_TRAIN_MICRO_BATCH_SIZE} for gradient accumulation.")
-        train_micro_batch_size = MAX_TRAIN_MICRO_BATCH_SIZE
-        gradient_accumulation_steps = bs // MAX_TRAIN_MICRO_BATCH_SIZE
+    if bs >= 2 * MAX_MICRO_BATCH_SIZE:
+        if bs % MAX_MICRO_BATCH_SIZE != 0:
+            raise ValueError(f"Batch size {bs} must be divisible by {MAX_MICRO_BATCH_SIZE} for gradient accumulation.")
+        micro_batch_size = MAX_MICRO_BATCH_SIZE
+        grad_accumulation_steps = bs // MAX_MICRO_BATCH_SIZE
     else:
-        train_micro_batch_size = bs
-        gradient_accumulation_steps = 1
+        micro_batch_size = bs
+        grad_accumulation_steps = 1
 
     amp_dtype, amp_enabled = configure_cuda_precision(
         args.amp_dtype,
@@ -343,15 +325,22 @@ def main():
 
     set_seed(seed)
 
-    model = timm.create_model(
-        args.arch,
-        pretrained=False,
-        num_classes=len(raw_ds.classes),
-        drop_rate=0.0,
-        norm_layer=lambda n_channels, **kwargs: nn.GroupNorm(num_groups=min(32, n_channels // 4), num_channels=n_channels),
+    if args.arch == "resnet18":
+        model = resnet18
+    elif args.arch == "resnet50":
+        model = resnet50
+    else:
+        raise ValueError(f'Architecture "{model}" is not defined.')
+
+    model = model(norm_layer=lambda n_channels: nn.GroupNorm(num_groups=min(32, n_channels // 4), num_channels=n_channels))
+    model.conv1 = nn.Conv2d(3, model.conv1.out_channels, 3, bias=model.conv1.bias is not None, padding=1)
+    nn.init.kaiming_normal_(
+        model.conv1.weight,
+        mode="fan_out",
+        nonlinearity="relu",
     )
-    model.conv1 = nn.Conv2d(3, model.conv1.out_channels, 3, bias=model.conv1.bias is not None)
     model.maxpool = nn.Identity()
+    model.fc = nn.Linear(model.fc.in_features, len(raw_ds.classes), bias=True)
 
     model.to(DEVICE)
 
@@ -365,7 +354,7 @@ def main():
 
     train_loader = DataLoader(
         train_ds,
-        batch_size=train_micro_batch_size,
+        batch_size=micro_batch_size,
         shuffle=True,
         num_workers=NUM_WORKERS,  # torch pickles "worker_init_fn" + dataset + all its transforms and sends serialized copy to each worker
         persistent_workers=NUM_WORKERS > 0,
@@ -412,9 +401,9 @@ def main():
         )
 
     else:
-        raise ValueError(f"The given alignment method {align} is not valid.")
+        raise ValueError(f'The given alignment method "{align}" is not valid')
 
-    steps_per_epoch = len(train_loader) // gradient_accumulation_steps
+    steps_per_epoch = len(train_loader) // grad_accumulation_steps
     total_steps = steps_per_epoch * args.epochs
     warmup_steps = steps_per_epoch * WARMUP_EPOCHS
 
@@ -440,7 +429,7 @@ def main():
         label_smoothing=args.label_smoothing,
         amp_dtype=amp_dtype,
         amp_enabled=amp_enabled,
-        gradient_accumulation_steps=gradient_accumulation_steps,
+        grad_accumulation_steps=grad_accumulation_steps,
     )
 
     model.load_state_dict(best_model)
