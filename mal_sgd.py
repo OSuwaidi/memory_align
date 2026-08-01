@@ -145,10 +145,7 @@ class MAL_SGD(Optimizer):
 
                 if g.ndim > 1:
                     dims = tuple(range(1, g.ndim))
-                    denom = (
-                        torch.linalg.vector_norm(m_hat, dim=dims, keepdim=True)
-                        * torch.linalg.vector_norm(g, dim=dims, keepdim=True)
-                    ).clamp_min(1e-8)
+                    denom = (torch.linalg.vector_norm(m_hat, dim=dims, keepdim=True) * torch.linalg.vector_norm(g, dim=dims, keepdim=True)).clamp_min(1e-8)
                     cosine_sim = ((m_hat * g).sum(dims, keepdim=True) / denom).clamp(-1.0, 1.0)
                 else:
                     denom = (m_hat.norm() * g.norm()).clamp_min(1e-8)

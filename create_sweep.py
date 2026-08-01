@@ -9,7 +9,15 @@ import wandb
 
 ENTITY_NAME = "osuwaidi-khalifa-university"
 SEEDS = (77, 433, 1024)
-LRs = (0.025, 0.05, 0.1, 0.2, 0.4, 0.8, 1.0,)
+LRs = (
+    0.025,
+    0.05,
+    0.1,
+    0.2,
+    0.4,
+    0.8,
+    1.0,
+)
 BATCH_SIZES = (64, 128, 256, 512, 1024, 2048, 4096)
 C_VALS = (0.1, 0.3)
 
@@ -38,11 +46,7 @@ if __name__ == "__main__":
             "goal": "maximize",
         },
         "parameters": {
-            "align": {
-                "values": (
-                    "MAL_ada",
-                )
-            },
+            "align": {"values": ("MAL_ada",)},
             "nesterov": {"values": (True, False)},
             "c": {"values": C_VALS},
             "batch_size": {"values": BATCH_SIZES},

@@ -106,9 +106,7 @@ def train_val_model(
         n_samples = 0
         # Match drop_last=True at the effective-batch level: incomplete groups of
         # micro-batches must not produce a smaller optimizer update.
-        micro_batches_per_epoch = (
-            len(train_loader) // gradient_accumulation_steps
-        ) * gradient_accumulation_steps
+        micro_batches_per_epoch = (len(train_loader) // gradient_accumulation_steps) * gradient_accumulation_steps
         opt.zero_grad(set_to_none=True)
         for micro_batch_index, (x, y) in enumerate(train_loader, start=1):
             if micro_batch_index > micro_batches_per_epoch:
@@ -329,10 +327,7 @@ def main():
 
     if bs >= 2 * MAX_TRAIN_MICRO_BATCH_SIZE:
         if bs % MAX_TRAIN_MICRO_BATCH_SIZE != 0:
-            raise ValueError(
-                f"Batch size {bs} must be divisible by "
-                f"{MAX_TRAIN_MICRO_BATCH_SIZE} for gradient accumulation."
-            )
+            raise ValueError(f"Batch size {bs} must be divisible by {MAX_TRAIN_MICRO_BATCH_SIZE} for gradient accumulation.")
         train_micro_batch_size = MAX_TRAIN_MICRO_BATCH_SIZE
         gradient_accumulation_steps = bs // MAX_TRAIN_MICRO_BATCH_SIZE
     else:
@@ -395,15 +390,7 @@ def main():
         else:
             adaptive = False
 
-        optimizer = MAL_SGD(
-            model.parameters(),
-            lr=lr,
-            weight_decay=args.weight_decay,
-            beta=args.beta,
-            adaptive=adaptive,
-            nesterov=nest,
-            c=c
-        )
+        optimizer = MAL_SGD(model.parameters(), lr=lr, weight_decay=args.weight_decay, beta=args.beta, adaptive=adaptive, nesterov=nest, c=c)
 
     elif align == "none":
         optimizer = SGD(
