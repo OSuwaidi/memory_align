@@ -49,7 +49,6 @@ class MAL_SGD(Optimizer):
         lr: float = 0.1,
         beta: float = 0.9,
         weight_decay: float = 0.0,
-        adaptive: bool = True,
         c: float = 1.0,
         nesterov: bool = False,
     ) -> None:
@@ -62,25 +61,35 @@ class MAL_SGD(Optimizer):
         if nesterov and beta <= 0.0:
             raise ValueError("Nesterov momentum requires a positive beta")
 
-        self.adaptive = adaptive
         self.c = c
 
         decay_params: list[torch.nn.Parameter] = []
         decay_momentum = []
+        decay_beta = []
 
         no_decay_params: list[torch.nn.Parameter] = []
         no_decay_momentum = []
 
-        for p in params:
-            if not p.requires_grad:
-                continue
-            # Exclude biases and 1D normalization parameters from weight decay
-            if weight_decay == 0 or p.ndim <= 1:
+        if weight_decay == 0:
+            for p in params:
+                if not p.requires_grad:
+                    continue
+
                 no_decay_params.append(p)
                 no_decay_momentum.append(torch.zeros_like(p))
-            else:
-                decay_params.append(p)
-                decay_momentum.append(torch.zeros_like(p))
+
+        else:
+            for p in params:
+                if not p.requires_grad:
+                    continue
+                # Exclude biases and 1D normalization parameters from weight decay
+                if p.ndim <= 1:
+                    no_decay_params.append(p)
+                    no_decay_momentum.append(torch.zeros_like(p))
+                else:
+                    decay_params.append(p)
+                    decay_momentum.append(torch.zeros_like(p))
+                    decay_beta.append(torch.full((p.shape[0], 1), beta))
 
         if not decay_params and not no_decay_params:
             raise ValueError("SGD received no trainable parameters.")
@@ -93,7 +102,7 @@ class MAL_SGD(Optimizer):
                     "params": no_decay_params,
                     "momentum": no_decay_momentum,
                     "weight_decay": 0.0,
-                    "beta": [p.new_tensor(0.9) for p in no_decay_params] if adaptive else beta,
+                    "beta": [p.new_tensor(0.9) for p in no_decay_params]
                 }
             )
         if decay_params:
@@ -102,7 +111,7 @@ class MAL_SGD(Optimizer):
                     "params": decay_params,
                     "momentum": decay_momentum,
                     "weight_decay": weight_decay,
-                    "beta": [p.new_tensor(0.9) for p in decay_params] if adaptive else beta,
+                    "beta": decay_beta
                 },
             )
 
@@ -134,14 +143,9 @@ class MAL_SGD(Optimizer):
                     # Coupled weight decay without mutating "p.grad" in-place.
                     g = g.add(p, alpha=wd)
 
-                    # Probe the ordinary momentum candidate before committing the MAL edit.
-                if self.adaptive:
-                    beta_probe = group_beta[i]  # per-param adaptive scalar tensor
-                    m_hat = torch.addcmul(g, m, beta_probe)
-                else:
-                    # group-level constant scalar float
-                    beta_probe = group_beta
-                    m_hat = torch.add(g, m, alpha=beta_probe)
+                # Probe the ordinary momentum candidate before committing the MAL edit.
+                beta_probe = group_beta[i]  # per-param adaptive scalar tensor
+                m_hat = torch.addcmul(g, m, beta_probe)
 
                 if g.ndim > 1:
                     dims = tuple(range(1, g.ndim))
@@ -155,10 +159,7 @@ class MAL_SGD(Optimizer):
                 retention = 1.0 - d  # per-output-unit memory-aligned retention
 
                 # Effective momentum coefficient for this step
-                if self.adaptive:
-                    beta = beta_probe.lerp_(retention, weight=self.c)
-                else:
-                    beta = beta_probe * retention
+                beta = beta_probe.lerp_(retention, weight=self.c)
 
                 m.mul_(beta).add_(g)
 
