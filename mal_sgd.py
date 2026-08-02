@@ -7,13 +7,41 @@ from torch.optim import Optimizer
 def _get_cosine_sim(
     candidate: torch.Tensor,
     gradient: torch.Tensor,
+    *,
+    per_output: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return scale-stable cosine(candidate, gradient) and whether g is nonzero.
+    """Return cosine(candidate, gradient) and whether ``g`` is nonzero.
 
-    A zero fresh gradient has no direction, so callers use ``has_gradient`` to retain their prior coefficient.
+    With ``per_output=True``, tensors with two or more dimensions are split along
+    dimension 0.  Linear weights therefore reduce over ``in_features`` and
+    ConvNd weights reduce over ``(in_channels / groups, *kernel_size)``.  The
+    returned tensors have shape ``(out, 1, ..., 1)`` so they broadcast over the
+    corresponding weight blocks.  One-dimensional parameters are intentionally
+    treated as a single vector; per-coordinate cosine would degenerate to sign
+    gating.
+
+    A zero fresh gradient has no direction, so callers use ``has_gradient`` to
+    retain the prior coefficient for that block.
     """
-    candidate_vec = candidate.view(-1)
-    gradient_vec = gradient.view(-1)
+
+    if per_output and gradient.ndim > 1:
+        reduce_dims = tuple(range(1, gradient.ndim))
+        gradient_norm = torch.linalg.vector_norm(
+            gradient,
+            dim=reduce_dims,
+            keepdim=True,
+        )
+        candidate_norm = torch.linalg.vector_norm(
+            candidate,
+            dim=reduce_dims,
+            keepdim=True,
+        )
+        denominator = (candidate_norm * gradient_norm).clamp_min(1e-8)
+        cosine = ((candidate * gradient).sum(dim=reduce_dims, keepdim=True) / denominator).clamp(-1.0, 1.0)
+        return cosine, gradient_norm > 0.0
+
+    candidate_vec = candidate.flatten()
+    gradient_vec = gradient.flatten()
     gradient_norm = torch.linalg.vector_norm(gradient_vec)
 
     cosine = torch.cosine_similarity(
@@ -34,11 +62,21 @@ class MAL_SGD(Optimizer):
 
     :math:`\hat{m_t} = \beta_{probe} \, m_t + g_t`
 
-    and maps its cosine with :math:`g_t` to retention :math:`r = (1 + \text{cosine}) / 2`.
-    Static MAL uses :math:`c = \beta \, r`. Adaptive MAL uses :math:`c = r` and stores it
-    as the next probe coefficient (:math:`\beta_{probe} = c`). The committed state is :math:`m_{t+1} \gets c \, m_t + g_t \,`.
+    and maps its cosine with :math:`g_t` to retention :math:`r_t = (1 +
+    \text{cosine}) / 2`. Static MAL uses effective coefficient :math:`q_t =
+    \beta \, r_t`. Adaptive MAL treats :math:`r_t` as the target, interpolates
+    :math:`q_t = (1-a)\beta_{probe} + a r_t` using adaptation rate ``a=c``, and
+    stores :math:`q_t` as the next probe coefficient. The committed state is
+    :math:`m_{t+1} \gets q_t \, m_t + g_t`. Thus, ``c=1`` is the direct adaptive
+    rule and smaller ``c`` values temporally smooth beta.
 
-    Under Nesterov, the applied direction is :math:`g_t + c \, m_t` using the *updated*
+    By default, alignment is measured independently for every output block.  For
+    a Conv2d weight with shape ``(out_channels, in_channels / groups, kh, kw)``,
+    this produces ``out_channels`` coefficients with shape ``(out_channels, 1,
+    1, 1)``.  Set ``per_output=False`` for the original one-coefficient-per-tensor
+    MAL rule.  Parameters with at most one dimension always use one coefficient.
+
+    Under Nesterov, the applied direction is :math:`g_t + q_t \, m_t` using the *updated*
     buffer. Thus, static MAL exactly recovers PyTorch SGDN whenever ``r == 1``;
     adaptive MAL is deliberately a time-varying-coefficient Nesterov variant.
     """
@@ -51,6 +89,7 @@ class MAL_SGD(Optimizer):
         weight_decay: float = 0.0,
         c: float = 1.0,
         nesterov: bool = False,
+        per_output: bool = True,
     ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -58,41 +97,40 @@ class MAL_SGD(Optimizer):
             raise ValueError(f"Invalid beta value: {beta}")
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
+        if not 0.0 <= c <= 1.0:
+            raise ValueError(f"Invalid adaptation rate c: {c}")
         if nesterov and beta <= 0.0:
             raise ValueError("Nesterov momentum requires a positive beta")
 
         self.c = c
+        self.per_output = per_output
 
         decay_params: list[torch.nn.Parameter] = []
         decay_momentum = []
-        decay_beta = []
-
         no_decay_params: list[torch.nn.Parameter] = []
         no_decay_momentum = []
 
-        if weight_decay == 0:
-            for p in params:
-                if not p.requires_grad:
-                    continue
-
+        for p in params:
+            if not p.requires_grad:
+                continue
+            if weight_decay == 0.0 or p.ndim <= 1:
                 no_decay_params.append(p)
                 no_decay_momentum.append(torch.zeros_like(p))
-
-        else:
-            for p in params:
-                if not p.requires_grad:
-                    continue
-                # Exclude biases and 1D normalization parameters from weight decay
-                if p.ndim <= 1:
-                    no_decay_params.append(p)
-                    no_decay_momentum.append(torch.zeros_like(p))
-                else:
-                    decay_params.append(p)
-                    decay_momentum.append(torch.zeros_like(p))
-                    decay_beta.append(torch.full((p.shape[0], 1), beta))
+            else:
+                decay_params.append(p)
+                decay_momentum.append(torch.zeros_like(p))
 
         if not decay_params and not no_decay_params:
             raise ValueError("SGD received no trainable parameters.")
+
+        def initial_betas(group_params: list[torch.nn.Parameter]):
+            return [
+                p.new_full(
+                    (p.shape[0],) + (1,) * (p.ndim - 1) if per_output and p.ndim > 1 else (),
+                    beta,
+                )
+                for p in group_params
+            ]
 
         optim_groups = []
 
@@ -102,7 +140,7 @@ class MAL_SGD(Optimizer):
                     "params": no_decay_params,
                     "momentum": no_decay_momentum,
                     "weight_decay": 0.0,
-                    "beta": [p.new_tensor(0.9) for p in no_decay_params]
+                    "beta": initial_betas(no_decay_params),
                 }
             )
         if decay_params:
@@ -111,7 +149,7 @@ class MAL_SGD(Optimizer):
                     "params": decay_params,
                     "momentum": decay_momentum,
                     "weight_decay": weight_decay,
-                    "beta": decay_beta
+                    "beta": initial_betas(decay_params),
                 },
             )
 
@@ -144,22 +182,19 @@ class MAL_SGD(Optimizer):
                     g = g.add(p, alpha=wd)
 
                 # Probe the ordinary momentum candidate before committing the MAL edit.
-                beta_probe = group_beta[i]  # per-param adaptive scalar tensor
+                beta_probe = group_beta[i]
                 m_hat = torch.addcmul(g, m, beta_probe)
 
-                if g.ndim > 1:
-                    dims = tuple(range(1, g.ndim))
-                    denom = (torch.linalg.vector_norm(m_hat, dim=dims, keepdim=True) * torch.linalg.vector_norm(g, dim=dims, keepdim=True)).clamp_min(1e-8)
-                    cosine_sim = ((m_hat * g).sum(dims, keepdim=True) / denom).clamp(-1.0, 1.0)
-                else:
-                    denom = (m_hat.norm() * g.norm()).clamp_min(1e-8)
-                    cosine_sim = ((m_hat.view(-1) @ g.view(-1)) / denom).clamp(-1.0, 1.0)
-
-                d = (1.0 - cosine_sim) * 0.5  # normalized cosine distance
-                retention = 1.0 - d  # per-output-unit memory-aligned retention
+                cosine_sim, has_gradient = _get_cosine_sim(
+                    m_hat,
+                    g,
+                    per_output=self.per_output,
+                )
+                retention = (1.0 + cosine_sim) * 0.5
 
                 # Effective momentum coefficient for this step
-                beta = beta_probe.lerp_(retention, weight=self.c)
+                beta = torch.where(has_gradient, retention, beta_probe)
+                beta = beta_probe.lerp_(beta, weight=self.c)
 
                 m.mul_(beta).add_(g)
 

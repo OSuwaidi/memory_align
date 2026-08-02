@@ -1,0 +1,599 @@
+  clean scope=tensor c=0.10 lr=0.200 seed=611 epoch=01/15 val=15.80% loss=2.4659
+  clean scope=tensor c=0.10 lr=0.200 seed=611 epoch=02/15 val=14.10% loss=2.1945
+  clean scope=tensor c=0.10 lr=0.200 seed=611 epoch=03/15 val=23.80% loss=2.0484
+  clean scope=tensor c=0.10 lr=0.200 seed=611 epoch=04/15 val=25.50% loss=2.0660
+  clean scope=tensor c=0.10 lr=0.200 seed=611 epoch=05/15 val=36.55% loss=1.7551
+  clean scope=tensor c=0.10 lr=0.200 seed=611 epoch=06/15 val=38.65% loss=1.6811
+  clean scope=tensor c=0.10 lr=0.200 seed=611 epoch=07/15 val=31.20% loss=1.8204
+  clean scope=tensor c=0.10 lr=0.200 seed=611 epoch=08/15 val=34.90% loss=1.8000
+  clean scope=tensor c=0.10 lr=0.200 seed=611 epoch=09/15 val=43.00% loss=1.5154
+  clean scope=tensor c=0.10 lr=0.200 seed=611 epoch=10/15 val=48.90% loss=1.4238
+  clean scope=tensor c=0.10 lr=0.200 seed=611 epoch=11/15 val=47.05% loss=1.4228
+  clean scope=tensor c=0.10 lr=0.200 seed=611 epoch=12/15 val=48.90% loss=1.4121
+  clean scope=tensor c=0.10 lr=0.200 seed=611 epoch=13/15 val=52.25% loss=1.3075
+  clean scope=tensor c=0.10 lr=0.200 seed=611 epoch=14/15 val=52.50% loss=1.2887
+  clean scope=tensor c=0.10 lr=0.200 seed=611 epoch=15/15 val=53.40% loss=1.2815
+  clean scope=output c=0.10 lr=0.200 seed=611 epoch=01/15 val=18.10% loss=2.1583
+  clean scope=output c=0.10 lr=0.200 seed=611 epoch=02/15 val=13.50% loss=2.3350
+  clean scope=output c=0.10 lr=0.200 seed=611 epoch=03/15 val=26.20% loss=1.9469
+  clean scope=output c=0.10 lr=0.200 seed=611 epoch=04/15 val=19.45% loss=2.4858
+  clean scope=output c=0.10 lr=0.200 seed=611 epoch=05/15 val=33.20% loss=1.8177
+  clean scope=output c=0.10 lr=0.200 seed=611 epoch=06/15 val=39.80% loss=1.6486
+  clean scope=output c=0.10 lr=0.200 seed=611 epoch=07/15 val=30.60% loss=1.8943
+  clean scope=output c=0.10 lr=0.200 seed=611 epoch=08/15 val=33.90% loss=1.8377
+  clean scope=output c=0.10 lr=0.200 seed=611 epoch=09/15 val=42.35% loss=1.5620
+  clean scope=output c=0.10 lr=0.200 seed=611 epoch=10/15 val=42.70% loss=1.5376
+  clean scope=output c=0.10 lr=0.200 seed=611 epoch=11/15 val=45.00% loss=1.4952
+  clean scope=output c=0.10 lr=0.200 seed=611 epoch=12/15 val=47.95% loss=1.4338
+  clean scope=output c=0.10 lr=0.200 seed=611 epoch=13/15 val=50.80% loss=1.3536
+  clean scope=output c=0.10 lr=0.200 seed=611 epoch=14/15 val=50.60% loss=1.3380
+  clean scope=output c=0.10 lr=0.200 seed=611 epoch=15/15 val=51.30% loss=1.3219
+noise20 scope=output c=0.10 lr=0.200 seed=611 epoch=01/15 val=14.35% loss=2.3265
+noise20 scope=output c=0.10 lr=0.200 seed=611 epoch=02/15 val=12.55% loss=2.2554
+noise20 scope=output c=0.10 lr=0.200 seed=611 epoch=03/15 val=28.80% loss=1.9412
+noise20 scope=output c=0.10 lr=0.200 seed=611 epoch=04/15 val=29.00% loss=1.8916
+noise20 scope=output c=0.10 lr=0.200 seed=611 epoch=05/15 val=33.55% loss=1.8255
+noise20 scope=output c=0.10 lr=0.200 seed=611 epoch=06/15 val=36.35% loss=1.7635
+noise20 scope=output c=0.10 lr=0.200 seed=611 epoch=07/15 val=25.25% loss=2.1033
+noise20 scope=output c=0.10 lr=0.200 seed=611 epoch=08/15 val=37.35% loss=1.7526
+noise20 scope=output c=0.10 lr=0.200 seed=611 epoch=09/15 val=41.90% loss=1.5919
+noise20 scope=output c=0.10 lr=0.200 seed=611 epoch=10/15 val=43.60% loss=1.5710
+noise20 scope=output c=0.10 lr=0.200 seed=611 epoch=11/15 val=46.85% loss=1.5080
+noise20 scope=output c=0.10 lr=0.200 seed=611 epoch=12/15 val=46.95% loss=1.5166
+noise20 scope=output c=0.10 lr=0.200 seed=611 epoch=13/15 val=49.70% loss=1.4573
+noise20 scope=output c=0.10 lr=0.200 seed=611 epoch=14/15 val=50.35% loss=1.4391
+noise20 scope=output c=0.10 lr=0.200 seed=611 epoch=15/15 val=50.80% loss=1.4350
+noise20 scope=tensor c=0.10 lr=0.200 seed=611 epoch=01/15 val=17.35% loss=2.1853
+noise20 scope=tensor c=0.10 lr=0.200 seed=611 epoch=02/15 val=19.90% loss=2.1598
+noise20 scope=tensor c=0.10 lr=0.200 seed=611 epoch=03/15 val=28.05% loss=1.9848
+noise20 scope=tensor c=0.10 lr=0.200 seed=611 epoch=04/15 val=28.40% loss=1.8829
+noise20 scope=tensor c=0.10 lr=0.200 seed=611 epoch=05/15 val=33.90% loss=1.8173
+noise20 scope=tensor c=0.10 lr=0.200 seed=611 epoch=06/15 val=34.45% loss=1.7788
+noise20 scope=tensor c=0.10 lr=0.200 seed=611 epoch=07/15 val=23.25% loss=2.2779
+noise20 scope=tensor c=0.10 lr=0.200 seed=611 epoch=08/15 val=40.35% loss=1.7071
+noise20 scope=tensor c=0.10 lr=0.200 seed=611 epoch=09/15 val=44.55% loss=1.5805
+noise20 scope=tensor c=0.10 lr=0.200 seed=611 epoch=10/15 val=45.45% loss=1.5323
+noise20 scope=tensor c=0.10 lr=0.200 seed=611 epoch=11/15 val=47.90% loss=1.4998
+noise20 scope=tensor c=0.10 lr=0.200 seed=611 epoch=12/15 val=48.10% loss=1.4870
+noise20 scope=tensor c=0.10 lr=0.200 seed=611 epoch=13/15 val=50.15% loss=1.4504
+noise20 scope=tensor c=0.10 lr=0.200 seed=611 epoch=14/15 val=50.90% loss=1.4355
+noise20 scope=tensor c=0.10 lr=0.200 seed=611 epoch=15/15 val=50.35% loss=1.4311
+  clean scope=tensor c=0.10 lr=0.200 seed=722 epoch=01/15 val=13.30% loss=3.1213
+  clean scope=tensor c=0.10 lr=0.200 seed=722 epoch=02/15 val=19.85% loss=2.2284
+  clean scope=tensor c=0.10 lr=0.200 seed=722 epoch=03/15 val=22.30% loss=2.0210
+  clean scope=tensor c=0.10 lr=0.200 seed=722 epoch=04/15 val=25.20% loss=1.9721
+  clean scope=tensor c=0.10 lr=0.200 seed=722 epoch=05/15 val=32.10% loss=1.8025
+  clean scope=tensor c=0.10 lr=0.200 seed=722 epoch=06/15 val=33.00% loss=1.7530
+  clean scope=tensor c=0.10 lr=0.200 seed=722 epoch=07/15 val=33.80% loss=1.7648
+  clean scope=tensor c=0.10 lr=0.200 seed=722 epoch=08/15 val=40.50% loss=1.6014
+  clean scope=tensor c=0.10 lr=0.200 seed=722 epoch=09/15 val=41.55% loss=1.5420
+  clean scope=tensor c=0.10 lr=0.200 seed=722 epoch=10/15 val=43.75% loss=1.5039
+  clean scope=tensor c=0.10 lr=0.200 seed=722 epoch=11/15 val=50.10% loss=1.3418
+  clean scope=tensor c=0.10 lr=0.200 seed=722 epoch=12/15 val=51.60% loss=1.3438
+  clean scope=tensor c=0.10 lr=0.200 seed=722 epoch=13/15 val=54.75% loss=1.2578
+  clean scope=tensor c=0.10 lr=0.200 seed=722 epoch=14/15 val=53.60% loss=1.2564
+  clean scope=tensor c=0.10 lr=0.200 seed=722 epoch=15/15 val=54.05% loss=1.2380
+  clean scope=output c=0.10 lr=0.200 seed=722 epoch=01/15 val=12.65% loss=2.4131
+  clean scope=output c=0.10 lr=0.200 seed=722 epoch=02/15 val=20.50% loss=2.3013
+  clean scope=output c=0.10 lr=0.200 seed=722 epoch=03/15 val=24.40% loss=2.1155
+  clean scope=output c=0.10 lr=0.200 seed=722 epoch=04/15 val=35.65% loss=1.7657
+  clean scope=output c=0.10 lr=0.200 seed=722 epoch=05/15 val=35.30% loss=1.7756
+  clean scope=output c=0.10 lr=0.200 seed=722 epoch=06/15 val=37.90% loss=1.6569
+  clean scope=output c=0.10 lr=0.200 seed=722 epoch=07/15 val=24.15% loss=2.1365
+  clean scope=output c=0.10 lr=0.200 seed=722 epoch=08/15 val=46.40% loss=1.4853
+  clean scope=output c=0.10 lr=0.200 seed=722 epoch=09/15 val=44.05% loss=1.4554
+  clean scope=output c=0.10 lr=0.200 seed=722 epoch=10/15 val=46.00% loss=1.4633
+  clean scope=output c=0.10 lr=0.200 seed=722 epoch=11/15 val=47.70% loss=1.4218
+  clean scope=output c=0.10 lr=0.200 seed=722 epoch=12/15 val=51.80% loss=1.3412
+  clean scope=output c=0.10 lr=0.200 seed=722 epoch=13/15 val=54.25% loss=1.2522
+  clean scope=output c=0.10 lr=0.200 seed=722 epoch=14/15 val=53.75% loss=1.2610
+  clean scope=output c=0.10 lr=0.200 seed=722 epoch=15/15 val=54.75% loss=1.2321
+noise20 scope=output c=0.10 lr=0.200 seed=722 epoch=01/15 val=11.35% loss=2.3577
+noise20 scope=output c=0.10 lr=0.200 seed=722 epoch=02/15 val=21.15% loss=2.2179
+noise20 scope=output c=0.10 lr=0.200 seed=722 epoch=03/15 val=22.40% loss=2.0469
+noise20 scope=output c=0.10 lr=0.200 seed=722 epoch=04/15 val=30.55% loss=1.9364
+noise20 scope=output c=0.10 lr=0.200 seed=722 epoch=05/15 val=25.65% loss=1.9445
+noise20 scope=output c=0.10 lr=0.200 seed=722 epoch=06/15 val=35.45% loss=1.8272
+noise20 scope=output c=0.10 lr=0.200 seed=722 epoch=07/15 val=37.00% loss=1.8123
+noise20 scope=output c=0.10 lr=0.200 seed=722 epoch=08/15 val=38.05% loss=1.7984
+noise20 scope=output c=0.10 lr=0.200 seed=722 epoch=09/15 val=37.95% loss=1.6953
+noise20 scope=output c=0.10 lr=0.200 seed=722 epoch=10/15 val=39.85% loss=1.6602
+noise20 scope=output c=0.10 lr=0.200 seed=722 epoch=11/15 val=45.65% loss=1.5602
+noise20 scope=output c=0.10 lr=0.200 seed=722 epoch=12/15 val=47.95% loss=1.5208
+noise20 scope=output c=0.10 lr=0.200 seed=722 epoch=13/15 val=48.75% loss=1.4933
+noise20 scope=output c=0.10 lr=0.200 seed=722 epoch=14/15 val=48.55% loss=1.4753
+noise20 scope=output c=0.10 lr=0.200 seed=722 epoch=15/15 val=49.40% loss=1.4691
+noise20 scope=tensor c=0.10 lr=0.200 seed=722 epoch=01/15 val=12.90% loss=2.4833
+noise20 scope=tensor c=0.10 lr=0.200 seed=722 epoch=02/15 val=15.45% loss=2.2232
+noise20 scope=tensor c=0.10 lr=0.200 seed=722 epoch=03/15 val=28.25% loss=1.8951
+noise20 scope=tensor c=0.10 lr=0.200 seed=722 epoch=04/15 val=34.00% loss=1.7967
+noise20 scope=tensor c=0.10 lr=0.200 seed=722 epoch=05/15 val=27.35% loss=1.8571
+noise20 scope=tensor c=0.10 lr=0.200 seed=722 epoch=06/15 val=39.10% loss=1.6913
+noise20 scope=tensor c=0.10 lr=0.200 seed=722 epoch=07/15 val=43.70% loss=1.6444
+noise20 scope=tensor c=0.10 lr=0.200 seed=722 epoch=08/15 val=35.90% loss=1.7588
+noise20 scope=tensor c=0.10 lr=0.200 seed=722 epoch=09/15 val=40.75% loss=1.5765
+noise20 scope=tensor c=0.10 lr=0.200 seed=722 epoch=10/15 val=43.35% loss=1.5545
+noise20 scope=tensor c=0.10 lr=0.200 seed=722 epoch=11/15 val=50.30% loss=1.4524
+noise20 scope=tensor c=0.10 lr=0.200 seed=722 epoch=12/15 val=49.00% loss=1.4540
+noise20 scope=tensor c=0.10 lr=0.200 seed=722 epoch=13/15 val=53.35% loss=1.3883
+noise20 scope=tensor c=0.10 lr=0.200 seed=722 epoch=14/15 val=52.90% loss=1.3765
+noise20 scope=tensor c=0.10 lr=0.200 seed=722 epoch=15/15 val=53.95% loss=1.3689
+  clean scope=tensor c=0.10 lr=0.200 seed=833 epoch=01/15 val=13.55% loss=2.5555
+  clean scope=tensor c=0.10 lr=0.200 seed=833 epoch=02/15 val=23.05% loss=2.1359
+  clean scope=tensor c=0.10 lr=0.200 seed=833 epoch=03/15 val=31.95% loss=1.8729
+  clean scope=tensor c=0.10 lr=0.200 seed=833 epoch=04/15 val=21.75% loss=2.1757
+  clean scope=tensor c=0.10 lr=0.200 seed=833 epoch=05/15 val=24.45% loss=1.9229
+  clean scope=tensor c=0.10 lr=0.200 seed=833 epoch=06/15 val=33.45% loss=1.9641
+  clean scope=tensor c=0.10 lr=0.200 seed=833 epoch=07/15 val=36.30% loss=1.7145
+  clean scope=tensor c=0.10 lr=0.200 seed=833 epoch=08/15 val=31.65% loss=2.1257
+  clean scope=tensor c=0.10 lr=0.200 seed=833 epoch=09/15 val=45.75% loss=1.5013
+  clean scope=tensor c=0.10 lr=0.200 seed=833 epoch=10/15 val=36.15% loss=1.8388
+  clean scope=tensor c=0.10 lr=0.200 seed=833 epoch=11/15 val=50.45% loss=1.3602
+  clean scope=tensor c=0.10 lr=0.200 seed=833 epoch=12/15 val=50.75% loss=1.3515
+  clean scope=tensor c=0.10 lr=0.200 seed=833 epoch=13/15 val=54.65% loss=1.2635
+  clean scope=tensor c=0.10 lr=0.200 seed=833 epoch=14/15 val=54.65% loss=1.2471
+  clean scope=tensor c=0.10 lr=0.200 seed=833 epoch=15/15 val=54.10% loss=1.2458
+  clean scope=output c=0.10 lr=0.200 seed=833 epoch=01/15 val=11.95% loss=2.7189
+  clean scope=output c=0.10 lr=0.200 seed=833 epoch=02/15 val=23.40% loss=2.0135
+  clean scope=output c=0.10 lr=0.200 seed=833 epoch=03/15 val=28.00% loss=1.9483
+  clean scope=output c=0.10 lr=0.200 seed=833 epoch=04/15 val=29.85% loss=1.9429
+  clean scope=output c=0.10 lr=0.200 seed=833 epoch=05/15 val=33.35% loss=1.7669
+  clean scope=output c=0.10 lr=0.200 seed=833 epoch=06/15 val=38.70% loss=1.7214
+  clean scope=output c=0.10 lr=0.200 seed=833 epoch=07/15 val=37.55% loss=1.6927
+  clean scope=output c=0.10 lr=0.200 seed=833 epoch=08/15 val=36.95% loss=1.9237
+  clean scope=output c=0.10 lr=0.200 seed=833 epoch=09/15 val=43.15% loss=1.5135
+  clean scope=output c=0.10 lr=0.200 seed=833 epoch=10/15 val=40.45% loss=1.7584
+  clean scope=output c=0.10 lr=0.200 seed=833 epoch=11/15 val=51.95% loss=1.3219
+  clean scope=output c=0.10 lr=0.200 seed=833 epoch=12/15 val=53.40% loss=1.2858
+  clean scope=output c=0.10 lr=0.200 seed=833 epoch=13/15 val=54.80% loss=1.2351
+  clean scope=output c=0.10 lr=0.200 seed=833 epoch=14/15 val=54.65% loss=1.2428
+  clean scope=output c=0.10 lr=0.200 seed=833 epoch=15/15 val=54.90% loss=1.2341
+noise20 scope=output c=0.10 lr=0.200 seed=833 epoch=01/15 val=16.00% loss=2.3327
+noise20 scope=output c=0.10 lr=0.200 seed=833 epoch=02/15 val=22.20% loss=2.0748
+noise20 scope=output c=0.10 lr=0.200 seed=833 epoch=03/15 val=29.60% loss=1.9191
+noise20 scope=output c=0.10 lr=0.200 seed=833 epoch=04/15 val=31.05% loss=1.9014
+noise20 scope=output c=0.10 lr=0.200 seed=833 epoch=05/15 val=24.50% loss=1.9734
+noise20 scope=output c=0.10 lr=0.200 seed=833 epoch=06/15 val=37.00% loss=1.7678
+noise20 scope=output c=0.10 lr=0.200 seed=833 epoch=07/15 val=28.90% loss=1.9221
+noise20 scope=output c=0.10 lr=0.200 seed=833 epoch=08/15 val=26.45% loss=2.0479
+noise20 scope=output c=0.10 lr=0.200 seed=833 epoch=09/15 val=39.65% loss=1.6577
+noise20 scope=output c=0.10 lr=0.200 seed=833 epoch=10/15 val=42.70% loss=1.6011
+noise20 scope=output c=0.10 lr=0.200 seed=833 epoch=11/15 val=47.90% loss=1.4771
+noise20 scope=output c=0.10 lr=0.200 seed=833 epoch=12/15 val=51.65% loss=1.4278
+noise20 scope=output c=0.10 lr=0.200 seed=833 epoch=13/15 val=51.25% loss=1.4118
+noise20 scope=output c=0.10 lr=0.200 seed=833 epoch=14/15 val=51.85% loss=1.3968
+noise20 scope=output c=0.10 lr=0.200 seed=833 epoch=15/15 val=52.80% loss=1.3930
+noise20 scope=tensor c=0.10 lr=0.200 seed=833 epoch=01/15 val=17.65% loss=2.3563
+noise20 scope=tensor c=0.10 lr=0.200 seed=833 epoch=02/15 val=20.70% loss=2.1010
+noise20 scope=tensor c=0.10 lr=0.200 seed=833 epoch=03/15 val=31.40% loss=1.8743
+noise20 scope=tensor c=0.10 lr=0.200 seed=833 epoch=04/15 val=28.20% loss=1.9366
+noise20 scope=tensor c=0.10 lr=0.200 seed=833 epoch=05/15 val=26.85% loss=1.8933
+noise20 scope=tensor c=0.10 lr=0.200 seed=833 epoch=06/15 val=38.15% loss=1.7344
+noise20 scope=tensor c=0.10 lr=0.200 seed=833 epoch=07/15 val=34.35% loss=1.7788
+noise20 scope=tensor c=0.10 lr=0.200 seed=833 epoch=08/15 val=37.75% loss=1.7089
+noise20 scope=tensor c=0.10 lr=0.200 seed=833 epoch=09/15 val=35.85% loss=1.7474
+noise20 scope=tensor c=0.10 lr=0.200 seed=833 epoch=10/15 val=33.75% loss=1.7748
+noise20 scope=tensor c=0.10 lr=0.200 seed=833 epoch=11/15 val=46.40% loss=1.5218
+noise20 scope=tensor c=0.10 lr=0.200 seed=833 epoch=12/15 val=49.65% loss=1.4561
+noise20 scope=tensor c=0.10 lr=0.200 seed=833 epoch=13/15 val=49.70% loss=1.4341
+noise20 scope=tensor c=0.10 lr=0.200 seed=833 epoch=14/15 val=51.15% loss=1.4243
+noise20 scope=tensor c=0.10 lr=0.200 seed=833 epoch=15/15 val=50.45% loss=1.4218
+{
+  "experiment": {
+    "device": "mps",
+    "dataset": "CIFAR-10",
+    "model": "5-block residual CNN with GroupNorm",
+    "parameter_count": 170586,
+    "scopes": [
+      "tensor",
+      "output"
+    ],
+    "adaptive": true,
+    "base_beta": 0.9,
+    "adaptation_rates": [
+      0.1
+    ],
+    "learning_rates": [
+      0.2
+    ],
+    "seeds": [
+      611,
+      722,
+      833
+    ],
+    "conditions": [
+      "clean",
+      "noise20"
+    ],
+    "epochs": 15,
+    "train_per_class": 1000,
+    "validation_per_class": 200,
+    "test_per_class": 1000,
+    "batch_size": 256,
+    "weight_decay": 0.0005,
+    "augmentation": "paired per-example reflect crop + horizontal flip",
+    "scheduler": "one-epoch linear warmup then cosine decay to 2%",
+    "selection": "test evaluated from each run's best-validation epoch"
+  },
+  "data": {
+    "clean:611": {
+      "train_examples": 10000,
+      "validation_examples": 2000,
+      "test_examples": 10000,
+      "noise_fraction": 0.0,
+      "train_indices_hash": "ca7b49c319acd564a232bb58a1bf185912221a7fc57f41c8f82bd2bc8df6fd70",
+      "validation_indices_hash": "a49ece0ce7e278295c723f72be431119b1f25ee112bf8debd606229ae921b170",
+      "train_labels_hash": "cd315e978e50c9d20b87e204f451de2c111a5b3771407244058ccd250c785a98",
+      "epoch_order_hash": "142a0c32a12c04964a1de013375a6e052970fc4ad16ae17d9e5ea5377e3674f9"
+    },
+    "noise20:611": {
+      "train_examples": 10000,
+      "validation_examples": 2000,
+      "test_examples": 10000,
+      "noise_fraction": 0.2,
+      "train_indices_hash": "ca7b49c319acd564a232bb58a1bf185912221a7fc57f41c8f82bd2bc8df6fd70",
+      "validation_indices_hash": "a49ece0ce7e278295c723f72be431119b1f25ee112bf8debd606229ae921b170",
+      "train_labels_hash": "66607759ebc6d38e49eadc6ddfce8efc417d25b4c386e5005b3ef7badfccea2e",
+      "epoch_order_hash": "142a0c32a12c04964a1de013375a6e052970fc4ad16ae17d9e5ea5377e3674f9"
+    },
+    "clean:722": {
+      "train_examples": 10000,
+      "validation_examples": 2000,
+      "test_examples": 10000,
+      "noise_fraction": 0.0,
+      "train_indices_hash": "1c9a945563bcae7de94b76229f686c150a9b041f70cf191411672976317d4b59",
+      "validation_indices_hash": "ad40fdf69f18983f667150b2bd3afb0676ce457329a76fe959b07adf7b61598e",
+      "train_labels_hash": "9ae10cf98528e8dbfce55079b2049768082cc69b40898620b15d2806a7b001d0",
+      "epoch_order_hash": "947ca81f673cbbdb0ac556ff66f47554345328f1ff664866d841ba6c92b07751"
+    },
+    "noise20:722": {
+      "train_examples": 10000,
+      "validation_examples": 2000,
+      "test_examples": 10000,
+      "noise_fraction": 0.2,
+      "train_indices_hash": "1c9a945563bcae7de94b76229f686c150a9b041f70cf191411672976317d4b59",
+      "validation_indices_hash": "ad40fdf69f18983f667150b2bd3afb0676ce457329a76fe959b07adf7b61598e",
+      "train_labels_hash": "d79ea616164a1526f07ec1a0420f98087fc651073578d306f6e53e4766aafb52",
+      "epoch_order_hash": "947ca81f673cbbdb0ac556ff66f47554345328f1ff664866d841ba6c92b07751"
+    },
+    "clean:833": {
+      "train_examples": 10000,
+      "validation_examples": 2000,
+      "test_examples": 10000,
+      "noise_fraction": 0.0,
+      "train_indices_hash": "4a65c455d8d2b601b20ef7c85596fce58eb36b97f3cc60e30d3b50f78f45f6bb",
+      "validation_indices_hash": "f58222c87a7997eeac0085fe62e2b0f491169d34bb7c44f438d6933729a3f2a5",
+      "train_labels_hash": "9c782d4630f61e7507dbae61b5fe766396389c74385247023a882e65d12f375d",
+      "epoch_order_hash": "8b359790dd3601649bfe9f0f34471ce920b2a2e59b7ec58817aba9196c6c0608"
+    },
+    "noise20:833": {
+      "train_examples": 10000,
+      "validation_examples": 2000,
+      "test_examples": 10000,
+      "noise_fraction": 0.2,
+      "train_indices_hash": "4a65c455d8d2b601b20ef7c85596fce58eb36b97f3cc60e30d3b50f78f45f6bb",
+      "validation_indices_hash": "f58222c87a7997eeac0085fe62e2b0f491169d34bb7c44f438d6933729a3f2a5",
+      "train_labels_hash": "d56e19992098766421b2e80e84ee1fb5f504572b78842f5b8133ba66d03e8141",
+      "epoch_order_hash": "8b359790dd3601649bfe9f0f34471ce920b2a2e59b7ec58817aba9196c6c0608"
+    }
+  },
+  "optimizer_microbenchmark": {
+    "tensor": {
+      "median_step_ms": 2.737269170174841,
+      "step_ms_samples": [
+        2.7308058401104063,
+        2.7437325002392754,
+        2.7235491600004025,
+        2.8529558301670477,
+        2.8256662501371466,
+        2.7209995899465866
+      ],
+      "momentum_state_bytes": 682344,
+      "beta_state_bytes": 164,
+      "beta_scalar_count": 41
+    },
+    "output": {
+      "median_step_ms": 2.6517262500419747,
+      "step_ms_samples": [
+        2.658551670028828,
+        2.6682824999443255,
+        2.6459820798481815,
+        2.6517800000146963,
+        2.651672500069253,
+        2.6410904197837226
+      ],
+      "momentum_state_bytes": 682344,
+      "beta_state_bytes": 2260,
+      "beta_scalar_count": 565
+    },
+    "output_over_tensor_step_time_ratio": 0.9687488095562768
+  },
+  "summary": {
+    "cells": {
+      "clean|c=0.1|lr=0.2|tensor": {
+        "best_validation_accuracy": {
+          "n": 3,
+          "mean": 54.26666666666667,
+          "sample_std": 0.7522189397597843,
+          "min": 53.4,
+          "max": 54.75
+        },
+        "selected_test_accuracy": {
+          "n": 3,
+          "mean": 53.576666666666675,
+          "sample_std": 1.549397732453915,
+          "min": 51.92,
+          "max": 54.99
+        },
+        "mean_validation_accuracy": {
+          "n": 3,
+          "mean": 37.74666666666667,
+          "sample_std": 0.22732746815503685,
+          "min": 37.51,
+          "max": 37.96333333333334
+        },
+        "elapsed_seconds": {
+          "n": 3,
+          "mean": 16.995333541330183,
+          "sample_std": 0.02702190663413095,
+          "min": 16.979182332986966,
+          "max": 17.026529208000284
+        },
+        "divergence_count": 0,
+        "beta_mean": {
+          "n": 3,
+          "mean": 0.8057234684626261,
+          "sample_std": 0.0015840943081296952,
+          "min": 0.8040857404470444,
+          "max": 0.8072478393713634
+        },
+        "mean_within_tensor_beta_std": {
+          "n": 3,
+          "mean": 0.0,
+          "sample_std": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        }
+      },
+      "clean|c=0.1|lr=0.2|output": {
+        "best_validation_accuracy": {
+          "n": 3,
+          "mean": 53.65,
+          "sample_std": 2.036541185441631,
+          "min": 51.3,
+          "max": 54.9
+        },
+        "selected_test_accuracy": {
+          "n": 3,
+          "mean": 53.89666666666667,
+          "sample_std": 1.8472231411860682,
+          "min": 52.28,
+          "max": 55.91
+        },
+        "mean_validation_accuracy": {
+          "n": 3,
+          "mean": 38.394444444444446,
+          "sample_std": 1.7635486110974343,
+          "min": 36.36333333333334,
+          "max": 39.53666666666666
+        },
+        "elapsed_seconds": {
+          "n": 3,
+          "mean": 16.516917666662874,
+          "sample_std": 0.01564517875443702,
+          "min": 16.49923583297641,
+          "max": 16.52896579200751
+        },
+        "divergence_count": 0,
+        "beta_mean": {
+          "n": 3,
+          "mean": 0.7915080275800493,
+          "sample_std": 0.001899519725266077,
+          "min": 0.7900248835484187,
+          "max": 0.793649023771286
+        },
+        "mean_within_tensor_beta_std": {
+          "n": 3,
+          "mean": 0.02308038867906564,
+          "sample_std": 0.0007189417493615498,
+          "min": 0.02251197607256472,
+          "max": 0.02388857739667098
+        }
+      },
+      "noise20|c=0.1|lr=0.2|output": {
+        "best_validation_accuracy": {
+          "n": 3,
+          "mean": 51.0,
+          "sample_std": 1.7088007490635055,
+          "min": 49.4,
+          "max": 52.8
+        },
+        "selected_test_accuracy": {
+          "n": 3,
+          "mean": 50.77,
+          "sample_std": 1.0407209039891532,
+          "min": 49.58,
+          "max": 51.51
+        },
+        "mean_validation_accuracy": {
+          "n": 3,
+          "mean": 36.45666666666667,
+          "sample_std": 0.46090490703976117,
+          "min": 35.980000000000004,
+          "max": 36.9
+        },
+        "elapsed_seconds": {
+          "n": 3,
+          "mean": 16.595909208330948,
+          "sample_std": 0.10162839626879598,
+          "min": 16.506325416994514,
+          "max": 16.706347041996196
+        },
+        "divergence_count": 0,
+        "beta_mean": {
+          "n": 3,
+          "mean": 0.7885327408711115,
+          "sample_std": 0.0011178216596592304,
+          "min": 0.7875402669111887,
+          "max": 0.7897436608870824
+        },
+        "mean_within_tensor_beta_std": {
+          "n": 3,
+          "mean": 0.022292343377032214,
+          "sample_std": 0.0009502074253443933,
+          "min": 0.02137462467265626,
+          "max": 0.023272008293618758
+        }
+      },
+      "noise20|c=0.1|lr=0.2|tensor": {
+        "best_validation_accuracy": {
+          "n": 3,
+          "mean": 52.0,
+          "sample_std": 1.6933694221876123,
+          "min": 50.9,
+          "max": 53.95
+        },
+        "selected_test_accuracy": {
+          "n": 3,
+          "mean": 51.01333333333333,
+          "sample_std": 1.4838238889212358,
+          "min": 49.66,
+          "max": 52.6
+        },
+        "mean_validation_accuracy": {
+          "n": 3,
+          "mean": 37.673333333333325,
+          "sample_std": 0.9490755736212182,
+          "min": 36.8,
+          "max": 38.68333333333333
+        },
+        "elapsed_seconds": {
+          "n": 3,
+          "mean": 16.966150764007278,
+          "sample_std": 0.03347331802740029,
+          "min": 16.931476208992535,
+          "max": 16.99827720801113
+        },
+        "divergence_count": 0,
+        "beta_mean": {
+          "n": 3,
+          "mean": 0.8019679480128818,
+          "sample_std": 0.0008455030538486839,
+          "min": 0.8010739217201869,
+          "max": 0.802754686276118
+        },
+        "mean_within_tensor_beta_std": {
+          "n": 3,
+          "mean": 0.0,
+          "sample_std": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        }
+      }
+    },
+    "paired_rows": [
+      {
+        "condition": "clean",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.2,
+        "seed": 611,
+        "delta_best_validation_accuracy": -2.1000000000000014,
+        "delta_selected_test_accuracy": -1.5399999999999991,
+        "delta_mean_validation_accuracy": -1.4033333333333289,
+        "output_over_tensor_elapsed_ratio": 0.9704004364695311
+      },
+      {
+        "condition": "clean",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.2,
+        "seed": 722,
+        "delta_best_validation_accuracy": 0.0,
+        "delta_selected_test_accuracy": 0.9199999999999946,
+        "delta_mean_validation_accuracy": 1.3199999999999932,
+        "output_over_tensor_elapsed_ratio": 0.9716699022216054
+      },
+      {
+        "condition": "clean",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.2,
+        "seed": 833,
+        "delta_best_validation_accuracy": 0.25,
+        "delta_selected_test_accuracy": 1.5799999999999983,
+        "delta_mean_validation_accuracy": 2.0266666666666637,
+        "output_over_tensor_elapsed_ratio": 0.9734842036471463
+      },
+      {
+        "condition": "noise20",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.2,
+        "seed": 611,
+        "delta_best_validation_accuracy": -0.10000000000000142,
+        "delta_selected_test_accuracy": 0.7299999999999969,
+        "delta_mean_validation_accuracy": -1.0466666666666598,
+        "output_over_tensor_elapsed_ratio": 0.974889915873241
+      },
+      {
+        "condition": "noise20",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.2,
+        "seed": 722,
+        "delta_best_validation_accuracy": -4.550000000000004,
+        "delta_selected_test_accuracy": -3.020000000000003,
+        "delta_mean_validation_accuracy": -2.703333333333326,
+        "output_over_tensor_elapsed_ratio": 0.982825896857515
+      },
+      {
+        "condition": "noise20",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.2,
+        "seed": 833,
+        "delta_best_validation_accuracy": 1.6499999999999986,
+        "delta_selected_test_accuracy": 1.5600000000000023,
+        "delta_mean_validation_accuracy": 0.10000000000000142,
+        "output_over_tensor_elapsed_ratio": 0.9768017741421785
+      }
+    ],
+    "aggregate_paired": {
+      "delta_best_validation_accuracy": {
+        "n": 6,
+        "mean": -0.8083333333333348,
+        "sample_std": 2.190300588199408,
+        "min": -4.550000000000004,
+        "max": 1.6499999999999986
+      },
+      "delta_selected_test_accuracy": {
+        "n": 6,
+        "mean": 0.03833333333333163,
+        "sample_std": 1.8863978018081624,
+        "min": -3.020000000000003,
+        "max": 1.5799999999999983
+      },
+      "delta_mean_validation_accuracy": {
+        "n": 6,
+        "mean": -0.2844444444444427,
+        "sample_std": 1.7746657483927786,
+        "min": -2.703333333333326,
+        "max": 2.0266666666666637
+      },
+      "output_over_tensor_elapsed_ratio": {
+        "n": 6,
+        "mean": 0.9750120215352029,
+        "sample_std": 0.00445074100713153,
+        "min": 0.9704004364695311,
+        "max": 0.982825896857515
+      },
+      "output_wins_best_validation": 2,
+      "ties_best_validation": 1,
+      "pair_count": 6
+    }
+  },
+  "software": {
+    "python": "3.14.4",
+    "torch": "2.13.0",
+    "numpy": "2.5.1",
+    "platform": "macOS-26.6-arm64-arm-64bit-Mach-O",
+    "mps_built": true,
+    "mps_available": true,
+    "torch_num_threads": 10
+  }
+}

@@ -1,0 +1,901 @@
+{
+  "experiment": {
+    "device": "mps",
+    "dataset": "CIFAR-10",
+    "model": "5-block residual CNN with GroupNorm",
+    "parameter_count": 170586,
+    "scopes": [
+      "tensor",
+      "output"
+    ],
+    "adaptive": true,
+    "base_beta": 0.9,
+    "adaptation_rates": [
+      0.1
+    ],
+    "learning_rates": [
+      0.05,
+      0.2,
+      0.6
+    ],
+    "seeds": [
+      101,
+      202,
+      303
+    ],
+    "conditions": [
+      "clean",
+      "noise20"
+    ],
+    "epochs": 6,
+    "train_per_class": 200,
+    "validation_per_class": 100,
+    "test_per_class": 200,
+    "batch_size": 256,
+    "weight_decay": 0.0005,
+    "augmentation": "paired per-example reflect crop + horizontal flip",
+    "scheduler": "one-epoch linear warmup then cosine decay to 2%",
+    "selection": "test evaluated from each run's best-validation epoch"
+  },
+  "data": {
+    "clean:101": {
+      "train_examples": 2000,
+      "validation_examples": 1000,
+      "test_examples": 2000,
+      "noise_fraction": 0.0,
+      "train_indices_hash": "ef4c563f710161f106aef08f288624b4adf31a57e02daf03d28193b30970185b",
+      "validation_indices_hash": "45b641600edc421be71dd302f26da6a692c0a2fc6e1d81f21c8bc77c7f9f6684",
+      "train_labels_hash": "c3cacfcc31e44c3d6a623a7d3a62e5c332f5c036a0176fb452e003a2c6be291e",
+      "epoch_order_hash": "ebff81acfa9876d3a7c050cc9de69e1025bb4e96d027e579b5f6a22251325ff8"
+    },
+    "noise20:101": {
+      "train_examples": 2000,
+      "validation_examples": 1000,
+      "test_examples": 2000,
+      "noise_fraction": 0.2,
+      "train_indices_hash": "ef4c563f710161f106aef08f288624b4adf31a57e02daf03d28193b30970185b",
+      "validation_indices_hash": "45b641600edc421be71dd302f26da6a692c0a2fc6e1d81f21c8bc77c7f9f6684",
+      "train_labels_hash": "88984035d1c4c4e8a78d7d9646a1d08dd2bdba2d0f8edde9899ba7373b82774e",
+      "epoch_order_hash": "ebff81acfa9876d3a7c050cc9de69e1025bb4e96d027e579b5f6a22251325ff8"
+    },
+    "clean:202": {
+      "train_examples": 2000,
+      "validation_examples": 1000,
+      "test_examples": 2000,
+      "noise_fraction": 0.0,
+      "train_indices_hash": "e952147b900095218ba49e447eda8d233c9d5f81d7ec8e6da7fe4e6f07395b81",
+      "validation_indices_hash": "50841a9751ed114cd45ff58e19f477242fc0b50525523e03a33db4c18206e733",
+      "train_labels_hash": "677190b0bc99e94972887485a7c0fed4c0a9197816a5d9e54878c7c57c56d8c5",
+      "epoch_order_hash": "94af1c4d171cd377d4574ca78c7031cf2b9ff795d3150c836b872bcdb3917f39"
+    },
+    "noise20:202": {
+      "train_examples": 2000,
+      "validation_examples": 1000,
+      "test_examples": 2000,
+      "noise_fraction": 0.2,
+      "train_indices_hash": "e952147b900095218ba49e447eda8d233c9d5f81d7ec8e6da7fe4e6f07395b81",
+      "validation_indices_hash": "50841a9751ed114cd45ff58e19f477242fc0b50525523e03a33db4c18206e733",
+      "train_labels_hash": "66f55696755bbb81e8408d282b320b71eddaab3e81eebec913e5414af049a29f",
+      "epoch_order_hash": "94af1c4d171cd377d4574ca78c7031cf2b9ff795d3150c836b872bcdb3917f39"
+    },
+    "clean:303": {
+      "train_examples": 2000,
+      "validation_examples": 1000,
+      "test_examples": 2000,
+      "noise_fraction": 0.0,
+      "train_indices_hash": "be5d3e48673056d00e4f943066fbfb67706c52fbf71d3c4383bfd1f6b8b1ed22",
+      "validation_indices_hash": "07720ca11fea1d88797b89ef528b3125e830a3ba6943b48f41aa67d393be8cae",
+      "train_labels_hash": "edde4f02a673d7066f0a9a78d1ff6e8d099110041b9fea73ab2fcdf4e1110e74",
+      "epoch_order_hash": "07fafc7c97fae9d48e7cd393b919ccb8525600a78c28b3dfa9db1772456052eb"
+    },
+    "noise20:303": {
+      "train_examples": 2000,
+      "validation_examples": 1000,
+      "test_examples": 2000,
+      "noise_fraction": 0.2,
+      "train_indices_hash": "be5d3e48673056d00e4f943066fbfb67706c52fbf71d3c4383bfd1f6b8b1ed22",
+      "validation_indices_hash": "07720ca11fea1d88797b89ef528b3125e830a3ba6943b48f41aa67d393be8cae",
+      "train_labels_hash": "1fc708145c8d24706dbfe5ddbc7164c9b899db5c8aa41f1f7ea2eae9192af9d6",
+      "epoch_order_hash": "07fafc7c97fae9d48e7cd393b919ccb8525600a78c28b3dfa9db1772456052eb"
+    }
+  },
+  "optimizer_microbenchmark": {
+    "tensor": {
+      "median_step_ms": 2.5902664598834235,
+      "step_ms_samples": [
+        2.6469429102144204,
+        2.5678504098323174,
+        2.5769658299395815,
+        2.5941666698781773,
+        3.2329674999346025,
+        2.5863662498886697
+      ],
+      "momentum_state_bytes": 682344,
+      "beta_state_bytes": 164,
+      "beta_scalar_count": 41
+    },
+    "output": {
+      "median_step_ms": 2.5538404200051446,
+      "step_ms_samples": [
+        2.4767216699547134,
+        2.491479580057785,
+        2.6263029099209234,
+        2.5098629199783318,
+        3.065570420003496,
+        2.5978179200319573
+      ],
+      "momentum_state_bytes": 682344,
+      "beta_state_bytes": 2260,
+      "beta_scalar_count": 565
+    },
+    "output_over_tensor_step_time_ratio": 0.9859373387091928
+  },
+  "summary": {
+    "cells": {
+      "clean|c=0.1|lr=0.05|tensor": {
+        "best_validation_accuracy": {
+          "n": 3,
+          "mean": 32.5,
+          "sample_std": 2.605762844159078,
+          "min": 30.0,
+          "max": 35.2
+        },
+        "selected_test_accuracy": {
+          "n": 3,
+          "mean": 31.016666666666666,
+          "sample_std": 1.1026483271348722,
+          "min": 29.8,
+          "max": 31.95
+        },
+        "mean_validation_accuracy": {
+          "n": 3,
+          "mean": 26.594444444444445,
+          "sample_std": 2.4324389528329915,
+          "min": 24.383333333333336,
+          "max": 29.200000000000003
+        },
+        "elapsed_seconds": {
+          "n": 3,
+          "mean": 1.6091484860032021,
+          "sample_std": 0.10416168473360471,
+          "min": 1.5476049999997485,
+          "max": 1.7294130000227597
+        },
+        "divergence_count": 0,
+        "beta_mean": {
+          "n": 3,
+          "mean": 0.8146242573857307,
+          "sample_std": 0.002216713765807963,
+          "min": 0.8122883786757787,
+          "max": 0.8166986033320427
+        },
+        "mean_within_tensor_beta_std": {
+          "n": 3,
+          "mean": 0.0,
+          "sample_std": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        }
+      },
+      "clean|c=0.1|lr=0.05|output": {
+        "best_validation_accuracy": {
+          "n": 3,
+          "mean": 31.433333333333334,
+          "sample_std": 2.500666577801472,
+          "min": 29.7,
+          "max": 34.3
+        },
+        "selected_test_accuracy": {
+          "n": 3,
+          "mean": 30.666666666666668,
+          "sample_std": 1.0299676370320254,
+          "min": 29.7,
+          "max": 31.75
+        },
+        "mean_validation_accuracy": {
+          "n": 3,
+          "mean": 25.883333333333336,
+          "sample_std": 2.8205101981339777,
+          "min": 23.833333333333332,
+          "max": 29.099999999999998
+        },
+        "elapsed_seconds": {
+          "n": 3,
+          "mean": 1.544854500001141,
+          "sample_std": 0.013048394118306255,
+          "min": 1.5303314999910071,
+          "max": 1.5555905420042109
+        },
+        "divergence_count": 0,
+        "beta_mean": {
+          "n": 3,
+          "mean": 0.8028994376460711,
+          "sample_std": 0.0006875058087139874,
+          "min": 0.8021056925257047,
+          "max": 0.8033081740140915
+        },
+        "mean_within_tensor_beta_std": {
+          "n": 3,
+          "mean": 0.027307318665811584,
+          "sample_std": 0.00040615168541659885,
+          "min": 0.027035042371911306,
+          "max": 0.027774150638530653
+        }
+      },
+      "clean|c=0.1|lr=0.2|output": {
+        "best_validation_accuracy": {
+          "n": 3,
+          "mean": 28.099999999999998,
+          "sample_std": 2.402082429892863,
+          "min": 25.4,
+          "max": 30.0
+        },
+        "selected_test_accuracy": {
+          "n": 3,
+          "mean": 27.566666666666666,
+          "sample_std": 1.5135499110810102,
+          "min": 25.95,
+          "max": 28.95
+        },
+        "mean_validation_accuracy": {
+          "n": 3,
+          "mean": 21.2,
+          "sample_std": 3.7000000000000006,
+          "min": 17.2,
+          "max": 24.5
+        },
+        "elapsed_seconds": {
+          "n": 3,
+          "mean": 1.55433837499974,
+          "sample_std": 0.029140734760153917,
+          "min": 1.5230905000062194,
+          "max": 1.5807724999904167
+        },
+        "divergence_count": 0,
+        "beta_mean": {
+          "n": 3,
+          "mean": 0.7899268393715223,
+          "sample_std": 0.004382609383935891,
+          "min": 0.7856721207499504,
+          "max": 0.7944270223379135
+        },
+        "mean_within_tensor_beta_std": {
+          "n": 3,
+          "mean": 0.030766164625270497,
+          "sample_std": 0.003745601303073859,
+          "min": 0.027551991865038872,
+          "max": 0.03487951300727824
+        }
+      },
+      "clean|c=0.1|lr=0.2|tensor": {
+        "best_validation_accuracy": {
+          "n": 3,
+          "mean": 27.266666666666666,
+          "sample_std": 3.0827476921300794,
+          "min": 23.8,
+          "max": 29.7
+        },
+        "selected_test_accuracy": {
+          "n": 3,
+          "mean": 26.25,
+          "sample_std": 3.1752952618614847,
+          "min": 23.1,
+          "max": 29.45
+        },
+        "mean_validation_accuracy": {
+          "n": 3,
+          "mean": 21.45,
+          "sample_std": 3.9039509901295304,
+          "min": 17.133333333333333,
+          "max": 24.733333333333334
+        },
+        "elapsed_seconds": {
+          "n": 3,
+          "mean": 1.5603651526616886,
+          "sample_std": 0.007442489038720517,
+          "min": 1.5522153750061989,
+          "max": 1.5668014999828301
+        },
+        "divergence_count": 0,
+        "beta_mean": {
+          "n": 3,
+          "mean": 0.8045641895797518,
+          "sample_std": 0.006820225617227565,
+          "min": 0.7993202383319536,
+          "max": 0.8122745056947073
+        },
+        "mean_within_tensor_beta_std": {
+          "n": 3,
+          "mean": 0.0,
+          "sample_std": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        }
+      },
+      "clean|c=0.1|lr=0.6|tensor": {
+        "best_validation_accuracy": {
+          "n": 3,
+          "mean": 26.666666666666668,
+          "sample_std": 1.8876793513023689,
+          "min": 24.6,
+          "max": 28.3
+        },
+        "selected_test_accuracy": {
+          "n": 3,
+          "mean": 26.516666666666666,
+          "sample_std": 0.9385272150200731,
+          "min": 25.5,
+          "max": 27.35
+        },
+        "mean_validation_accuracy": {
+          "n": 3,
+          "mean": 20.927777777777777,
+          "sample_std": 0.9788504217438682,
+          "min": 20.05,
+          "max": 21.983333333333334
+        },
+        "elapsed_seconds": {
+          "n": 3,
+          "mean": 1.5806582499935757,
+          "sample_std": 0.045672128461008404,
+          "min": 1.553430792002473,
+          "max": 1.6333864579792134
+        },
+        "divergence_count": 0,
+        "beta_mean": {
+          "n": 3,
+          "mean": 0.7911648377776146,
+          "sample_std": 0.002634815162348534,
+          "min": 0.788310798505942,
+          "max": 0.7935045982400576
+        },
+        "mean_within_tensor_beta_std": {
+          "n": 3,
+          "mean": 0.0,
+          "sample_std": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        }
+      },
+      "clean|c=0.1|lr=0.6|output": {
+        "best_validation_accuracy": {
+          "n": 3,
+          "mean": 27.133333333333336,
+          "sample_std": 0.7234178138070235,
+          "min": 26.3,
+          "max": 27.6
+        },
+        "selected_test_accuracy": {
+          "n": 3,
+          "mean": 27.03333333333333,
+          "sample_std": 0.20207259421636836,
+          "min": 26.85,
+          "max": 27.25
+        },
+        "mean_validation_accuracy": {
+          "n": 3,
+          "mean": 21.11111111111111,
+          "sample_std": 1.423740509024393,
+          "min": 19.5,
+          "max": 22.2
+        },
+        "elapsed_seconds": {
+          "n": 3,
+          "mean": 1.5610319306724705,
+          "sample_std": 0.010940278530320407,
+          "min": 1.5484166250098497,
+          "max": 1.5679142500157468
+        },
+        "divergence_count": 0,
+        "beta_mean": {
+          "n": 3,
+          "mean": 0.7837638838423623,
+          "sample_std": 0.0037317241431460506,
+          "min": 0.7797027925650278,
+          "max": 0.7870419944326082
+        },
+        "mean_within_tensor_beta_std": {
+          "n": 3,
+          "mean": 0.03338613090777977,
+          "sample_std": 0.0017719600454198063,
+          "min": 0.03235727509794136,
+          "max": 0.03543220309074968
+        }
+      },
+      "noise20|c=0.1|lr=0.05|output": {
+        "best_validation_accuracy": {
+          "n": 3,
+          "mean": 32.26666666666667,
+          "sample_std": 0.6658328118479406,
+          "min": 31.5,
+          "max": 32.7
+        },
+        "selected_test_accuracy": {
+          "n": 3,
+          "mean": 30.233333333333334,
+          "sample_std": 0.28431203515386694,
+          "min": 30.0,
+          "max": 30.55
+        },
+        "mean_validation_accuracy": {
+          "n": 3,
+          "mean": 26.166666666666668,
+          "sample_std": 1.6301840386901105,
+          "min": 24.46666666666667,
+          "max": 27.71666666666667
+        },
+        "elapsed_seconds": {
+          "n": 3,
+          "mean": 1.5520739723385002,
+          "sample_std": 0.0031244597548224177,
+          "min": 1.549108792009065,
+          "max": 1.5553364579973277
+        },
+        "divergence_count": 0,
+        "beta_mean": {
+          "n": 3,
+          "mean": 0.8027888569566938,
+          "sample_std": 0.0029493507510966735,
+          "min": 0.8008112534880638,
+          "max": 0.8061788007616997
+        },
+        "mean_within_tensor_beta_std": {
+          "n": 3,
+          "mean": 0.02553286177701213,
+          "sample_std": 0.0007933516866180898,
+          "min": 0.024927878597130377,
+          "max": 0.026431091071572155
+        }
+      },
+      "noise20|c=0.1|lr=0.05|tensor": {
+        "best_validation_accuracy": {
+          "n": 3,
+          "mean": 32.199999999999996,
+          "sample_std": 0.8717797887081344,
+          "min": 31.2,
+          "max": 32.8
+        },
+        "selected_test_accuracy": {
+          "n": 3,
+          "mean": 30.016666666666666,
+          "sample_std": 0.7767453465154032,
+          "min": 29.15,
+          "max": 30.65
+        },
+        "mean_validation_accuracy": {
+          "n": 3,
+          "mean": 25.938888888888886,
+          "sample_std": 1.8687736125103058,
+          "min": 23.966666666666665,
+          "max": 27.683333333333334
+        },
+        "elapsed_seconds": {
+          "n": 3,
+          "mean": 1.5532725693386358,
+          "sample_std": 0.014633075461587257,
+          "min": 1.5363757500017527,
+          "max": 1.5617254160169978
+        },
+        "divergence_count": 0,
+        "beta_mean": {
+          "n": 3,
+          "mean": 0.8152568249238862,
+          "sample_std": 0.00306974464206035,
+          "min": 0.8118623793125153,
+          "max": 0.8178381497661272
+        },
+        "mean_within_tensor_beta_std": {
+          "n": 3,
+          "mean": 0.0,
+          "sample_std": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        }
+      },
+      "noise20|c=0.1|lr=0.2|tensor": {
+        "best_validation_accuracy": {
+          "n": 3,
+          "mean": 27.5,
+          "sample_std": 2.615339366124404,
+          "min": 25.7,
+          "max": 30.5
+        },
+        "selected_test_accuracy": {
+          "n": 3,
+          "mean": 26.53333333333333,
+          "sample_std": 0.9004628439493403,
+          "min": 25.65,
+          "max": 27.45
+        },
+        "mean_validation_accuracy": {
+          "n": 3,
+          "mean": 22.03888888888889,
+          "sample_std": 1.0269065376347721,
+          "min": 21.25,
+          "max": 23.2
+        },
+        "elapsed_seconds": {
+          "n": 3,
+          "mean": 1.5875478889987182,
+          "sample_std": 0.017814172884764935,
+          "min": 1.5676828339928761,
+          "max": 1.6021042079955805
+        },
+        "divergence_count": 0,
+        "beta_mean": {
+          "n": 3,
+          "mean": 0.8017336875200272,
+          "sample_std": 0.0022286519679619713,
+          "min": 0.799162524441878,
+          "max": 0.8031127030650774
+        },
+        "mean_within_tensor_beta_std": {
+          "n": 3,
+          "mean": 0.0,
+          "sample_std": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        }
+      },
+      "noise20|c=0.1|lr=0.2|output": {
+        "best_validation_accuracy": {
+          "n": 3,
+          "mean": 27.866666666666664,
+          "sample_std": 1.6258331197676255,
+          "min": 26.6,
+          "max": 29.7
+        },
+        "selected_test_accuracy": {
+          "n": 3,
+          "mean": 26.516666666666666,
+          "sample_std": 1.3659550993108562,
+          "min": 25.0,
+          "max": 27.65
+        },
+        "mean_validation_accuracy": {
+          "n": 3,
+          "mean": 22.57777777777778,
+          "sample_std": 0.8055938688206848,
+          "min": 21.650000000000002,
+          "max": 23.099999999999998
+        },
+        "elapsed_seconds": {
+          "n": 3,
+          "mean": 1.5428086949978024,
+          "sample_std": 0.01280510194764146,
+          "min": 1.533183833991643,
+          "max": 1.5573418340063654
+        },
+        "divergence_count": 0,
+        "beta_mean": {
+          "n": 3,
+          "mean": 0.7915718629956245,
+          "sample_std": 0.0029804480338324574,
+          "min": 0.7881627107659975,
+          "max": 0.793684276441733
+        },
+        "mean_within_tensor_beta_std": {
+          "n": 3,
+          "mean": 0.02874183393497434,
+          "sample_std": 0.0010451631953183487,
+          "min": 0.027839984744787216,
+          "max": 0.029887285083532333
+        }
+      },
+      "noise20|c=0.1|lr=0.6|output": {
+        "best_validation_accuracy": {
+          "n": 3,
+          "mean": 24.23333333333333,
+          "sample_std": 4.618802153517006,
+          "min": 18.9,
+          "max": 26.9
+        },
+        "selected_test_accuracy": {
+          "n": 3,
+          "mean": 22.7,
+          "sample_std": 4.075230054855798,
+          "min": 18.05,
+          "max": 25.65
+        },
+        "mean_validation_accuracy": {
+          "n": 3,
+          "mean": 17.55,
+          "sample_std": 2.706832917718499,
+          "min": 14.533333333333333,
+          "max": 19.766666666666666
+        },
+        "elapsed_seconds": {
+          "n": 3,
+          "mean": 1.540385014008886,
+          "sample_std": 0.004067886445938606,
+          "min": 1.5367897920077667,
+          "max": 1.5448005410144106
+        },
+        "divergence_count": 0,
+        "beta_mean": {
+          "n": 3,
+          "mean": 0.7843465275234647,
+          "sample_std": 0.008102796816394225,
+          "min": 0.7796230241656303,
+          "max": 0.7937026843428612
+        },
+        "mean_within_tensor_beta_std": {
+          "n": 3,
+          "mean": 0.03575822623032662,
+          "sample_std": 0.0015088311191220514,
+          "min": 0.03445854658881823,
+          "max": 0.03741290234029293
+        }
+      },
+      "noise20|c=0.1|lr=0.6|tensor": {
+        "best_validation_accuracy": {
+          "n": 3,
+          "mean": 22.633333333333336,
+          "sample_std": 3.85918817024168,
+          "min": 18.3,
+          "max": 25.7
+        },
+        "selected_test_accuracy": {
+          "n": 3,
+          "mean": 22.833333333333332,
+          "sample_std": 2.9733538863265716,
+          "min": 19.6,
+          "max": 25.45
+        },
+        "mean_validation_accuracy": {
+          "n": 3,
+          "mean": 17.15,
+          "sample_std": 2.5043850431681722,
+          "min": 14.433333333333332,
+          "max": 19.366666666666667
+        },
+        "elapsed_seconds": {
+          "n": 3,
+          "mean": 1.5776785143243615,
+          "sample_std": 0.035148456410217056,
+          "min": 1.551005042012548,
+          "max": 1.6175069169839844
+        },
+        "divergence_count": 0,
+        "beta_mean": {
+          "n": 3,
+          "mean": 0.7936994996335772,
+          "sample_std": 0.0044593185837385925,
+          "min": 0.7896506960193316,
+          "max": 0.7984790628155073
+        },
+        "mean_within_tensor_beta_std": {
+          "n": 3,
+          "mean": 0.0,
+          "sample_std": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        }
+      }
+    },
+    "paired_rows": [
+      {
+        "condition": "clean",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.05,
+        "seed": 101,
+        "delta_best_validation_accuracy": -0.9000000000000057,
+        "delta_selected_test_accuracy": -0.1999999999999993,
+        "delta_mean_validation_accuracy": -0.10000000000000497,
+        "output_over_tensor_elapsed_ratio": 0.8954723122746416
+      },
+      {
+        "condition": "clean",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.05,
+        "seed": 202,
+        "delta_best_validation_accuracy": -0.3000000000000007,
+        "delta_selected_test_accuracy": 0.75,
+        "delta_mean_validation_accuracy": -0.5500000000000043,
+        "output_over_tensor_elapsed_ratio": 0.9870384403394267
+      },
+      {
+        "condition": "clean",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.05,
+        "seed": 303,
+        "delta_best_validation_accuracy": -1.9999999999999964,
+        "delta_selected_test_accuracy": -1.6000000000000014,
+        "delta_mean_validation_accuracy": -1.4833333333333307,
+        "output_over_tensor_elapsed_ratio": 1.0051599355161451
+      },
+      {
+        "condition": "clean",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.2,
+        "seed": 101,
+        "delta_best_validation_accuracy": 1.6999999999999993,
+        "delta_selected_test_accuracy": 1.6000000000000014,
+        "delta_mean_validation_accuracy": -0.23333333333333428,
+        "output_over_tensor_elapsed_ratio": 0.9750408952441822
+      },
+      {
+        "condition": "clean",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.2,
+        "seed": 202,
+        "delta_best_validation_accuracy": -0.8000000000000007,
+        "delta_selected_test_accuracy": -0.5,
+        "delta_mean_validation_accuracy": -0.5833333333333321,
+        "output_over_tensor_elapsed_ratio": 0.9951178404026736
+      },
+      {
+        "condition": "clean",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.2,
+        "seed": 303,
+        "delta_best_validation_accuracy": 1.5999999999999979,
+        "delta_selected_test_accuracy": 2.849999999999998,
+        "delta_mean_validation_accuracy": 0.06666666666666643,
+        "output_over_tensor_elapsed_ratio": 1.0183976563072659
+      },
+      {
+        "condition": "clean",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.6,
+        "seed": 101,
+        "delta_best_validation_accuracy": 0.3999999999999986,
+        "delta_selected_test_accuracy": 1.5,
+        "delta_mean_validation_accuracy": 0.216666666666665,
+        "output_over_tensor_elapsed_ratio": 0.995665471189127
+      },
+      {
+        "condition": "clean",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.6,
+        "seed": 202,
+        "delta_best_validation_accuracy": 1.6999999999999993,
+        "delta_selected_test_accuracy": 0.5500000000000007,
+        "delta_mean_validation_accuracy": 0.8833333333333364,
+        "output_over_tensor_elapsed_ratio": 0.9599162784510487
+      },
+      {
+        "condition": "clean",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.6,
+        "seed": 303,
+        "delta_best_validation_accuracy": -0.6999999999999993,
+        "delta_selected_test_accuracy": -0.5,
+        "delta_mean_validation_accuracy": -0.5500000000000007,
+        "output_over_tensor_elapsed_ratio": 1.0085836620839435
+      },
+      {
+        "condition": "noise20",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.05,
+        "seed": 101,
+        "delta_best_validation_accuracy": -0.19999999999999574,
+        "delta_selected_test_accuracy": 0.8500000000000014,
+        "delta_mean_validation_accuracy": 0.03333333333333499,
+        "output_over_tensor_elapsed_ratio": 1.0100241864708797
+      },
+      {
+        "condition": "noise20",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.05,
+        "seed": 202,
+        "delta_best_validation_accuracy": 0.3000000000000007,
+        "delta_selected_test_accuracy": -0.10000000000000142,
+        "delta_mean_validation_accuracy": 0.5000000000000036,
+        "output_over_tensor_elapsed_ratio": 0.9919269920955252
+      },
+      {
+        "condition": "noise20",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.05,
+        "seed": 303,
+        "delta_best_validation_accuracy": 0.10000000000000142,
+        "delta_selected_test_accuracy": -0.09999999999999787,
+        "delta_mean_validation_accuracy": 0.14999999999999858,
+        "output_over_tensor_elapsed_ratio": 0.9959090388398977
+      },
+      {
+        "condition": "noise20",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.2,
+        "seed": 101,
+        "delta_best_validation_accuracy": -0.8000000000000007,
+        "delta_selected_test_accuracy": -1.5,
+        "delta_mean_validation_accuracy": -0.10000000000000142,
+        "output_over_tensor_elapsed_ratio": 0.9654983335288987
+      },
+      {
+        "condition": "noise20",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.2,
+        "seed": 202,
+        "delta_best_validation_accuracy": 1.6000000000000014,
+        "delta_selected_test_accuracy": -0.5500000000000007,
+        "delta_mean_validation_accuracy": 1.3166666666666664,
+        "output_over_tensor_elapsed_ratio": 0.9569813413759365
+      },
+      {
+        "condition": "noise20",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.2,
+        "seed": 303,
+        "delta_best_validation_accuracy": 0.3000000000000007,
+        "delta_selected_test_accuracy": 2.0,
+        "delta_mean_validation_accuracy": 0.40000000000000213,
+        "output_over_tensor_elapsed_ratio": 0.9934036402247435
+      },
+      {
+        "condition": "noise20",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.6,
+        "seed": 101,
+        "delta_best_validation_accuracy": 1.1999999999999993,
+        "delta_selected_test_accuracy": 0.1999999999999993,
+        "delta_mean_validation_accuracy": 0.3999999999999986,
+        "output_over_tensor_elapsed_ratio": 0.9873935790012118
+      },
+      {
+        "condition": "noise20",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.6,
+        "seed": 202,
+        "delta_best_validation_accuracy": 0.5999999999999979,
+        "delta_selected_test_accuracy": -1.5500000000000007,
+        "delta_mean_validation_accuracy": 0.10000000000000142,
+        "output_over_tensor_elapsed_ratio": 0.9926239227480377
+      },
+      {
+        "condition": "noise20",
+        "adaptation_rate": 0.1,
+        "learning_rate": 0.6,
+        "seed": 303,
+        "delta_best_validation_accuracy": 3.0,
+        "delta_selected_test_accuracy": 0.9499999999999993,
+        "delta_mean_validation_accuracy": 0.6999999999999993,
+        "output_over_tensor_elapsed_ratio": 0.9500978177411918
+      }
+    ],
+    "aggregate_paired": {
+      "delta_best_validation_accuracy": {
+        "n": 18,
+        "mean": 0.3777777777777776,
+        "sample_std": 1.2412306775016646,
+        "min": -1.9999999999999964,
+        "max": 3.0
+      },
+      "delta_selected_test_accuracy": {
+        "n": 18,
+        "mean": 0.25833333333333325,
+        "sample_std": 1.2446650860655601,
+        "min": -1.6000000000000014,
+        "max": 2.849999999999998
+      },
+      "delta_mean_validation_accuracy": {
+        "n": 18,
+        "mean": 0.06481481481481469,
+        "sample_std": 0.6326076567267507,
+        "min": -1.4833333333333307,
+        "max": 1.3166666666666664
+      },
+      "output_over_tensor_elapsed_ratio": {
+        "n": 18,
+        "mean": 0.982458407990821,
+        "sample_std": 0.02893888130959334,
+        "min": 0.8954723122746416,
+        "max": 1.0183976563072659
+      },
+      "output_wins_best_validation": 11,
+      "ties_best_validation": 0,
+      "pair_count": 18
+    }
+  },
+  "software": {
+    "python": "3.14.4",
+    "torch": "2.13.0",
+    "numpy": "2.5.1",
+    "platform": "macOS-26.6-arm64-arm-64bit-Mach-O",
+    "mps_built": true,
+    "mps_available": true,
+    "torch_num_threads": 10
+  }
+}
