@@ -19,7 +19,6 @@ LRs = (
     1.0,
 )
 BATCH_SIZES = (64, 128, 256, 512, 1024, 2048, 4096)
-C_VALS = (0.1, 0.3)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create a dynamic W&B Sweep configuration.")
@@ -48,7 +47,6 @@ if __name__ == "__main__":
         "parameters": {
             "align": {"values": ("MAL_ada",)},
             "nesterov": {"values": (True, False)},
-            "c": {"values": C_VALS},
             "batch_size": {"values": BATCH_SIZES},
             "lr": {"values": LRs},
             "seed": {"values": SEEDS},

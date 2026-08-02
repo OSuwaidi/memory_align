@@ -302,7 +302,6 @@ def main():
 
     align = config.align
     nest = config.nesterov
-    c = config.c
     bs = config.batch_size
     lr = config.lr
     seed = config.seed
@@ -321,7 +320,7 @@ def main():
         args.float32_precision,
     )
 
-    run.name = f"{align}_nest:{str(nest)[0]}_c:{c}_bs:{bs}_{lr}_{seed}"
+    run.name = f"{align}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
 
     set_seed(seed)
 
@@ -374,12 +373,7 @@ def main():
     )
 
     if "MAL" in align:
-        if "ada" in align:
-            adaptive = True
-        else:
-            adaptive = False
-
-        optimizer = MAL_SGD(model.parameters(), lr=lr, weight_decay=args.weight_decay, beta=args.beta, adaptive=adaptive, nesterov=nest, c=c)
+        optimizer = MAL_SGD(model.parameters(), lr=lr, weight_decay=args.weight_decay, beta=args.beta, nesterov=nest)
 
     elif align == "none":
         optimizer = SGD(
