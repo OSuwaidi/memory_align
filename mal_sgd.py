@@ -10,38 +10,33 @@ def _get_cosine_sim(
     *,
     per_output: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return cosine(candidate, gradient) and whether ``g`` is nonzero.
+    """Return scale-stable cosine similarity and gradient non-zero status.
 
-    With ``per_output=True``, tensors with two or more dimensions are split along
-    dimension 0.  Linear weights therefore reduce over ``in_features`` and
-    ConvNd weights reduce over ``(in_channels / groups, *kernel_size)``.  The
-    returned tensors have shape ``(out, 1, ..., 1)`` so they broadcast over the
-    corresponding weight blocks.  One-dimensional parameters are intentionally
-    treated as a single vector; per-coordinate cosine would degenerate to sign
-    gating.
+    A zero fresh gradient has no direction, so callers use ``has_gradient`` to retain their prior beta coefficient.
 
-    A zero fresh gradient has no direction, so callers use ``has_gradient`` to
-    retain the prior coefficient for that block.
+    With ``per_output=True``, tensors of two or more dimensions are split along dimension 0:
+    Linear weights reduce over ``in_features`` and ConvNd weights over
+    ``(in_channels / groups, *kernel_size)``, returning shape ``(out, 1, ..., 1)`` so the
+    result broadcasts back over the corresponding weight blocks. One-dimensional
+    parameters are always treated as a single vector -- a per-axis cosine there degenerates
+    to per-coordinate sign gating, which is the ``hard_per`` failure mode.
+
+    Note the statistical cost: the estimator's noise floor is ``~0.358/sqrt(d)`` in the
+    dimension ``d`` being reduced over (see ``diagnostics/fixed_point.py``). Splitting a
+    Conv2d weight per output unit drops ``d`` from ``numel`` to the per-unit fan-in, so the
+    CIFAR stem (fan-in 27) carries roughly 0.07 of pure estimator noise per unit. The
+    stored coefficient acts as the temporal filter that makes this usable.
     """
-
     if per_output and gradient.ndim > 1:
         reduce_dims = tuple(range(1, gradient.ndim))
-        gradient_norm = torch.linalg.vector_norm(
-            gradient,
-            dim=reduce_dims,
-            keepdim=True,
-        )
-        candidate_norm = torch.linalg.vector_norm(
-            candidate,
-            dim=reduce_dims,
-            keepdim=True,
-        )
+        gradient_norm = torch.linalg.vector_norm(gradient, dim=reduce_dims, keepdim=True)
+        candidate_norm = torch.linalg.vector_norm(candidate, dim=reduce_dims, keepdim=True)
         denominator = (candidate_norm * gradient_norm).clamp_min(1e-8)
         cosine = ((candidate * gradient).sum(dim=reduce_dims, keepdim=True) / denominator).clamp(-1.0, 1.0)
         return cosine, gradient_norm > 0.0
 
-    candidate_vec = candidate.flatten()
-    gradient_vec = gradient.flatten()
+    candidate_vec = candidate.reshape(-1)
+    gradient_vec = gradient.reshape(-1)
     gradient_norm = torch.linalg.vector_norm(gradient_vec)
 
     cosine = torch.cosine_similarity(
@@ -58,46 +53,59 @@ class MAL_SGD(Optimizer):
     r"""Memory-ALigned heavy-ball SGD with optional Nesterov correction.
 
     Let :math:`m_t` be the existing momentum buffer and :math:`g_t` the current (possibly
-    L2-regularized) gradient. MAL probes the ordinary candidate
+    L2-regularized) gradient. MAL probes the ordinary momentum candidate
 
     :math:`\hat{m_t} = \beta_{probe} \, m_t + g_t`
 
-    and maps its cosine with :math:`g_t` to retention :math:`r_t = (1 +
-    \text{cosine}) / 2`. Static MAL uses effective coefficient :math:`q_t =
-    \beta \, r_t`. Adaptive MAL treats :math:`r_t` as the target, interpolates
-    :math:`q_t = (1-a)\beta_{probe} + a r_t` using adaptation rate ``a=c``, and
-    stores :math:`q_t` as the next probe coefficient. The committed state is
-    :math:`m_{t+1} \gets q_t \, m_t + g_t`. Thus, ``c=1`` is the direct adaptive
-    rule and smaller ``c`` values temporally smooth beta.
+    and maps its cosine with :math:`g_t` to a retention coefficient
+    :math:`c_t = (1 + \text{cosine}) / 2 \in [0, 1]`, which is both applied and stored as the
+    next probe coefficient (:math:`\beta_{probe} \gets c_t`, per parameter tensor). The
+    committed state is :math:`m_{t+1} \gets c_t \, m_t + g_t`.
 
-    By default, alignment is measured independently for every output block.  For
-    a Conv2d weight with shape ``(out_channels, in_channels / groups, kh, kw)``,
-    this produces ``out_channels`` coefficients with shape ``(out_channels, 1,
-    1, 1)``.  Set ``per_output=False`` for the original one-coefficient-per-tensor
-    MAL rule.  Parameters with at most one dimension always use one coefficient.
+    Under Nesterov, the applied direction is :math:`g_t + c_t \, m_t` using the *updated*
+    buffer (PyTorch/Sutskever form), so a step with ``c == beta`` coincides with
+    ``torch.optim.SGD(momentum=beta, nesterov=True)``. MAL is deliberately a
+    time-varying-coefficient variant of that rule.
 
-    Under Nesterov, the applied direction is :math:`g_t + q_t \, m_t` using the *updated*
-    buffer. Thus, static MAL exactly recovers PyTorch SGDN whenever ``r == 1``;
-    adaptive MAL is deliberately a time-varying-coefficient Nesterov variant.
+    **There is no momentum hyperparameter.** The coefficient is recomputed from alignment
+    every step, and the recursion has a closed-form operating point: under isotropic
+    gradient noise :math:`\langle m, g \rangle \to 0`, so the steady state
+    :math:`\|m\|^2 = c^2 \|m\|^2 + \|g\|^2` gives
+    :math:`\cos(\hat{m}, g) = \sqrt{1 - c^2}` and the fixed point solves
+    :math:`2c - 1 = \sqrt{1 - c^2}`, i.e. :math:`5c^2 = 4c`, so
+
+    :math:`c^{*} = 4/5`
+
+    independent of dimension — an effective memory-kernel mass of 5 and horizon of 4 steps.
+    Deviations above 4/5 measure per-tensor gradient signal-to-noise: driving the recursion
+    with :math:`g = s + \xi` gives :math:`c^{*} = 0.80, 0.88, 0.95` at SNR
+    :math:`\|s\|/\|\xi\| = 0, 1, 2`. See ``diagnostics/fixed_point.py`` for the verification.
+
+    A zero buffer makes the probe self-aligned (:math:`c = 1`) so the first step is
+    un-damped; a zero gradient carries no alignment evidence and the previous coefficient
+    is retained rather than reading as an artificial 0.5.
+
+    ``per_output=True`` measures alignment independently for every output unit of a
+    weight tensor (``(out, 1, ..., 1)`` coefficients broadcasting over each unit's block)
+    instead of one coefficient per tensor. This is an experimental arm, not the default:
+    it produced the best small-CNN numbers on record but did not reproduce on the longer
+    protocol, and it trades resolution for estimator variance -- the noise floor rises from
+    ``0.358/sqrt(numel)`` to ``0.358/sqrt(fan-in)``. Parameters with ``ndim <= 1`` keep the
+    whole-tensor cosine either way.
     """
 
     def __init__(
         self,
         params: Iterable[torch.nn.Parameter],
         lr: float = 0.1,
-        beta: float = 0.9,
         weight_decay: float = 0.0,
         nesterov: bool = False,
-        per_output: bool = True,
+        per_output: bool = False,
     ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
-        if not 0.0 <= beta < 1.0:
-            raise ValueError(f"Invalid beta value: {beta}")
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
-        if nesterov and beta <= 0.0:
-            raise ValueError("Nesterov momentum requires a positive beta")
 
         self.per_output = per_output
 
@@ -120,14 +128,11 @@ class MAL_SGD(Optimizer):
         if not decay_params and not no_decay_params:
             raise ValueError("Optimizer received no trainable parameters.")
 
-        def initial_betas(group_params: list[torch.nn.Parameter]):
-            return [
-                p.new_full(
-                    (p.shape[0],) + (1,) * (p.ndim - 1) if per_output and p.ndim > 1 else (),
-                    beta,
-                )
-                for p in group_params
-            ]
+        def initial_betas(group_params: list[torch.nn.Parameter]) -> list[torch.Tensor]:
+            # Zero init: on step 1 the buffer is zero, so the probe reduces to g and the
+            # retention is 1 regardless of this value. Under per_output the coefficient is
+            # a column vector broadcasting over each output unit's weight block.
+            return [p.new_zeros((p.shape[0],) + (1,) * (p.ndim - 1)) if per_output and p.ndim > 1 else p.new_tensor(0.0) for p in group_params]
 
         optim_groups = []
 
@@ -183,12 +188,9 @@ class MAL_SGD(Optimizer):
                 beta_probe = group_beta[i]
                 m_hat = torch.addcmul(g, m, beta_probe)
 
-                cosine_sim, has_gradient = _get_cosine_sim(
-                    m_hat,
-                    g,
-                    per_output=self.per_output,
-                )
-                retention = (1.0 + cosine_sim) * 0.5
+                cosine_sim, has_gradient = _get_cosine_sim(m_hat, g, per_output=self.per_output)
+                d = (1.0 - cosine_sim) * 0.5  # normalized cosine distance
+                retention = 1.0 - d
 
                 # Effective momentum coefficient for this step
                 beta = torch.where(has_gradient, retention, beta_probe)
@@ -197,9 +199,7 @@ class MAL_SGD(Optimizer):
                 m.mul_(beta).add_(g)
 
                 if nesterov:
-                    # NAG look-ahead with the SAME aligned coefficient that decayed the
-                    # memory: u = g + c*m, so perfect alignment (d=0) recovers vanilla
-                    # Nesterov exactly, while a suspect memory gets less look-ahead
+                    # PyTorch/Sutskever form with the same current coefficient:
                     p.sub_(g, alpha=lr)
                     p.addcmul_(m, beta, value=-lr)
                 else:
