@@ -5,48 +5,71 @@ from torch.optim import Optimizer
 
 
 def _get_cosine_sim(
-    candidate: torch.Tensor,
+    momentum_or_candidate: torch.Tensor,
     gradient: torch.Tensor,
+    momentum_scale: torch.Tensor | None = None,
     *,
     per_output: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return scale-stable cosine similarity and gradient non-zero status.
+    """Return candidate/gradient cosine similarity and gradient non-zero status.
+
+    When ``momentum_scale`` is omitted, ``momentum_or_candidate`` is the already
+    materialized candidate. When it is supplied, the candidate is
+    ``momentum_scale * momentum_or_candidate + gradient``. Whole-tensor
+    alignment expands that affine candidate into three vector dot products so
+    it never needs to be materialized.
+
+    With ``per_output=True``, the candidate is materialized and tensors of two
+    or more dimensions use reductions over each output block. Batched versions
+    of the fused algebra require enough extra elementwise kernels that they are
+    not consistently faster, particularly for Linear weights and smaller
+    convolutions.
 
     A zero fresh gradient has no direction, so callers use ``has_gradient`` to retain their prior beta coefficient.
 
-    With ``per_output=True``, tensors of two or more dimensions are split along dimension 0:
     Linear weights reduce over ``in_features`` and ConvNd weights over
-    ``(in_channels / groups, *kernel_size)``, returning shape ``(out, 1, ..., 1)`` so the
-    result broadcasts back over the corresponding weight blocks. One-dimensional
-    parameters are always treated as a single vector -- a per-axis cosine there degenerates
-    to per-coordinate sign gating, which is the ``hard_per`` failure mode.
+    ``(in_channels / groups, *kernel_size)``. One-dimensional parameters are
+    always treated as a single vector -- a per-axis cosine there degenerates to
+    per-coordinate sign gating, which is the ``hard_per`` failure mode.
 
     Note the statistical cost: the estimator's noise floor is ``~0.358/sqrt(d)`` in the
     dimension ``d`` being reduced over (see ``diagnostics/fixed_point.py``). Splitting a
     Conv2d weight per output unit drops ``d`` from ``numel`` to the per-unit fan-in, so the
     CIFAR stem (fan-in 27) carries roughly 0.07 of pure estimator noise per unit. The
     stored coefficient acts as the temporal filter that makes this usable.
+
+    The whole-tensor expansion can lose precision if the candidate nearly
+    vanishes through cancellation. The final clamp prevents a negative value
+    from roundoff; ordinary optimizer states stay well away from the regime
+    where this formulation would become inaccurate.
     """
-    if per_output and gradient.ndim > 1:
-        reduce_dims = tuple(range(1, gradient.ndim))
-        gradient_norm = torch.linalg.vector_norm(gradient, dim=reduce_dims, keepdim=True)
-        candidate_norm = torch.linalg.vector_norm(candidate, dim=reduce_dims, keepdim=True)
-        denominator = (candidate_norm * gradient_norm).clamp_min(1e-8)
-        cosine = ((candidate * gradient).sum(dim=reduce_dims, keepdim=True) / denominator).clamp(-1.0, 1.0)
+    if momentum_scale is None or per_output:
+        candidate = momentum_or_candidate if momentum_scale is None else torch.addcmul(gradient, momentum_or_candidate, momentum_scale)
+        if per_output and gradient.ndim > 1:
+            reduce_dims = tuple(range(1, gradient.ndim))
+            gradient_norm = torch.linalg.vector_norm(gradient, dim=reduce_dims, keepdim=True)
+            candidate_norm = torch.linalg.vector_norm(candidate, dim=reduce_dims, keepdim=True)
+            denominator = (candidate_norm * gradient_norm).clamp_min(1e-8)
+            cosine = ((candidate * gradient).sum(dim=reduce_dims, keepdim=True) / denominator).clamp(-1.0, 1.0)
+            return cosine, gradient_norm > 0.0
+
+        candidate_vec = candidate.flatten()
+        gradient_vec = gradient.flatten()
+        gradient_norm = torch.linalg.vector_norm(gradient_vec)
+        cosine = torch.cosine_similarity(candidate_vec, gradient_vec, dim=0, eps=1e-8).clamp(-1.0, 1.0)
         return cosine, gradient_norm > 0.0
 
-    candidate_vec = candidate.reshape(-1)
-    gradient_vec = gradient.reshape(-1)
-    gradient_norm = torch.linalg.vector_norm(gradient_vec)
+    momentum_vec = momentum_or_candidate.flatten()
+    gradient_vec = gradient.flatten()
+    dot = momentum_vec @ gradient_vec
+    momentum_sq = momentum_vec @ momentum_vec
+    gradient_sq = gradient_vec @ gradient_vec
 
-    cosine = torch.cosine_similarity(
-        candidate_vec,
-        gradient_vec,
-        dim=0,
-        eps=1e-8,
-    ).clamp(-1.0, 1.0)
-    has_gradient = gradient_norm > 0.0
-    return cosine, has_gradient
+    numerator = momentum_scale * dot + gradient_sq
+    candidate_sq = (momentum_scale.square() * momentum_sq + 2.0 * momentum_scale * dot + gradient_sq).clamp_min(0.0)
+    denominator = (candidate_sq * gradient_sq).sqrt().clamp_min(1e-8)
+
+    return (numerator / denominator).clamp(-1.0, 1.0), gradient_sq > 0.0
 
 
 class MAL_SGD(Optimizer):
@@ -186,9 +209,12 @@ class MAL_SGD(Optimizer):
 
                 # Probe the ordinary momentum candidate before committing the MAL edit.
                 beta_probe = group_beta[i]
-                m_hat = torch.addcmul(g, m, beta_probe)
-
-                cosine_sim, has_gradient = _get_cosine_sim(m_hat, g, per_output=self.per_output)
+                cosine_sim, has_gradient = _get_cosine_sim(
+                    m,
+                    g,
+                    beta_probe,
+                    per_output=self.per_output,
+                )
                 d = (1.0 - cosine_sim) * 0.5  # normalized cosine distance
                 retention = 1.0 - d
 

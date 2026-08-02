@@ -220,7 +220,7 @@ def main():
         help="Internal precision for residual CUDA float32 matmuls/convolutions.",
     )
 
-    # "parse_known_args" only parses CLI args that are defined above; doesn't capture/prarse all args that are present in the command
+    # "parse_known_args" only parses CLI args that are defined above; it doesn't capture/prarse all args that are present in the actual command
     args, unknown = parser.parse_known_args()  # W&B appends sweep configs as CLI args; ignore them here as they're captured via "run.config"
 
     if args.data == "cifar10":
@@ -283,15 +283,15 @@ def main():
     # Start W&B Sweeps (W&B Sweeps injects the configs automatically):
     run = wandb.init(  # the "entity" is known from the run command, and "project" is inherited from the sweep config
         job_type="train",
-        tags=("BS x LR",),
+        tags=("MAL BS x LR",),
         config={
             "model": args.arch,
             "epochs": args.epochs,
             "weight_decay": args.weight_decay,
             "beta": args.beta,
+            "label_smoothing": args.label_smoothing,
             "amp_dtype": args.amp_dtype,
             "float32_precision": args.float32_precision,
-            "label_smoothing": args.label_smoothing,
         },
     )  # individual runs are forced into the parent sweep's project name
 
@@ -372,7 +372,10 @@ def main():
     )
 
     if "MAL" in align:
-        optimizer = MAL_SGD(model.parameters(), lr=lr, weight_decay=args.weight_decay, beta=args.beta, nesterov=nest)
+        run.config.update({"beta": None}, allow_val_change=True)
+        if "per" in align:
+            per_output_node = True
+        optimizer = MAL_SGD(model.parameters(), lr=lr, weight_decay=args.weight_decay, beta=args.beta, nesterov=nest, per_output=per_output_node)
 
     elif align == "none":
         optimizer = SGD(

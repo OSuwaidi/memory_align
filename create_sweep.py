@@ -18,7 +18,7 @@ LRs = (
     0.8,
     1.0,
 )
-BATCH_SIZES = (64, 128, 256, 512, 1024, 2048, 4096)
+BATCH_SIZES = (64, 128, 256, 512, 1024, 2048, 4096)[::-1]
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create a dynamic W&B Sweep configuration.")
@@ -48,8 +48,9 @@ if __name__ == "__main__":
             "align": {
                 "values": (
                     "MAL",
-                    "none",
-                    "cautious",
+                    "MAL_per",
+                    # "none",
+                    # "cautious",
                 )
             },
             "nesterov": {"values": (True, False)},
