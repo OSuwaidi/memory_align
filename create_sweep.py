@@ -45,7 +45,13 @@ if __name__ == "__main__":
             "goal": "maximize",
         },
         "parameters": {
-            "align": {"values": ("MAL_ada",)},
+            "align": {
+                "values": (
+                    "MAL",
+                    "none",
+                    "cautious",
+                )
+            },
             "nesterov": {"values": (True, False)},
             "batch_size": {"values": BATCH_SIZES},
             "lr": {"values": LRs},

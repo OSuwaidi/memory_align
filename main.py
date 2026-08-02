@@ -206,7 +206,6 @@ def main():
     parser.add_argument("--weight_decay", type=float, default=5e-4)
     parser.add_argument("--label_smoothing", type=float, default=0.1)
     parser.add_argument("--beta", type=float, default=0.9)
-    parser.add_argument("--nesterov", default=False)
     parser.add_argument(
         "--amp_dtype",
         choices=("bfloat16", "float32"),
@@ -284,7 +283,7 @@ def main():
     # Start W&B Sweeps (W&B Sweeps injects the configs automatically):
     run = wandb.init(  # the "entity" is known from the run command, and "project" is inherited from the sweep config
         job_type="train",
-        tags=("per_output",),
+        tags=("BS x LR",),
         config={
             "model": args.arch,
             "epochs": args.epochs,

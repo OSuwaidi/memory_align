@@ -109,6 +109,7 @@ class MAL_SGD(Optimizer):
         for p in params:
             if not p.requires_grad:
                 continue
+            # Exclude biases and 1D normalization parameters from weight decay
             if weight_decay == 0.0 or p.ndim <= 1:
                 no_decay_params.append(p)
                 no_decay_momentum.append(torch.zeros_like(p))
@@ -117,7 +118,7 @@ class MAL_SGD(Optimizer):
                 decay_momentum.append(torch.zeros_like(p))
 
         if not decay_params and not no_decay_params:
-            raise ValueError("SGD received no trainable parameters.")
+            raise ValueError("Optimizer received no trainable parameters.")
 
         def initial_betas(group_params: list[torch.nn.Parameter]):
             return [
@@ -156,7 +157,8 @@ class MAL_SGD(Optimizer):
         super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
 
     @torch.no_grad()
-    def step(self, closure: Callable[[], float | torch.Tensor] | None = None):
+    def step(self, closure: Callable[[], float | torch.Tensor] | None = None) -> float | None:
+        """Perform a single optimization step."""
         loss = None
         if closure is not None:
             with torch.enable_grad():
