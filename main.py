@@ -305,6 +305,8 @@ def main():
     nest = config.nesterov
     bs = config.batch_size
     lr = config.lr
+    eff_lr = lr * bs / 256
+    run.config.update({"eff_lr": eff_lr}, allow_val_change=True)
     seed = config.seed
 
     if bs >= 2 * MAX_MICRO_BATCH_SIZE:
@@ -321,7 +323,7 @@ def main():
         args.float32_precision,
     )
 
-    run.name = f"{align}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
+    run.name = f"{align}_nest:{str(nest)[0]}_bs:{bs}_{eff_lr}_{seed}"
 
     set_seed(seed)
 
@@ -376,7 +378,7 @@ def main():
     if align in ("MAL", "MAL_CO"):
         optimizer = MAL_SGD(
             model.parameters(),
-            lr=lr,
+            lr=eff_lr,
             beta=args.beta,
             weight_decay=args.weight_decay,
             nesterov=nest,
@@ -386,7 +388,7 @@ def main():
     elif align == "none":
         optimizer = SGD(
             model.parameters(),
-            lr=lr,
+            lr=eff_lr,
             weight_decay=args.weight_decay,
             momentum=args.beta,
             dampening=0.0,
@@ -396,7 +398,7 @@ def main():
     elif align == "cautious":
         optimizer = CAUTIOUS_SGD(
             model.parameters(),
-            lr=lr,
+            lr=eff_lr,
             weight_decay=args.weight_decay,
             beta=args.beta,
             nesterov=nest,
