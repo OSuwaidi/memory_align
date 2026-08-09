@@ -48,7 +48,7 @@ if __name__ == "__main__":
             "align": {
                 "values": (
                     "MAL",
-                    "MAL_per",
+                    "MAL_CO",
                     # "none",
                     # "cautious",
                 )

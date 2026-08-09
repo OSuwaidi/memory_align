@@ -254,7 +254,7 @@ def run_experiment(config: ExperimentConfig) -> list[OptimizationRun]:
                 parameters,
                 lr=config.learning_rate,
                 beta=config.momentum,
-                adaptive=False,
+                mode="conflict_only",
                 nesterov=False,
             ),
             start,

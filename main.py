@@ -221,7 +221,7 @@ def main():
     )
 
     # "parse_known_args" only parses CLI args that are defined above; it doesn't capture/prarse all args that are present in the actual command
-    args, unknown = parser.parse_known_args()  # W&B appends sweep configs as CLI args; ignore them here as they're captured via "run.config"
+    args, _unknown = parser.parse_known_args()  # W&B appends sweep configs as CLI args; ignore them here as they're captured via "run.config"
 
     if args.data == "cifar10":
         DatasetCls = datasets.CIFAR10
@@ -234,6 +234,8 @@ def main():
         DatasetCls = datasets.CIFAR100
         MEAN = (0.5071, 0.4865, 0.4409)
         STD = (0.2673, 0.2564, 0.2762)
+    else:
+        raise ValueError(f'The given dataset "{args.data}" is not valid')
 
     train_transform = v2.Compose(
         [
@@ -328,7 +330,7 @@ def main():
     elif args.arch == "resnet50":
         model = resnet50
     else:
-        raise ValueError(f'Architecture "{model}" is not defined.')
+        raise ValueError(f'Architecture "{args.arch}" is not defined.')
 
     model = model(norm_layer=lambda n_channels: nn.GroupNorm(num_groups=min(32, n_channels // 4), num_channels=n_channels))
     model.conv1 = nn.Conv2d(3, model.conv1.out_channels, 3, bias=model.conv1.bias is not None, padding=1)
@@ -371,11 +373,15 @@ def main():
         pin_memory=True,
     )
 
-    if "MAL" in align:
-        run.config.update({"beta": None}, allow_val_change=True)
-        if "per" in align:
-            per_output_node = True
-        optimizer = MAL_SGD(model.parameters(), lr=lr, weight_decay=args.weight_decay, beta=args.beta, nesterov=nest, per_output=per_output_node)
+    if align in ("MAL", "MAL_CO"):
+        optimizer = MAL_SGD(
+            model.parameters(),
+            lr=lr,
+            beta=args.beta,
+            weight_decay=args.weight_decay,
+            nesterov=nest,
+            mode="conflict_only" if align == "MAL_CO" else "smooth",
+        )
 
     elif align == "none":
         optimizer = SGD(

@@ -1,4 +1,4 @@
-"""Adaptive-beta telemetry for MAL_SGD (adaptive=True).
+"""Adaptive-beta telemetry for MAL_SGD (mode="smooth").
 
 Trains ResNet-18-GN (repo recipe) on a CIFAR-10 subset (MPS), snapshots every per-tensor
 adaptive beta each optimizer step, and analyzes the distribution + evolution across layers
@@ -44,7 +44,7 @@ model.maxpool = nn.Identity()
 model.fc = nn.Linear(512, 10)
 model.to(DEVICE)
 
-opt = MAL_SGD(model.parameters(), lr=LR, beta=0.9, weight_decay=WD, adaptive=True, nesterov=False)
+opt = MAL_SGD(model.parameters(), lr=LR, beta=0.9, weight_decay=WD, mode="smooth", nesterov=False)
 
 # ---- map each optimizer param (in beta order) to name/type/size ----
 id2name = {id(p): n for n, p in model.named_parameters()}
