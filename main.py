@@ -1,5 +1,7 @@
 import argparse
 import random
+import signal
+import sys
 from multiprocessing import cpu_count
 from typing import Any
 
@@ -26,7 +28,8 @@ from mal_sgd import MAL_SGD
 # -------------------------
 DEVICE = torch.device("cuda")
 WARMUP_EPOCHS = 5
-NUM_WORKERS = cpu_count() // 2
+NUM_GPUS = torch.cuda.device_count()
+NUM_WORKERS = cpu_count() // (2 * NUM_GPUS)
 MAX_MICRO_BATCH_SIZE = 512
 
 
@@ -282,8 +285,8 @@ def main():
 
     train_size = int(0.85 * len(raw_ds))  # 42,500 (~64 val images per class held out)
 
-    # Start W&B Sweeps (W&B Sweeps injects the configs automatically):
-    run = wandb.init(  # the "entity" is known from the run command, and "project" is inherited from the sweep config
+    # Start W&B Sweeps (W&B Sweep injects its parameters as configs automatically):
+    run = wandb.init(  # the "entity" is known from the `wandb` run command, and "project" is inherited from the sweep config
         job_type="train",
         tags=("MAL BS x LR",),
         config={
@@ -295,7 +298,21 @@ def main():
             "amp_dtype": args.amp_dtype,
             "float32_precision": args.float32_precision,
         },
-    )  # individual runs are forced into the parent sweep's project name
+    )
+
+    # Handle system-level interruptions (e.g., SLURM, AWS Spot, manual kills)
+    def handle_preemption(signum, frame):
+        print(f"Received signal {signum}; re-queueing sweep run...")
+
+        run.mark_preempting()
+
+        exit_code = 128 + signum
+        run.finish(exit_code=exit_code)
+        sys.exit(exit_code)
+
+    signal.signal(signal.SIGTERM, handle_preemption)
+    signal.signal(signal.SIGUSR1, handle_preemption)
+    signal.signal(signal.SIGINT, handle_preemption)  # Ctrl+C
 
     run.define_metric("*", step_metric="epoch")  # let epoch be the default x-axis for all metrics
 
