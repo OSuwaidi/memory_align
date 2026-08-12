@@ -162,7 +162,7 @@ class MAL_SGD(Optimizer):
         super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
 
     @torch.no_grad()
-    def step(self, closure: Callable[[], float | torch.Tensor] | None = None) -> float | None:
+    def step(self, closure: Callable[[], float] | None = None) -> float | None:
         """Perform a single optimization step."""
         loss = None
         if closure is not None:
@@ -198,7 +198,7 @@ class MAL_SGD(Optimizer):
                     eff_beta = torch.where(has_gradient, retention, beta)
                 else:  # conflict_only
                     conflict = has_gradient & cosine_sim.lt(0.0)
-                    eff_beta = torch.where(conflict, beta*retention, beta)
+                    eff_beta = torch.where(conflict, beta * retention, beta)
 
                 m.mul_(eff_beta).add_(g)
 
