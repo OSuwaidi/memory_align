@@ -3,8 +3,6 @@ from collections.abc import Callable, Iterable
 import torch
 from torch.optim import Optimizer
 
-MAL_MODES: tuple[str, str] = ("smooth", "conflict_only")
-
 
 def _get_cosine_sim(
     momentum_or_candidate: torch.Tensor,
@@ -19,7 +17,7 @@ def _get_cosine_sim(
     alignment expands that affine candidate into three vector dot products so
     it never needs to be materialized.
 
-    A zero fresh gradient has no direction, so callers use ``has_gradient`` to retain their prior beta coefficient.
+    A zero fresh gradient has no direction, so callers use ``has_gradient`` to select their configured fallback coefficient.
 
     The whole-tensor expansion can lose precision if the candidate nearly
     vanishes through cancellation. The final clamp prevents a negative value
@@ -41,62 +39,45 @@ def _get_cosine_sim(
 
     numerator = momentum_scale * dot + gradient_sq
     candidate_sq = (momentum_scale**2 * momentum_sq + 2.0 * momentum_scale * dot + gradient_sq).clamp_min(0.0)
-    denominator = (candidate_sq * gradient_sq).sqrt().clamp_min(1e-8)
+    # Match cosine_similarity's per-vector epsilon. Clamping the product instead
+    # would suppress valid cosines whenever both norms are small but individually
+    # still exceed eps.
+    candidate_norm = candidate_sq.sqrt().clamp_min(1e-8)
+    gradient_norm = gradient_sq.sqrt().clamp_min(1e-8)
+    denominator = candidate_norm * gradient_norm
 
     return (numerator / denominator).clamp(-1.0, 1.0), gradient_sq > 0.0
 
 
 class MAL_SGD(Optimizer):
-    r"""Memory-ALigned heavy-ball SGD with two explicit retention rules.
+    r"""Memory-ALigned heavy-ball SGD.
 
     Let :math:`m_t` be the existing momentum buffer and :math:`g_t` the current (possibly
     L2-regularized) gradient. MAL first constructs the direction that the corresponding
-    base optimizer would apply using a probe coefficient :math:`\beta_{probe}`. For
-    heavy-ball SGD this is
+    base optimizer would apply using the fixed coefficient :math:`\beta`. For heavy-ball
+    SGD this is
 
-    :math:`\hat{u}_t = \hat{m}_t = \beta_{probe}m_t + g_t`,
+    :math:`\hat{u}_t = \hat{m}_t = \beta m_t + g_t`,
 
     while PyTorch-style Nesterov SGD uses
 
-    :math:`\hat{u}_t = g_t + \beta_{probe}\hat{m}_t`.
+    :math:`\hat{u}_t = g_t + \beta\hat{m}_t`.
 
-    MAL measures :math:`s_t=\cos(\hat{u}_t,g_t)`. The committed state is always
-    :math:`m_{t+1} \gets c_t \, m_t + g_t`, with ``mode`` selecting :math:`c_t`:
-
-    * ``"smooth"`` is the current fully adaptive MAL rule. It uses the previous
-      coefficient as :math:`\beta_{probe}` and sets
-      :math:`c_t=(1+s_t)/2` at every non-zero-gradient step. The result is stored as
-      the next per-parameter probe coefficient. ``beta`` only initializes that state.
-    * ``"conflict_only"`` keeps the same fixed ``beta`` whenever
-      :math:`s_t\geq0`. On conflict, it applies the smooth rule as an additional
-      multiplier: :math:`c_t=\beta(1+s_t)/2`. This is the literal fixed-beta-plus-
-      conflict-decay ablation; it intentionally has a threshold discontinuity.
+    MAL measures :math:`s_t=\cos(\hat{u}_t,g_t)` and commits
+    :math:`m_{t+1} \gets c_t \, m_t + g_t`, where
+    :math:`c_t=(1+s_t)/2` for a non-zero gradient. Thus ``beta`` controls the fixed
+    candidate probe while the smoothly adaptive :math:`c_t` controls the update.
 
     Under Nesterov, the applied direction is :math:`g_t + c_t \, m_t` using the *updated*
-    buffer (PyTorch/Sutskever form), so a fixed-mode step with ``c == beta`` coincides with
-    ``torch.optim.SGD(momentum=beta, nesterov=True)``. MAL is deliberately a
-    time-varying-coefficient variant of that rule.
-
-    In the non-Nesterov smooth mode the coefficient is recomputed from alignment every
-    step, and the recursion has a closed-form operating point: under
-    isotropic gradient noise :math:`\langle m, g \rangle \to 0`, so the steady state
-    :math:`\|m\|^2 = c^2 \|m\|^2 + \|g\|^2` gives
-    :math:`\cos(\hat{m}, g) = \sqrt{1 - c^2}` and the fixed point solves
-    :math:`2c - 1 = \sqrt{1 - c^2}`, i.e. :math:`5c^2 = 4c`, so
-
-    :math:`c^{*} = 4/5`
-
-    independent of dimension — an effective memory-kernel mass of 5 and horizon of 4 steps.
-    Deviations above 4/5 measure per-tensor gradient signal-to-noise: driving the recursion
-    with :math:`g = s + \xi` gives :math:`c^{*} = 0.80, 0.88, 0.95` at SNR
-    :math:`\|s\|/\|\xi\| = 0, 1, 2`. See ``diagnostics/fixed_point.py`` for the verification.
+    buffer (PyTorch/Sutskever form). MAL is deliberately a time-varying-coefficient
+    variant of that rule.
 
     A zero buffer makes the probe self-aligned (:math:`c = 1`), so the first step is
-    undamped; a zero gradient carries no alignment evidence, and the previous coefficient
-    is retained rather than reading as an artificial 0.5.
+    undamped; a zero gradient carries no alignment evidence, so it falls back to the
+    fixed ``beta`` rather than reading as an artificial 0.5.
 
-    Alignment is always measured over the entire parameter tensor, and each parameter
-    tensor stores one scalar coefficient.
+    Alignment is always measured over the entire parameter tensor, producing one scalar
+    effective coefficient per parameter tensor and step.
     """
 
     def __init__(
@@ -106,7 +87,6 @@ class MAL_SGD(Optimizer):
         beta: float = 0.9,
         weight_decay: float = 0.0,
         nesterov: bool = False,
-        mode: str = "smooth",
     ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -114,8 +94,6 @@ class MAL_SGD(Optimizer):
             raise ValueError(f"Invalid beta value: {beta}")
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
-        if mode not in MAL_MODES:
-            raise ValueError(f"Invalid MAL mode: {mode!r}; expected one of {MAL_MODES}")
         if nesterov and beta <= 0.0:
             raise ValueError("Nesterov momentum requires a positive initial beta")
 
@@ -147,7 +125,6 @@ class MAL_SGD(Optimizer):
                     "params": no_decay_params,
                     "momentum": no_decay_momentum,
                     "weight_decay": 0.0,
-                    "beta_states": [torch.tensor(beta, device=p.device) for p in no_decay_params],
                 }
             )
         if decay_params:
@@ -156,15 +133,13 @@ class MAL_SGD(Optimizer):
                     "params": decay_params,
                     "momentum": decay_momentum,
                     "weight_decay": weight_decay,
-                    "beta_states": [torch.tensor(beta, device=p.device) for p in no_decay_params],
                 },
             )
 
         defaults = {
             "lr": lr,
             "nesterov": nesterov,
-            "base_beta": beta,
-            "mal_mode": mode,
+            "beta": beta,
         }  # shared across all optim/param groups
         super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
 
@@ -180,11 +155,8 @@ class MAL_SGD(Optimizer):
             lr = group["lr"]
             wd = group["weight_decay"]
             nesterov = group["nesterov"]
-            beta_states = group["beta_states"]
-            base_beta = group["base_beta"]
-            mode = group["mode"]
-
-            for i, (p, m, beta_state) in enumerate(zip(group["params"], group["momentum"], beta_states)):
+            beta = group["beta"]
+            for p, m in zip(group["params"], group["momentum"]):
                 if p.grad is None:
                     continue
 
@@ -193,32 +165,25 @@ class MAL_SGD(Optimizer):
                     # Coupled weight decay without mutating "p.grad" in-place.
                     g = g.add(p, alpha=wd)
 
-                beta_probe: float | torch.Tensor = beta_state if mode == "smooth" else base_beta
-
                 # Probe the direction the base optimizer would apply before MAL edits
                 # its memory coefficient. Cosine is invariant to positive scaling, so
                 # the Nesterov direction
                 #   g + beta*(beta*m + g) = beta**2*m + (1 + beta)*g
                 # can be normalized to g + beta**2/(1 + beta)*m and evaluated by the
                 # allocation-free affine expansion in ``_get_cosine_sim``.
-                probe_momentum_scale = beta_probe
+                probe_momentum_scale = beta
                 if nesterov:
-                    probe_momentum_scale = beta_probe**2 / (1.0 + beta_probe)
+                    probe_momentum_scale = beta**2 / (1.0 + beta)
 
                 cosine_sim, has_gradient = _get_cosine_sim(
                     m,
                     g,
                     probe_momentum_scale,
                 )
-                d = (1.0 - cosine_sim) * 0.5  # normalized cosine distance
-                retention = 1.0 - d
+                retention = (1.0 + cosine_sim) * 0.5
 
                 # Effective momentum coefficient for this step
-                if mode == "smooth":
-                    eff_beta = beta_state.copy_(torch.where(has_gradient, retention, beta_state))
-                else:  # conflict_only
-                    conflict = has_gradient & cosine_sim.lt(0.0)
-                    eff_beta = beta_state.copy_(retention).mul_(base_beta).masked_fill_(~conflict, base_beta)
+                eff_beta = torch.where(has_gradient, retention, beta)
 
                 m.mul_(eff_beta).add_(g)
 
@@ -239,7 +204,7 @@ class MAL_ADAMW(Optimizer):
     scalar coefficient per parameter tensor. Crucially, MAL scores the proposed
     *parameter direction*, not the unpreconditioned first moment. Given probe moments
 
-    :math:`m_t^{probe}=\beta_{probe}m_{t-1}+(1-\beta_{probe})g_t`,
+    :math:`m_t^{probe}=\beta_1m_{t-1}+(1-\beta_1)g_t`,
 
     :math:`v_t=\beta_2v_{t-1}+(1-\beta_2)g_t^2`,
 
@@ -251,17 +216,15 @@ class MAL_ADAMW(Optimizer):
     positive diagonal preconditioner preserves coordinate signs but generally changes
     a whole-tensor cosine.
 
-    ``mode="smooth"`` uses the preceding coefficient as ``beta_probe`` and sets
-    ``c = (1 + s_t) / 2`` at every step. ``mode="conflict_only"`` probes with the
-    fixed beta1 and keeps ``c = beta1`` unless the proposed update conflicts with the
-    gradient, in which case ``c = beta1 * (1 + s_t) / 2``.
+    The candidate always uses the fixed ``beta1``. MAL then applies the smooth adaptive
+    coefficient :math:`c_t=(1+s_t)/2` on every aligned parameter step.
 
     The committed EMA is m <- c*m + (1-c)*g. The second moment (scale tracker,
     beta2) and its bias correction are standard AdamW and are never gated.
 
     First-moment bias correction is exact under dynamic per-tensor c: the running
-    product bc_prod = prod_s c_s is tracked per parameter, and the correction is
-    1 - bc_prod (reduces to 1 - beta1^t for constant c). Smooth c is capped at
+    product ``beta_product = prod_s c_s`` is tracked per parameter, and the correction is
+    ``1 - beta_product`` (reduces to ``1 - beta1**t`` for constant c). Smooth c is capped at
     1 - 1e-4 because c = 1 is the one degenerate EMA value (zero mass on g freezes
     the memory and zeroes the correction). A perfectly aligned first adaptive step
     has the same bias-corrected direction as AdamW, but deliberately a much longer
@@ -284,7 +247,6 @@ class MAL_ADAMW(Optimizer):
         betas: tuple[float, float] = (0.9, 0.999),
         eps: float = 1e-8,
         weight_decay: float = 0.0,
-        mode: str = "smooth",
         align_1d: bool = False,
     ) -> None:
         if lr < 0.0:
@@ -297,11 +259,6 @@ class MAL_ADAMW(Optimizer):
             raise ValueError(f"Invalid eps value: {eps}")
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
-        if mode not in MAL_MODES:
-            raise ValueError(f"Invalid MAL mode: {mode!r}; expected one of {MAL_MODES}")
-
-        beta1 = betas[0]
-        self.align_1d = align_1d
 
         decay_params: list[torch.nn.Parameter] = []
         no_decay_params: list[torch.nn.Parameter] = []
@@ -331,21 +288,17 @@ class MAL_ADAMW(Optimizer):
                         "m": [torch.zeros_like(p) for p in group_params],
                         "v": [torch.zeros_like(p) for p in group_params],
                         "weight_decay": group_wd,
-                        "beta_states": [torch.tensor(beta1, device=p.device) for p in group_params],
-                        "bc_prod": [torch.tensor(1.0, device=p.device) for p in group_params],
                         "step": [0 for _ in group_params],
-                        "base_beta1": beta1,
-                        "mal_mode": mode,
+                        "beta_product": [torch.tensor(1.0, device=p.device) for p in group_params],
                         "align_1d": align_1d,
                     }
                 )
 
         defaults = {
             "lr": lr,
+            "beta1": betas[0],
             "beta2": betas[1],
             "eps": eps,
-            "base_beta1": beta1,
-            "mal_mode": mode,
             "align_1d": align_1d,
         }
         super().__init__(optim_groups, defaults)
@@ -360,21 +313,16 @@ class MAL_ADAMW(Optimizer):
         for group in self.param_groups:
             lr = group["lr"]
             wd = group["weight_decay"]
+            beta1 = group["beta1"]
             beta2 = group["beta2"]
             eps = group["eps"]
-            betas = group["beta_states"]
-            bc_prods = group["bc_prod"]
             steps = group["step"]
-            base_beta1 = group["base_beta1"]
-            mode = group["mal_mode"]
+            beta_products = group["beta_product"]
             align_1d = group["align_1d"]
 
-            for i, (p, m, v) in enumerate(zip(group["params"], group["m"], group["v"])):
+            for i, (p, m, v, beta_product) in enumerate(zip(group["params"], group["m"], group["v"], beta_products)):
                 if p.grad is None:
                     continue
-
-                beta1_state = betas[i]
-                bc_prod_state = bc_prods[i]
 
                 g = p.grad
                 steps[i] += 1
@@ -388,32 +336,27 @@ class MAL_ADAMW(Optimizer):
 
                 if p.ndim > 1 or align_1d:
                     # Alignment of the proposed, fully preconditioned AdamW update
-                    # with the fresh gradient. The first-moment bias correction is a
-                    # positive scalar and therefore cannot change the cosine, but it is
-                    # included so ``u_probe`` is exactly the proposed AdamW direction.
-                    beta_probe: float | torch.Tensor = beta1_state if mode == "smooth" else base_beta1
-                    m_probe = m.lerp(g, 1.0 - beta_probe)
-                    probe_bc1 = 1.0 - bc_prod_state * beta_probe
-                    u_probe = m_probe.div(probe_bc1).div_(denominator)
+                    # with the fresh gradient. First-moment bias correction is a
+                    # positive tensor-wide scalar, so it cannot change this cosine.
+                    m_probe = m.lerp(g, 1.0 - beta1)
+                    u_probe = m_probe.div(denominator)
                     cosine_sim, has_gradient = _get_cosine_sim(u_probe, g)
-                    d = (1.0 - cosine_sim) * 0.5  # normalized cosine distance
-                    retention = 1.0 - d
+                    retention = (1.0 + cosine_sim) * 0.5
 
-                    if mode == "smooth":
-                        proposed_c = retention.clamp_max(self.MAX_BETA1)
-                        c = torch.where(has_gradient, proposed_c, beta1_state)
-                        c = beta1_state.copy_(c)
-                    else:  # conflict_only
-                        conflict = has_gradient & cosine_sim.lt(0.0)
-                        c = beta1_state.copy_(retention).mul_(base_beta1).masked_fill_(~conflict, base_beta1)
+                    # Keep the coefficient in stable scalar-state precision. In fp16
+                    # or bf16, MAX_BETA1 would otherwise round to 1 and zero the bias
+                    # correction on strongly aligned steps.
+                    retention = retention.to(beta_product.dtype)
+                    eff_beta1 = torch.where(has_gradient, retention, beta1).clamp_max(self.MAX_BETA1)
+
                 else:
-                    c = beta1_state.fill_(base_beta1)  # tiny 1-D params: plain EMA
+                    eff_beta1 = beta1  # tiny 1-D params: plain EMA
 
-                m.lerp_(g, 1.0 - c)  # m <- c*m + (1-c)*g
-                bc_prod_state.mul_(c)
+                m.lerp_(g, 1.0 - eff_beta1)  # m <- c*m + (1-c)*g
 
                 # AdamW update with exact first-moment bias correction under dynamic c
-                u = m.div(1.0 - bc_prod_state).div_(denominator)
+                beta_product.mul_(eff_beta1)
+                u = m.div(1.0 - beta_product).div_(denominator)
                 p.add_(u, alpha=-lr)
 
         return loss

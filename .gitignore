@@ -63,8 +63,7 @@ helper.py
 .pdm-python
 .pdm-build/
 test*
-!tests/
-!tests/test_mal_sgd.py
+tests/
 
 # pixi
 #   Similar to Pipfile.lock, it is generally recommended to include pixi.lock in version control.
