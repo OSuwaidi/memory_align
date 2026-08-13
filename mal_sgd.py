@@ -86,6 +86,7 @@ class MAL_SGD(Optimizer):
         lr: float = 0.1,
         beta: float = 0.9,
         weight_decay: float = 0.0,
+        pwr: float = 1.0,
         nesterov: bool = False,
     ) -> None:
         if lr < 0.0:
@@ -94,14 +95,13 @@ class MAL_SGD(Optimizer):
             raise ValueError(f"Invalid beta value: {beta}")
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
+        if not 0.0 < pwr <= 1.0:
+            raise ValueError(f"Invalid p value: {pwr}")
         if nesterov and beta <= 0.0:
             raise ValueError("Nesterov momentum requires a positive initial beta")
 
         decay_params: list[torch.nn.Parameter] = []
-        decay_momentum: list[torch.Tensor] = []
-
         no_decay_params: list[torch.nn.Parameter] = []
-        no_decay_momentum: list[torch.Tensor] = []
 
         for p in params:
             if not p.requires_grad:
@@ -109,10 +109,8 @@ class MAL_SGD(Optimizer):
             # Exclude biases and 1D normalization parameters from weight decay
             if weight_decay == 0.0 or p.ndim <= 1:
                 no_decay_params.append(p)
-                no_decay_momentum.append(torch.zeros_like(p))
             else:
                 decay_params.append(p)
-                decay_momentum.append(torch.zeros_like(p))
 
         if not decay_params and not no_decay_params:
             raise ValueError("Optimizer received no trainable parameters.")
@@ -123,7 +121,7 @@ class MAL_SGD(Optimizer):
             optim_groups.append(
                 {
                     "params": no_decay_params,
-                    "momentum": no_decay_momentum,
+                    "momentum": [torch.zeros_like(p) for p in no_decay_params],
                     "weight_decay": 0.0,
                 }
             )
@@ -131,15 +129,16 @@ class MAL_SGD(Optimizer):
             optim_groups.append(
                 {
                     "params": decay_params,
-                    "momentum": decay_momentum,
+                    "momentum": [torch.zeros_like(p) for p in decay_params],
                     "weight_decay": weight_decay,
                 },
             )
 
         defaults = {
             "lr": lr,
-            "nesterov": nesterov,
             "beta": beta,
+            "pwr": pwr,
+            "nesterov": nesterov,
         }  # shared across all optim/param groups
         super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
 
@@ -153,9 +152,10 @@ class MAL_SGD(Optimizer):
 
         for group in self.param_groups:
             lr = group["lr"]
-            wd = group["weight_decay"]
-            nesterov = group["nesterov"]
             beta = group["beta"]
+            wd = group["weight_decay"]
+            pwr = group["pwr"]
+            nesterov = group["nesterov"]
             for p, m in zip(group["params"], group["momentum"]):
                 if p.grad is None:
                     continue
@@ -180,7 +180,7 @@ class MAL_SGD(Optimizer):
                     g,
                     probe_momentum_scale,
                 )
-                retention = (1.0 + cosine_sim) * 0.5
+                retention = ((1.0 + cosine_sim) * 0.5) ** pwr
 
                 # Effective momentum coefficient for this step
                 eff_beta = torch.where(has_gradient, retention, beta)
@@ -247,6 +247,7 @@ class MAL_ADAMW(Optimizer):
         betas: tuple[float, float] = (0.9, 0.999),
         eps: float = 1e-8,
         weight_decay: float = 0.0,
+        pwr: float = 1.0,
         align_1d: bool = False,
     ) -> None:
         if lr < 0.0:
@@ -298,6 +299,7 @@ class MAL_ADAMW(Optimizer):
             "lr": lr,
             "beta1": betas[0],
             "beta2": betas[1],
+            "pwr": pwr,
             "eps": eps,
             "align_1d": align_1d,
         }
@@ -315,6 +317,7 @@ class MAL_ADAMW(Optimizer):
             wd = group["weight_decay"]
             beta1 = group["beta1"]
             beta2 = group["beta2"]
+            pwr = group["pwr"]
             eps = group["eps"]
             steps = group["step"]
             beta_products = group["beta_product"]
@@ -346,7 +349,7 @@ class MAL_ADAMW(Optimizer):
                     # Keep the coefficient in stable scalar-state precision. In fp16
                     # or bf16, MAX_BETA1 would otherwise round to 1 and zero the bias
                     # correction on strongly aligned steps.
-                    retention = retention.to(beta_product.dtype)
+                    retention = (retention.to(beta_product.dtype)) ** pwr
                     eff_beta1 = torch.where(has_gradient, retention, beta1).clamp_max(self.MAX_BETA1)
 
                 else:
