@@ -276,7 +276,7 @@ def main():
         test_ds,
         batch_size=1000,
         shuffle=False,
-        num_workers=1,
+        num_workers=2 // NUM_GPUS,
         persistent_workers=False,
         pin_memory=True,
     )
@@ -387,7 +387,7 @@ def main():
         val_ds,
         batch_size=1000,
         shuffle=False,
-        num_workers=1,
+        num_workers=2 // NUM_GPUS,
         persistent_workers=False,
         pin_memory=True,
     )
@@ -399,7 +399,6 @@ def main():
             beta=args.beta,
             weight_decay=args.weight_decay,
             nesterov=nest,
-            mode="conflict_only" if align == "MAL_CO" else "smooth",
         )
 
     elif align == "none":

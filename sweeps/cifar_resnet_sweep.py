@@ -3,12 +3,12 @@ import argparse
 import wandb
 
 # To initialize W&B sweep config:
-# $ uv run create_sweep.py <main.py> --data <___> --sweep_name <___> --project_name <___> --> prints <entity/project/sweep/sweep_id>
+# $ uv run sweeps/cifar_resnet_sweep.py <main.py> --data <___> --sweep_name <___> --project_name <___> --> prints <entity/project/sweep/sweep_id>
 # To assign/tag a run agent to a sweep:
 # $ CUDA_VISIBLE_DEVICES=0 uv run wandb agent --forward-signals <entity/project/sweep_id>
 
 ENTITY_NAME = "osuwaidi-khalifa-university"
-SEEDS = (77, 433, 1024)
+SEEDS = (42, 1337, 2026)
 LRs = (
     0.025,
     0.05,
@@ -36,7 +36,6 @@ def get_finished_run_ids(sweep_path: str) -> list[str]:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create a dynamic W&B Sweep configuration.")
     parser.add_argument("program", type=str, help="Python training script to run")  # required by default since positional arg
-    parser.add_argument("--data", type=str, help="Dataset name", required=True)
     parser.add_argument("--sweep_name", type=str, help="Sweep name", required=True)
     parser.add_argument("--project_name", type=str, help="Project name", required=True)
     parser.add_argument(
@@ -51,6 +50,8 @@ if __name__ == "__main__":
         choices=["grid", "random", "bayes"],
         help="Sweep search method",
     )
+    parser.add_argument("--data", type=str, help="Dataset name", required=True)
+    parser.add_argument("--arch", type=str, help="Architecture name", required=True)
     args = parser.parse_args()
 
     # 1. Define the sweep configuration
@@ -66,9 +67,8 @@ if __name__ == "__main__":
             "align": {
                 "values": (
                     "MAL",
-                    "MAL_CO",
-                    # "none",
-                    # "cautious",
+                    "none",
+                    "cautious",
                 )
             },
             "nesterov": {"values": (True, False)},
@@ -83,6 +83,8 @@ if __name__ == "__main__":
             "${program}",
             "--data",
             args.data,
+            "--arch",
+            args.arch,
             "${args}",  # MANDATORY at the end: expands all sweep parameters as CLI args
         ],
     }
