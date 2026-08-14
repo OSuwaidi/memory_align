@@ -17,7 +17,7 @@ def _get_cosine_sim(
     alignment expands that affine candidate into three vector dot products so
     it never needs to be materialized.
 
-    A zero fresh gradient has no direction, so callers use ``has_gradient`` to select their configured fallback coefficient.
+    A zero-fresh gradient has no direction, so callers use ``has_gradient`` to select their configured fallback coefficient.
 
     The whole-tensor expansion can lose precision if the candidate nearly
     vanishes through cancellation. The final clamp prevents a negative value
@@ -49,32 +49,36 @@ def _get_cosine_sim(
     return (numerator / denominator).clamp(-1.0, 1.0), gradient_sq > 0.0
 
 
-class MAL_SGD(Optimizer):
+class MAL_SGDM(Optimizer):
     r"""Memory-ALigned heavy-ball SGD.
 
-    Let :math:`m_t` be the existing momentum buffer and :math:`g_t` the current (possibly
-    L2-regularized) gradient. MAL first constructs the direction that the corresponding
-    base optimizer would apply using the fixed coefficient :math:`\beta`. For heavy-ball
-    SGD this is
+    Let :math:`m_{t-1}` be the stored momentum buffer and :math:`g_t` the current
+    (possibly L2-regularized) gradient. MAL first probes the direction that the
+    corresponding base optimizer would apply using the fixed coefficient
+    :math:`\beta`. The proposed plain heavy-ball buffer is
 
-    :math:`\hat{u}_t = \hat{m}_t = \beta m_t + g_t`,
+    :math:`\hat{m}_t = \beta m_{t-1} + g_t`.
 
-    while PyTorch-style Nesterov SGD uses
+    Thus, the heavy-ball probe is :math:`\hat{u}_t=\hat{m}_t`, while the
+    PyTorch-style Nesterov probe is
 
     :math:`\hat{u}_t = g_t + \beta\hat{m}_t`.
 
-    MAL measures :math:`s_t=\cos(\hat{u}_t,g_t)` and commits
-    :math:`m_{t+1} \gets c_t \, m_t + g_t`, where
-    :math:`c_t=(1+s_t)/2` for a non-zero gradient. Thus ``beta`` controls the fixed
-    candidate probe while the smoothly adaptive :math:`c_t` controls the update.
+    MAL measures :math:`s_t=\cos(\hat{u}_t,g_t)` and computes
+    :math:`c_t=((1+s_t)/2)^{\mathrm{pwr}}` for a non-zero gradient. The gate
+    reweights only the direction applied on this step: heavy-ball uses
+    :math:`u_t=g_t+c_t m_{t-1}`, while Nesterov uses
+    :math:`u_t=g_t+c_t m_t`. In both cases, the stored buffer advances independently
+    as :math:`m_t=\beta m_{t-1}+g_t`; MAL never compounds :math:`c_t` into memory.
 
-    Under Nesterov, the applied direction is :math:`g_t + c_t \, m_t` using the *updated*
-    buffer (PyTorch/Sutskever form). MAL is deliberately a time-varying-coefficient
-    variant of that rule.
+    Consequently, ``beta`` controls both the fixed probe and stored heavy-ball
+    memory, while :math:`c_t` controls only the current applied direction. Under
+    Nesterov, :math:`m_t` in that direction is the *updated* plain buffer
+    (PyTorch/Sutskever form).
 
-    A zero buffer makes the probe self-aligned (:math:`c = 1`), so the first step is
-    undamped; a zero gradient carries no alignment evidence, so it falls back to the
-    fixed ``beta`` rather than reading as an artificial 0.5.
+    A zero buffer makes the probe self-aligned (:math:`c_t=1`). A zero gradient
+    carries no alignment evidence, so :math:`c_t` falls back to the fixed ``beta``
+    rather than treating an undefined direction as an artificial 0.5.
 
     Alignment is always measured over the entire parameter tensor, producing one scalar
     effective coefficient per parameter tensor and step.
@@ -117,22 +121,15 @@ class MAL_SGD(Optimizer):
 
         optim_groups = []
 
-        if no_decay_params:
-            optim_groups.append(
-                {
-                    "params": no_decay_params,
-                    "momentum": [torch.zeros_like(p) for p in no_decay_params],
-                    "weight_decay": 0.0,
-                }
-            )
-        if decay_params:
-            optim_groups.append(
-                {
-                    "params": decay_params,
-                    "momentum": [torch.zeros_like(p) for p in decay_params],
-                    "weight_decay": weight_decay,
-                },
-            )
+        for group_params, group_wd in ((no_decay_params, 0.0), (decay_params, weight_decay)):
+            if group_params:
+                optim_groups.append(
+                    {
+                        "params": group_params,
+                        "momentum": [torch.zeros_like(p) for p in group_params],
+                        "weight_decay": group_wd,
+                    }
+                )
 
         defaults = {
             "lr": lr,
@@ -185,13 +182,11 @@ class MAL_SGD(Optimizer):
                 # Effective momentum coefficient for this step
                 eff_beta = torch.where(has_gradient, retention, beta)
 
-                # Read-only memory: the applied direction is reweighted with the coefficient,
-                # but the buffer itself advances at the fixed beta and is never edited. The
-                # coefficient therefore acts once, on this step's direction, instead of
-                # compounding into the state -- so a run of misaligned steps cannot erase a
-                # memory that is still informative, and the buffer stays an ordinary
-                # heavy-ball average that analysis and checkpointing can reason about.
-                applied = torch.addcmul(g, m, eff_beta)  # eff_beta * m_{t-1} + g
+                # Ungated stored memory: MAL reweights only this step's applied direction;
+                # the buffer advances independently at fixed beta. The coefficient therefore
+                # acts once instead of compounding into state, so misaligned steps cannot erase
+                # memory that may remain informative, and the buffer stays an ordinary heavy ball.
+                eff_m = torch.addcmul(g, m, eff_beta)  # eff_beta * m_{t-1} + g
                 m.mul_(beta).add_(g)  # plain heavy ball, untouched by MAL
 
                 if nesterov:
@@ -200,17 +195,18 @@ class MAL_SGD(Optimizer):
                     p.sub_(g, alpha=lr)
                     p.addcmul_(m, eff_beta, value=-lr)
                 else:
-                    p.sub_(applied, alpha=lr)
+                    p.sub_(eff_m, alpha=lr)
 
         return loss
 
 
-class MAL_ADAMW(Optimizer):
+class MAL_AdamW(Optimizer):
     r"""Memory-ALigned AdamW for transformer training (ViT / LLM).
 
-    The alignment gate modulates only the first moment's EMA coefficient, with one
-    scalar coefficient per parameter tensor. Crucially, MAL scores the proposed
-    *parameter direction*, not the unpreconditioned first moment. Given probe moments
+    The alignment gate modulates only the first moment applied on the current step,
+    with one scalar coefficient per parameter tensor; it does not alter the stored
+    EMA. Crucially, MAL scores the proposed
+    *parameter direction*, not the (unpreconditioned) first moment. Given probe moments
 
     :math:`m_t^{probe}=\beta_1m_{t-1}+(1-\beta_1)g_t`,
 
@@ -224,13 +220,15 @@ class MAL_ADAMW(Optimizer):
     positive diagonal preconditioner preserves coordinate signs but generally changes
     a whole-tensor cosine.
 
-    The candidate always uses the fixed ``beta1``. MAL then applies the smooth adaptive
-    coefficient :math:`c_t=(1+s_t)/2` on every aligned parameter step.
+    The candidate always uses the fixed ``beta1``. On every aligned parameter step,
+    MAL applies the smooth adaptive coefficient
+    :math:`c_t=((1+s_t)/2)^{\mathrm{pwr}}`, capped below one for numerical stability.
 
-    **The buffer is read-only.** The applied first moment is the one-step reweighting
-    ``c*m_{t-1} + (1-c)*g``, while the stored EMA advances as plain AdamW,
-    ``m <- beta1*m + (1-beta1)*g``, and never sees ``c``. The second moment (scale tracker,
-    beta2) and its bias correction are standard AdamW and are never gated.
+    **The stored buffer is ungated.** The applied first moment is the one-step
+    reweighting ``c*m_{t-1} + (1-c)*g``, while the stored EMA advances independently
+    as plain AdamW, ``m <- beta1*m + (1-beta1)*g``, and never sees ``c``. The second
+    moment (scale tracker, beta2) and its bias correction are standard AdamW and are
+    never gated.
 
     Because the buffer stays a plain EMA, first-moment bias correction is exact in closed
     form: ``E[m_{t-1}] = (1 - beta1**(t-1))*g`` gives
@@ -247,7 +245,7 @@ class MAL_ADAMW(Optimizer):
     gradients and checkpoint resume retain the exact AdamW bias correction.
     """
 
-    MAX_BETA1 = 1.0 - 1e-4
+    MAX_BETA1 = 1.0 - 1e-3
 
     def __init__(
         self,
@@ -257,7 +255,6 @@ class MAL_ADAMW(Optimizer):
         eps: float = 1e-8,
         weight_decay: float = 0.0,
         pwr: float = 1.0,
-        align_1d: bool = False,
     ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -270,7 +267,6 @@ class MAL_ADAMW(Optimizer):
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
         if not 0.0 < pwr <= 1.0:
-            # pwr = 0 pins retention at 1 (a frozen memory); pwr < 0 inverts the rule.
             raise ValueError(f"Invalid p value: {pwr}")
 
         decay_params: list[torch.nn.Parameter] = []
@@ -290,10 +286,7 @@ class MAL_ADAMW(Optimizer):
 
         optim_groups = []
 
-        for group_params, group_wd in (
-            (no_decay_params, 0.0),
-            (decay_params, weight_decay),
-        ):
+        for group_params, group_wd in ((no_decay_params, 0.0), (decay_params, weight_decay)):
             if group_params:
                 optim_groups.append(
                     {
@@ -302,7 +295,6 @@ class MAL_ADAMW(Optimizer):
                         "v": [torch.zeros_like(p) for p in group_params],
                         "weight_decay": group_wd,
                         "step": [0 for _ in group_params],
-                        "align_1d": align_1d,
                     }
                 )
 
@@ -312,7 +304,6 @@ class MAL_ADAMW(Optimizer):
             "beta2": betas[1],
             "pwr": pwr,
             "eps": eps,
-            "align_1d": align_1d,
         }
         super().__init__(optim_groups, defaults)
 
@@ -331,7 +322,6 @@ class MAL_ADAMW(Optimizer):
             pwr = group["pwr"]
             eps = group["eps"]
             steps = group["step"]
-            align_1d = group["align_1d"]
 
             for i, (p, m, v) in enumerate(zip(group["params"], group["m"], group["v"])):
                 if p.grad is None:
@@ -347,31 +337,22 @@ class MAL_ADAMW(Optimizer):
                 v.mul_(beta2).addcmul_(g, g, value=1.0 - beta2)
                 denominator = v.sqrt().div_(bc2_sqrt).add_(eps)
 
-                if p.ndim > 1 or align_1d:
-                    # Alignment of the proposed, fully preconditioned AdamW update
-                    # with the fresh gradient. First-moment bias correction is a
-                    # positive tensor-wide scalar, so it cannot change this cosine.
-                    m_probe = m.lerp(g, 1.0 - beta1)
-                    u_probe = m_probe.div(denominator)
-                    cosine_sim, has_gradient = _get_cosine_sim(u_probe, g)
-                    retention = (1.0 + cosine_sim) * 0.5
+                # Alignment of the proposed, fully preconditioned AdamW update
+                # with the fresh gradient. First-moment bias correction is a
+                # positive tensor-wide scalar, so it cannot change this cosine.
+                u_probe = m.lerp(g, 1.0 - beta1).div(denominator)
+                cosine_sim, has_gradient = _get_cosine_sim(u_probe, g)
+                retention = (1.0 + cosine_sim) * 0.5
 
-                    # Keep the coefficient in stable scalar precision. In fp16 or bf16,
-                    # MAX_BETA1 would otherwise round to 1 and zero the bias correction on
-                    # strongly aligned steps. Low-precision parameters get float32; anything
-                    # else keeps its own dtype, so float64 is not silently truncated.
-                    coefficient_dtype = (
-                        torch.float32 if p.dtype in (torch.float16, torch.bfloat16) else p.dtype
-                    )
-                    retention = (retention.to(coefficient_dtype)) ** pwr
-                    eff_beta1 = torch.where(has_gradient, retention, beta1).clamp_max(self.MAX_BETA1)
+                # Keep the coefficient in stable scalar precision. In fp16 or bf16,
+                # MAX_BETA1 would otherwise round to 1 and zero the bias correction on
+                # strongly aligned steps.
+                retention = (retention.to(torch.float32)) ** pwr
+                eff_beta1 = torch.where(has_gradient, retention, beta1).clamp_max(self.MAX_BETA1)
 
-                else:
-                    eff_beta1 = beta1  # tiny 1-D params: plain EMA
-
-                # Read-only memory: the coefficient reweights the direction applied THIS step
-                # while the buffer advances at the fixed beta1 and is never edited.
-                applied = torch.lerp(g, m, eff_beta1)  # c*m_{t-1} + (1-c)*g
+                # Ungated stored memory: the coefficient reweights only this step's applied
+                # direction, while the buffer advances independently at fixed beta1.
+                eff_m = torch.lerp(g, m, eff_beta1)  # c*m_{t-1} + (1-c)*g
                 m.lerp_(g, 1.0 - beta1)  # plain AdamW EMA, untouched by MAL
 
                 # Bias correction, exact and closed form. Because the buffer is a plain EMA,
@@ -379,10 +360,10 @@ class MAL_ADAMW(Optimizer):
                 # so the applied reweighting has
                 #   E[c*m_{t-1} + (1-c)*g] = (1 - c*beta1**(t-1)) * g.
                 # No running product of past coefficients is needed -- which also means the
-                # correction cannot drift with accumulated rounding, and reduces to the
+                # correction cannot drift with accumulated rounding and reduces to the
                 # familiar 1 - beta1**t whenever c == beta1.
                 correction = 1.0 - eff_beta1 * (beta1 ** (steps[i] - 1))
-                u = applied.div(correction).div_(denominator)
+                u = eff_m.div_(correction).div_(denominator)
                 p.add_(u, alpha=-lr)
 
         return loss

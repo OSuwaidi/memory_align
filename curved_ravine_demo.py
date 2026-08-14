@@ -44,7 +44,7 @@ import torch
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from mal_sgd import MAL_SGD
+from mal_sgdm import MAL_SGDM
 
 
 @dataclass(frozen=True)
@@ -250,11 +250,10 @@ def run_experiment(config: ExperimentConfig) -> list[OptimizationRun]:
         ),
         run_optimizer(
             "MAL momentum",
-            lambda parameters: MAL_SGD(
+            lambda parameters: MAL_SGDM(
                 parameters,
                 lr=config.learning_rate,
                 beta=config.momentum,
-                mode="conflict_only",
                 nesterov=False,
             ),
             start,

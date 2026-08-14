@@ -21,7 +21,7 @@ from torchvision.transforms import v2
 from tqdm.auto import tqdm, trange
 
 from cautious_sgd import CAUTIOUS_SGD
-from mal_sgd import MAL_SGD
+from mal_sgdm import MAL_SGDM
 
 # -------------------------
 # Config
@@ -393,7 +393,7 @@ def main():
     )
 
     if align in ("MAL", "MAL_CO"):
-        optimizer = MAL_SGD(
+        optimizer = MAL_SGDM(
             model.parameters(),
             lr=eff_lr,
             beta=args.beta,
