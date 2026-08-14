@@ -185,14 +185,22 @@ class MAL_SGD(Optimizer):
                 # Effective momentum coefficient for this step
                 eff_beta = torch.where(has_gradient, retention, beta)
 
-                m.mul_(eff_beta).add_(g)
+                # Read-only memory: the applied direction is reweighted with the coefficient,
+                # but the buffer itself advances at the fixed beta and is never edited. The
+                # coefficient therefore acts once, on this step's direction, instead of
+                # compounding into the state -- so a run of misaligned steps cannot erase a
+                # memory that is still informative, and the buffer stays an ordinary
+                # heavy-ball average that analysis and checkpointing can reason about.
+                applied = torch.addcmul(g, m, eff_beta)  # eff_beta * m_{t-1} + g
+                m.mul_(beta).add_(g)  # plain heavy ball, untouched by MAL
 
                 if nesterov:
-                    # PyTorch/Sutskever form with the same current coefficient:
+                    # Sutskever form against the plain buffer, with MAL's coefficient
+                    # supplying the look-ahead weight.
                     p.sub_(g, alpha=lr)
                     p.addcmul_(m, eff_beta, value=-lr)
                 else:
-                    p.sub_(m, alpha=lr)
+                    p.sub_(applied, alpha=lr)
 
         return loss
 
@@ -219,16 +227,17 @@ class MAL_ADAMW(Optimizer):
     The candidate always uses the fixed ``beta1``. MAL then applies the smooth adaptive
     coefficient :math:`c_t=(1+s_t)/2` on every aligned parameter step.
 
-    The committed EMA is m <- c*m + (1-c)*g. The second moment (scale tracker,
+    **The buffer is read-only.** The applied first moment is the one-step reweighting
+    ``c*m_{t-1} + (1-c)*g``, while the stored EMA advances as plain AdamW,
+    ``m <- beta1*m + (1-beta1)*g``, and never sees ``c``. The second moment (scale tracker,
     beta2) and its bias correction are standard AdamW and are never gated.
 
-    First-moment bias correction is exact under dynamic per-tensor c: the running
-    product ``beta_product = prod_s c_s`` is tracked per parameter, and the correction is
-    ``1 - beta_product`` (reduces to ``1 - beta1**t`` for constant c). Smooth c is capped at
-    1 - 1e-4 because c = 1 is the one degenerate EMA value (zero mass on g freezes
-    the memory and zeroes the correction). A perfectly aligned first adaptive step
-    has the same bias-corrected direction as AdamW, but deliberately a much longer
-    raw first-moment horizon.
+    Because the buffer stays a plain EMA, first-moment bias correction is exact in closed
+    form: ``E[m_{t-1}] = (1 - beta1**(t-1))*g`` gives
+    ``E[c*m_{t-1} + (1-c)*g] = (1 - c*beta1**(t-1))*g``, so the correction is
+    ``1 - c*beta1**(t-1)`` -- no running product of past coefficients, hence no accumulated
+    rounding drift, and it reduces to ``1 - beta1**t`` whenever ``c == beta1``. Smooth c is
+    capped at 1 - 1e-4 because c = 1 is the one degenerate EMA value (zero mass on g).
 
     Weight decay is decoupled (AdamW) and never enters the alignment signal.
     LayerNorm gains and biases (ndim <= 1) keep a fixed beta1 unless align_1d=True:
@@ -260,6 +269,9 @@ class MAL_ADAMW(Optimizer):
             raise ValueError(f"Invalid eps value: {eps}")
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
+        if not 0.0 < pwr <= 1.0:
+            # pwr = 0 pins retention at 1 (a frozen memory); pwr < 0 inverts the rule.
+            raise ValueError(f"Invalid p value: {pwr}")
 
         decay_params: list[torch.nn.Parameter] = []
         no_decay_params: list[torch.nn.Parameter] = []
@@ -290,7 +302,6 @@ class MAL_ADAMW(Optimizer):
                         "v": [torch.zeros_like(p) for p in group_params],
                         "weight_decay": group_wd,
                         "step": [0 for _ in group_params],
-                        "beta_product": [torch.tensor(1.0, device=p.device) for p in group_params],
                         "align_1d": align_1d,
                     }
                 )
@@ -320,10 +331,9 @@ class MAL_ADAMW(Optimizer):
             pwr = group["pwr"]
             eps = group["eps"]
             steps = group["step"]
-            beta_products = group["beta_product"]
             align_1d = group["align_1d"]
 
-            for i, (p, m, v, beta_product) in enumerate(zip(group["params"], group["m"], group["v"], beta_products)):
+            for i, (p, m, v) in enumerate(zip(group["params"], group["m"], group["v"])):
                 if p.grad is None:
                     continue
 
@@ -346,20 +356,33 @@ class MAL_ADAMW(Optimizer):
                     cosine_sim, has_gradient = _get_cosine_sim(u_probe, g)
                     retention = (1.0 + cosine_sim) * 0.5
 
-                    # Keep the coefficient in stable scalar-state precision. In fp16
-                    # or bf16, MAX_BETA1 would otherwise round to 1 and zero the bias
-                    # correction on strongly aligned steps.
-                    retention = (retention.to(beta_product.dtype)) ** pwr
+                    # Keep the coefficient in stable scalar precision. In fp16 or bf16,
+                    # MAX_BETA1 would otherwise round to 1 and zero the bias correction on
+                    # strongly aligned steps. Low-precision parameters get float32; anything
+                    # else keeps its own dtype, so float64 is not silently truncated.
+                    coefficient_dtype = (
+                        torch.float32 if p.dtype in (torch.float16, torch.bfloat16) else p.dtype
+                    )
+                    retention = (retention.to(coefficient_dtype)) ** pwr
                     eff_beta1 = torch.where(has_gradient, retention, beta1).clamp_max(self.MAX_BETA1)
 
                 else:
                     eff_beta1 = beta1  # tiny 1-D params: plain EMA
 
-                m.lerp_(g, 1.0 - eff_beta1)  # m <- c*m + (1-c)*g
+                # Read-only memory: the coefficient reweights the direction applied THIS step
+                # while the buffer advances at the fixed beta1 and is never edited.
+                applied = torch.lerp(g, m, eff_beta1)  # c*m_{t-1} + (1-c)*g
+                m.lerp_(g, 1.0 - beta1)  # plain AdamW EMA, untouched by MAL
 
-                # AdamW update with exact first-moment bias correction under dynamic c
-                beta_product.mul_(eff_beta1)
-                u = m.div(1.0 - beta_product).div_(denominator)
+                # Bias correction, exact and closed form. Because the buffer is a plain EMA,
+                #   E[m_{t-1}] = (1 - beta1**(t-1)) * g,
+                # so the applied reweighting has
+                #   E[c*m_{t-1} + (1-c)*g] = (1 - c*beta1**(t-1)) * g.
+                # No running product of past coefficients is needed -- which also means the
+                # correction cannot drift with accumulated rounding, and reduces to the
+                # familiar 1 - beta1**t whenever c == beta1.
+                correction = 1.0 - eff_beta1 * (beta1 ** (steps[i] - 1))
+                u = applied.div(correction).div_(denominator)
                 p.add_(u, alpha=-lr)
 
         return loss
