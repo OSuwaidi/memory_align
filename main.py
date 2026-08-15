@@ -20,8 +20,8 @@ from torchvision.models import resnet18, resnet50
 from torchvision.transforms import v2
 from tqdm.auto import tqdm, trange
 
-from cautious_sgd import CAUTIOUS_SGD
-from mal_sgdm import MAL_SGDM
+from cautious_opt import CAUTIOUS_SGD
+from mal_opt import MAL_SGDM
 
 # -------------------------
 # Config
@@ -276,7 +276,7 @@ def main():
         test_ds,
         batch_size=1000,
         shuffle=False,
-        num_workers=2 // NUM_GPUS,
+        num_workers=cpu_count() // (4 * NUM_GPUS),
         persistent_workers=False,
         pin_memory=True,
     )
@@ -387,12 +387,12 @@ def main():
         val_ds,
         batch_size=1000,
         shuffle=False,
-        num_workers=2 // NUM_GPUS,
+        num_workers=cpu_count() // (4 * NUM_GPUS),
         persistent_workers=False,
         pin_memory=True,
     )
 
-    if align in ("MAL", "MAL_CO"):
+    if align == "MAL":
         optimizer = MAL_SGDM(
             model.parameters(),
             lr=eff_lr,
@@ -415,8 +415,8 @@ def main():
         optimizer = CAUTIOUS_SGD(
             model.parameters(),
             lr=eff_lr,
-            weight_decay=args.weight_decay,
             beta=args.beta,
+            weight_decay=args.weight_decay,
             nesterov=nest,
         )
 

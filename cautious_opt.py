@@ -21,55 +21,40 @@ class CAUTIOUS_SGD(Optimizer):
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
         if nesterov and beta <= 0.0:
-            raise ValueError("Nesterov momentum requires a positive beta")
+            raise ValueError("Nesterov momentum requires a positive initial beta")
 
         decay_params: list[torch.nn.Parameter] = []
-        decay_momentum = []
-
         no_decay_params: list[torch.nn.Parameter] = []
-        no_decay_momentum = []
 
         for p in params:
             if not p.requires_grad:
                 continue
-            device = p.device
             # Exclude biases and 1D normalization parameters from weight decay
-            if weight_decay == 0 or p.ndim <= 1:
+            if weight_decay == 0.0 or p.ndim <= 1:
                 no_decay_params.append(p)
-                no_decay_momentum.append(torch.zeros_like(p))
             else:
                 decay_params.append(p)
-                decay_momentum.append(torch.zeros_like(p))
 
         if not decay_params and not no_decay_params:
-            raise ValueError("SGD received no trainable parameters.")
-
-        if "cuda" not in device.type:
-            warnings.warn(
-                f"Model parameters' device is not CUDA, rather is {device.type}!",
-                stacklevel=2,
-            )
+            raise ValueError("Optimizer received no trainable parameters.")
 
         optim_groups = []
 
-        if no_decay_params:
-            optim_groups.append(
-                {
-                    "params": no_decay_params,
-                    "momentum": no_decay_momentum,
-                    "weight_decay": 0.0,
-                }
-            )
-        if decay_params:
-            optim_groups.append(
-                {
-                    "params": decay_params,
-                    "momentum": decay_momentum,
-                    "weight_decay": weight_decay,
-                },
-            )
+        for group_params, group_wd in ((no_decay_params, 0.0), (decay_params, weight_decay)):
+            if group_params:
+                optim_groups.append(
+                    {
+                        "params": group_params,
+                        "momentum": [torch.zeros_like(p) for p in group_params],
+                        "weight_decay": group_wd,
+                    }
+                )
 
-        defaults = dict(lr=lr, beta=beta, nesterov=nesterov)  # shared across all optim/param groups
+        defaults = {
+            "lr": lr,
+            "beta": beta,
+            "nesterov": nesterov,
+        }  # shared across all optim/param groups
         super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
 
     @torch.no_grad()
@@ -86,7 +71,7 @@ class CAUTIOUS_SGD(Optimizer):
 
                 g = p.grad
                 if wd > 0.0:
-                    g.add_(p, alpha=wd)
+                    g = g.add(p, alpha=wd)
 
                 # Absorb current gradient into momentum:
                 m.mul_(beta).add_(g)
@@ -151,12 +136,6 @@ class CAUTIOUS_ADAMW(Optimizer):
 
         if not decay_params and not no_decay_params:
             raise ValueError("AdamW received no trainable parameters.")
-
-        if "cuda" not in device.type:
-            warnings.warn(
-                f"Model parameters' device is not CUDA, rather is {device.type}!",
-                stacklevel=2,
-            )
 
         optim_groups = []
 

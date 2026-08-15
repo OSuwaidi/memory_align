@@ -153,6 +153,7 @@ class MAL_SGDM(Optimizer):
             wd = group["weight_decay"]
             pwr = group["pwr"]
             nesterov = group["nesterov"]
+
             for p, m in zip(group["params"], group["momentum"]):
                 if p.grad is None:
                     continue
