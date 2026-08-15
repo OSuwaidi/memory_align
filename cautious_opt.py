@@ -21,7 +21,7 @@ class CAUTIOUS_SGD(Optimizer):
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
         if nesterov and beta <= 0.0:
-            raise ValueError("Nesterov momentum requires a positive initial beta")
+            raise ValueError("Nesterov momentum requires a positive beta")
 
         decay_params: list[torch.nn.Parameter] = []
         no_decay_params: list[torch.nn.Parameter] = []

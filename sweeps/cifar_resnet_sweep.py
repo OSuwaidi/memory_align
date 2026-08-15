@@ -8,7 +8,7 @@ import wandb
 # $ CUDA_VISIBLE_DEVICES=0 uv run wandb agent --forward-signals <entity/project/sweep_id>
 
 ENTITY_NAME = "osuwaidi-khalifa-university"
-SEEDS = (42, 1337, 2026)
+SEEDS = (77, 433, 1024)
 LRs = (
     0.025,
     0.05,
