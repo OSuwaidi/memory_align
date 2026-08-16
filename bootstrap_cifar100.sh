@@ -48,8 +48,16 @@ tar -xzf "${DATA_ARCHIVE}" -C "${DATA_DIR}"
 
 echo "Setup and download complete."
 
+readonly TTY_NAME="$(ps -o tty= -p "$$" | tr -d '[:space:]')"
+readonly TTY_PATH="/dev/${TTY_NAME}"
+
+if [[ -z "${TTY_NAME}" || "${TTY_NAME}" == "?" || ! -c "${TTY_PATH}" ]]; then
+    echo "A controlling terminal is required to enter the W&B key and attach to tmux." >&2
+    exit 1
+fi
+
 if [[ -z "${WANDB_API_KEY:-}" ]]; then
-    read -rsp "Enter W&B API key: " WANDB_API_KEY </dev/tty
+    read -rsp "Enter W&B API key: " WANDB_API_KEY <"${TTY_PATH}"
     echo
 fi
 export WANDB_API_KEY
@@ -59,7 +67,7 @@ tmux new-session \
     -c "${REPO_ROOT}" \
     -e "WANDB_API_KEY=${WANDB_API_KEY}" \
     "uv run wandb agent --forward-signals ${SWEEP_PATH}" \
-    </dev/tty
+    <"${TTY_PATH}" >"${TTY_PATH}" 2>&1
 
 if tmux has-session -t "${TMUX_SESSION}" 2>/dev/null; then
     echo "Detached from sweep session."
@@ -68,4 +76,4 @@ else
     echo "W&B agent exited; the tmux session has ended."
 fi
 
-# Run with: `$ curl -fsSL https://raw.githubusercontent.com/OSuwaidi/memory_align/run_mal/bootstrap_cifar100.sh | bash`
+# Run with: `$ curl -fsSLo /tmp/bootstrap_cifar100.sh https://raw.githubusercontent.com/OSuwaidi/memory_align/run_mal/bootstrap_cifar100.sh && bash /tmp/bootstrap_cifar100.sh`
