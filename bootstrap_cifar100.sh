@@ -10,7 +10,15 @@ readonly DATASET_URL="https://huggingface.co/datasets/nakroy/cifar100-python/res
 readonly TMUX_SESSION="sweep"
 readonly SWEEP_PATH="osuwaidi-khalifa-university/FINAL_MAL_CIFAR100/9pj6h9ej"
 
-# uv self update
+if ! command -v tmux >/dev/null 2>&1; then
+    apt-get update
+    apt-get install -y tmux
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="${HOME}/.local/bin:${PATH}"
+fi
 
 git clone \
     --branch "${REPO_BRANCH}" \
@@ -38,7 +46,6 @@ tmux new-session \
     -d \
     -s "${TMUX_SESSION}" \
     -c "${REPO_ROOT}" \
-    -e "WANDB_API_KEY=${WANDB_API_KEY:?WANDB_API_KEY must be supplied by the provider}" \
     "uv run wandb agent --forward-signals ${SWEEP_PATH}"
 
 echo "Sweep started."
