@@ -17,7 +17,8 @@ if ! command -v tmux >/dev/null 2>&1 || ! command -v wget >/dev/null 2>&1; then
 fi
 
 if [[ ! -x "${UV_BIN_DIR}/uv" ]]; then
-    curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="${UV_BIN_DIR}" sh
+    curl -LsSf https://astral.sh/uv/install.sh | \
+        env UV_INSTALL_DIR="${UV_BIN_DIR}" UV_NO_MODIFY_PATH=1 sh
 fi
 export PATH="${UV_BIN_DIR}:${PATH}"
 
@@ -37,7 +38,7 @@ cd "${REPO_DIR}"
 readonly REPO_ROOT="$(pwd -P)"
 mkdir -p "${DATA_DIR}"
 
-uv sync --upgrade
+uv sync --no-dev --upgrade
 
 echo "Downloading CIFAR-100 dataset..."
 
