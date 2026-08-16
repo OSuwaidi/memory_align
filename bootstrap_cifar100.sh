@@ -38,6 +38,7 @@ tmux new-session \
     -d \
     -s "${TMUX_SESSION}" \
     -c "${REPO_ROOT}" \
+    -e "WANDB_API_KEY=${WANDB_API_KEY:?WANDB_API_KEY must be supplied by the provider}" \
     "uv run wandb agent --forward-signals ${SWEEP_PATH}"
 
 echo "Sweep started."
