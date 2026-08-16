@@ -27,12 +27,25 @@ if [[ ! -x "${UV_BIN_DIR}/uv" ]]; then
     exit 1
 fi
 
-git clone \
-    --branch "${REPO_BRANCH}" \
-    --single-branch \
-    --depth 1 \
-    "${REPO_URL}" \
-    "${REPO_DIR}"
+if [[ -d "${REPO_DIR}/.git" ]]; then
+    if git -C "${REPO_DIR}" show-ref --verify --quiet "refs/heads/${REPO_BRANCH}"; then
+        git -C "${REPO_DIR}" switch "${REPO_BRANCH}"
+    else
+        git -C "${REPO_DIR}" fetch origin "${REPO_BRANCH}"
+        git -C "${REPO_DIR}" switch --create "${REPO_BRANCH}" --track "origin/${REPO_BRANCH}"
+    fi
+    git -C "${REPO_DIR}" pull --ff-only origin "${REPO_BRANCH}"
+elif [[ -e "${REPO_DIR}" ]]; then
+    echo "${REPO_DIR} exists but is not a Git repository." >&2
+    exit 1
+else
+    git clone \
+        --branch "${REPO_BRANCH}" \
+        --single-branch \
+        --depth 1 \
+        "${REPO_URL}" \
+        "${REPO_DIR}"
+fi
 
 cd "${REPO_DIR}"
 readonly REPO_ROOT="$(pwd -P)"
