@@ -7,6 +7,20 @@ import wandb
 # To assign/tag a run agent to a sweep:
 # $ CUDA_VISIBLE_DEVICES=0 uv run wandb agent --forward-signals <entity/project/sweep_id>
 
+ENTITY_NAME = "osuwaidi-khalifa-university"
+SEEDS = (1337, 2026)
+LRs = (
+    # 0.025,
+    # 0.05,
+    0.1,
+    0.2,
+    0.4,
+    # 0.8,
+    # 1.0,
+)
+BATCH_SIZES = (128, 512, 2048, 4096)[::-1]
+WEIGHT_DECAY = (5e-4,)
+
 
 def percentage(value: str) -> float:
     parsed_value = float(value)
@@ -44,21 +58,6 @@ def add_training_args(parser: argparse.ArgumentParser) -> None:
         default="tf32",
         help="Internal precision for residual CUDA float32 matmuls/convolutions.",
     )
-
-
-ENTITY_NAME = "osuwaidi-khalifa-university"
-SEEDS = (1337, 2026)
-LRs = (
-    # 0.025,
-    # 0.05,
-    0.1,
-    0.2,
-    0.4,
-    # 0.8,
-    # 1.0,
-)
-BATCH_SIZES = (128, 512, 2048, 4096)[::-1]
-WEIGHT_DECAY = (5e-4,)
 
 
 def get_finished_run_ids(sweep_id: str) -> list[str]:

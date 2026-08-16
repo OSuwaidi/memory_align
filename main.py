@@ -168,7 +168,7 @@ def train_val_model(
     epochs_to_target = epochs_to_target if epochs_to_target > 0 else epochs + 1
 
     run.summary["target_reached"] = epochs_to_target > 0
-    run.summary["epochs_target"] = epochs_to_target
+    run.summary["epochs_2_target"] = epochs_to_target
     run.summary["best_val_acc"] = round(best_val_acc, 2)
     run.summary["best_train_loss"] = round(best_train_loss, 2)
     run.summary["best_val_epoch"] = best_val_epoch
@@ -395,6 +395,8 @@ def main():
     )
 
     if align == "MAL":
+        if (in_place and pwr == 1.0) or (not in_place and pwr == 0.5):
+            raise ValueError(f"In-place alignment requires pwr=1.0, but got in_place={in_place} and pwr={pwr}.")
         optimizer = MAL_SGDM(
             model.parameters(),
             lr=lr,

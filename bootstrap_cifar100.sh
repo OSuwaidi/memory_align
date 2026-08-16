@@ -6,8 +6,10 @@ readonly REPO_BRANCH="run_mal"
 readonly REPO_DIR="memory_align"
 readonly DATA_DIR="data"
 readonly DATA_ARCHIVE="${DATA_DIR}/cifar-100-python.tar.gz"
+readonly DATASET_DIR="${DATA_DIR}/cifar-100-python"
 readonly DATASET_URL="https://huggingface.co/datasets/nakroy/cifar100-python/resolve/main/cifar-100-python.tar.gz"
-readonly UV_BIN_DIR="${HOME}/.local/bin"
+readonly UV_BIN_DIR="/usr/local/bin"
+readonly UV_BIN="${UV_BIN_DIR}/uv"
 readonly TMUX_SESSION="sweep"
 readonly SWEEP_PATH="osuwaidi-khalifa-university/FINAL_MAL_CIFAR100/bbwuutco"
 
@@ -16,14 +18,14 @@ if ! command -v tmux >/dev/null 2>&1 || ! command -v wget >/dev/null 2>&1; then
     apt-get install -y tmux wget
 fi
 
-if [[ ! -x "${UV_BIN_DIR}/uv" ]]; then
+if [[ ! -x "${UV_BIN}" ]]; then
+    install -d -m 0755 "${UV_BIN_DIR}"
     curl -LsSf https://astral.sh/uv/install.sh | \
         env UV_INSTALL_DIR="${UV_BIN_DIR}" UV_NO_MODIFY_PATH=1 sh
 fi
-export PATH="${UV_BIN_DIR}:${PATH}"
 
-if [[ ! -x "${UV_BIN_DIR}/uv" ]]; then
-    echo "uv installation failed: ${UV_BIN_DIR}/uv was not created." >&2
+if [[ ! -x "${UV_BIN}" ]]; then
+    echo "uv installation failed: ${UV_BIN} was not created." >&2
     exit 1
 fi
 
@@ -50,16 +52,42 @@ fi
 cd "${REPO_DIR}"
 mkdir -p "${DATA_DIR}"
 
-uv sync --no-dev --upgrade
+"${UV_BIN}" sync --no-dev --upgrade
 
-echo "Downloading CIFAR-100 dataset..."
+cifar100_is_ready() {
+    [[ -s "${DATASET_DIR}/train" && \
+        -s "${DATASET_DIR}/test" && \
+        -s "${DATASET_DIR}/meta" ]]
+}
 
-wget -q --show-progress \
-    -O "${DATA_ARCHIVE}" \
-    "${DATASET_URL}"
-tar -xzf "${DATA_ARCHIVE}" -C "${DATA_DIR}"
+download_cifar100_archive() {
+    local partial_archive="${DATA_ARCHIVE}.part"
 
-echo "Setup and download complete."
+    echo "Downloading CIFAR-100 dataset..."
+    wget -q --show-progress \
+        -O "${partial_archive}" \
+        "${DATASET_URL}"
+    mv -f "${partial_archive}" "${DATA_ARCHIVE}"
+}
+
+if cifar100_is_ready; then
+    echo "CIFAR-100 already exists in ${DATASET_DIR}; skipping download."
+else
+    if [[ ! -s "${DATA_ARCHIVE}" ]] || ! tar -tzf "${DATA_ARCHIVE}" >/dev/null 2>&1; then
+        download_cifar100_archive
+    else
+        echo "Using existing CIFAR-100 archive: ${DATA_ARCHIVE}"
+    fi
+
+    tar -xzf "${DATA_ARCHIVE}" -C "${DATA_DIR}"
+
+    if ! cifar100_is_ready; then
+        echo "CIFAR-100 extraction failed: expected train, test, and meta files in ${DATASET_DIR}." >&2
+        exit 1
+    fi
+fi
+
+echo "Setup complete."
 
 readonly TTY_NAME="$(ps -o tty= -p "$$" | xargs)"
 readonly TTY_PATH="/dev/${TTY_NAME}"
@@ -78,7 +106,7 @@ export WANDB_API_KEY
 tmux new-session \
     -s "${TMUX_SESSION}" \
     -e "WANDB_API_KEY=${WANDB_API_KEY}" \
-    "uv run wandb agent --forward-signals ${SWEEP_PATH}"
+    "${UV_BIN} run wandb agent --forward-signals ${SWEEP_PATH}"
 
 if tmux has-session -t "${TMUX_SESSION}" 2>/dev/null; then
     echo "Detached from sweep session."
