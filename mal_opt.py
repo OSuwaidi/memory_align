@@ -91,6 +91,8 @@ class MAL_SGDM(Optimizer):
         beta: float = 0.9,
         weight_decay: float = 0.0,
         pwr: float = 1.0,
+        in_place: bool = False,
+        scale: bool = False,
         nesterov: bool = False,
     ) -> None:
         if lr < 0.0:
@@ -135,6 +137,8 @@ class MAL_SGDM(Optimizer):
             "lr": lr,
             "beta": beta,
             "pwr": pwr,
+            "in_place": in_place,
+            "scale": scale,
             "nesterov": nesterov,
         }  # shared across all optim/param groups
         super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
@@ -152,6 +156,8 @@ class MAL_SGDM(Optimizer):
             beta = group["beta"]
             wd = group["weight_decay"]
             pwr = group["pwr"]
+            in_place = group["in_place"]
+            scale = group["scale"]
             nesterov = group["nesterov"]
 
             for p, m in zip(group["params"], group["momentum"]):
@@ -163,32 +169,25 @@ class MAL_SGDM(Optimizer):
                     # Coupled weight decay without mutating "p.grad" in-place.
                     g = g.add(p, alpha=wd)
 
-                # Probe the direction the base optimizer would apply before MAL edits
-                # its memory coefficient. Cosine is invariant to positive scaling, so
-                # the Nesterov direction
-                #   g + beta*(beta*m + g) = beta**2*m + (1 + beta)*g
-                # can be normalized to g + beta**2/(1 + beta)*m and evaluated by the
-                # allocation-free affine expansion in ``_get_cosine_sim``.
-                probe_momentum_scale = beta
-                if nesterov:
-                    probe_momentum_scale = beta**2 / (1.0 + beta)
+                probe_m = m.mul(beta).add_(g)
 
-                cosine_sim, has_gradient = _get_cosine_sim(
-                    m,
-                    g,
-                    probe_momentum_scale,
-                )
-                retention = ((1.0 + cosine_sim) * 0.5) ** pwr
+                g_norm = torch.linalg.vector_norm(g)
+                probe_norm = torch.linalg.vector_norm(probe_m)
+                cosine_sim = (torch.vdot(g.flatten(), probe_m.flatten()) / (g_norm * probe_norm).clamp_min(1e-8)).clamp(-1.0, 1.0)
 
-                # Effective momentum coefficient for this step
-                eff_beta = torch.where(has_gradient, retention, beta)
-
-                # Ungated stored memory: MAL reweights only this step's applied direction;
-                # the buffer advances independently at fixed beta. The coefficient therefore
-                # acts once instead of compounding into state, so misaligned steps cannot erase
-                # memory that may remain informative, and the buffer stays an ordinary heavy ball.
+                eff_beta = ((1.0 + cosine_sim) * 0.5) ** pwr  # effective momentum coefficient for this step
+                eff_beta = torch.where(g_norm > 0.0, eff_beta, beta)
                 eff_m = torch.addcmul(g, m, eff_beta)  # eff_beta * m_{t-1} + g
-                m.mul_(beta).add_(g)  # plain heavy ball, untouched by MAL
+
+                if in_place:
+                    m.copy_(eff_m)
+                else:
+                    m.copy_(probe_m)  # plain heavy ball
+
+                if scale:
+                    s = probe_norm / torch.linalg.vector_norm(eff_m).clamp_min(1e-8)
+                else:
+                    s = 1.0
 
                 if nesterov:
                     # Sutskever form against the plain buffer, with MAL's coefficient
@@ -196,7 +195,7 @@ class MAL_SGDM(Optimizer):
                     p.sub_(g, alpha=lr)
                     p.addcmul_(m, eff_beta, value=-lr)
                 else:
-                    p.sub_(eff_m, alpha=lr)
+                    p.sub_(eff_m, alpha=lr * s)
 
         return loss
 

@@ -22,14 +22,16 @@ from tqdm.auto import tqdm, trange
 
 from cautious_opt import CAUTIOUS_SGD
 from mal_opt import MAL_SGDM
+from sweeps.cifar_resnet_sweep import add_training_args
 
 # -------------------------
 # Config
 # -------------------------
 DEVICE = torch.device("cuda")
 WARMUP_EPOCHS = 5
+BETA = 0.9
 NUM_GPUS = torch.cuda.device_count()
-NUM_WORKERS = cpu_count() // (2 * NUM_GPUS)
+NUM_WORKERS = min(cpu_count() // (2 * NUM_GPUS), 16)
 MAX_MICRO_BATCH_SIZE = 512
 
 
@@ -88,6 +90,8 @@ def train_val_model(
 ):
     best_val_acc = 0.0
     best_train_loss = 0.0
+    AUC = 0.0
+    speed = 0.0
     best_model: dict[str, Any] = {}
     best_val_epoch = 0
 
@@ -139,6 +143,9 @@ def train_val_model(
             amp_enabled=amp_enabled,
         )
 
+        AUC += val_acc
+        speed += val_acc / epoch
+
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             best_train_loss = epoch_loss / n_samples
@@ -156,6 +163,8 @@ def train_val_model(
     run.summary["best_val_acc"] = round(best_val_acc, 2)
     run.summary["best_train_loss"] = round(best_train_loss, 2)
     run.summary["best_val_epoch"] = best_val_epoch
+    run.summary["AUC"] = round(AUC / epochs, 2)
+    run.summary["speed"] = round(speed, 2)
     return best_model
 
 
@@ -202,41 +211,22 @@ class TransformDataset(Dataset):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data", type=str)
-    parser.add_argument("--data_dir", type=str, default="./data")
-    parser.add_argument("--arch", type=str, default="resnet50")
-    parser.add_argument("--epochs", type=int, default=200)
-    parser.add_argument("--weight_decay", type=float, default=5e-4)
-    parser.add_argument("--label_smoothing", type=float, default=0.1)
-    parser.add_argument("--beta", type=float, default=0.9)
-    parser.add_argument(
-        "--amp_dtype",
-        choices=("bfloat16", "float32"),
-        default="bfloat16",
-        help="CUDA autocast dtype; defaults to bfloat16. float32 disables AMP.",
-    )
-    parser.add_argument(
-        "--float32_precision",
-        type=str,
-        choices=("tf32", "ieee"),
-        default="tf32",
-        help="Internal precision for residual CUDA float32 matmuls/convolutions.",
-    )
-
-    # "parse_known_args" only parses CLI args that are defined above; it doesn't capture/prarse all args that are present in the actual command
-    args, _unknown = parser.parse_known_args()  # W&B appends sweep configs as CLI args; ignore them here as they're captured via "run.config"
+    add_training_args(parser)
+    # "parse_known_args" only parses CLI args that are defined above; it doesn't capture/parse all args that are present in the actual command
+    args, _unknown = parser.parse_known_args()  # W&B appends sweep params as CLI args; ignore them here as they're captured via "run.config"
 
     if args.data == "cifar10":
         DatasetCls = datasets.CIFAR10
         MEAN = (0.4914, 0.4822, 0.4465)
         STD = (0.2470, 0.2435, 0.2616)
-        args.label_smoothing = 0.0
+        label_smoothing = 0.0
         args.arch = "resnet18"
 
     elif args.data == "cifar100":
         DatasetCls = datasets.CIFAR100
         MEAN = (0.5071, 0.4865, 0.4409)
         STD = (0.2673, 0.2564, 0.2762)
+        label_smoothing = 0.1
     else:
         raise ValueError(f'The given dataset "{args.data}" is not valid')
 
@@ -276,7 +266,7 @@ def main():
         test_ds,
         batch_size=1000,
         shuffle=False,
-        num_workers=cpu_count() // (4 * NUM_GPUS),
+        num_workers=min(cpu_count() // (4 * NUM_GPUS), 6),
         persistent_workers=False,
         pin_memory=True,
     )
@@ -290,11 +280,11 @@ def main():
         job_type="train",
         tags=("new MAL",),
         config={
+            "data": args.data,
             "model": args.arch,
             "epochs": args.epochs,
-            "weight_decay": args.weight_decay,
-            "beta": args.beta,
-            "label_smoothing": args.label_smoothing,
+            "beta": BETA,
+            "label_smoothing": label_smoothing,
             "amp_dtype": args.amp_dtype,
             "float32_precision": args.float32_precision,
         },
@@ -322,7 +312,10 @@ def main():
     nest = config.nesterov
     bs = config.batch_size
     lr = config.lr
+    weight_decay = config.weight_decay
     seed = config.seed
+    in_place = config.in_place
+    scale = config.scale
 
     if bs >= 2 * MAX_MICRO_BATCH_SIZE:
         if bs % MAX_MICRO_BATCH_SIZE != 0:
@@ -338,7 +331,7 @@ def main():
         args.float32_precision,
     )
 
-    run.name = f"{align}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
+    run.name = f"{align}_inp:{str(in_place)[0]}_scl:{str(scale)[0]}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
 
     set_seed(seed)
 
@@ -385,7 +378,7 @@ def main():
         val_ds,
         batch_size=1000,
         shuffle=False,
-        num_workers=cpu_count() // (4 * NUM_GPUS),
+        num_workers=min(cpu_count() // (4 * NUM_GPUS), 6),
         persistent_workers=False,
         pin_memory=True,
     )
@@ -394,8 +387,10 @@ def main():
         optimizer = MAL_SGDM(
             model.parameters(),
             lr=lr,
-            beta=args.beta,
-            weight_decay=args.weight_decay,
+            beta=BETA,
+            weight_decay=weight_decay,
+            in_place=in_place,
+            scale=scale,
             nesterov=nest,
         )
 
@@ -403,8 +398,8 @@ def main():
         optimizer = SGD(
             model.parameters(),
             lr=lr,
-            weight_decay=args.weight_decay,
-            momentum=args.beta,
+            weight_decay=weight_decay,
+            momentum=BETA,
             dampening=0.0,
             nesterov=nest,
         )
@@ -413,8 +408,8 @@ def main():
         optimizer = CAUTIOUS_SGD(
             model.parameters(),
             lr=lr,
-            beta=args.beta,
-            weight_decay=args.weight_decay,
+            beta=BETA,
+            weight_decay=weight_decay,
             nesterov=nest,
         )
 
@@ -444,7 +439,7 @@ def main():
         val_loader,
         run,
         lr_scheduler=scheduler,
-        label_smoothing=args.label_smoothing,
+        label_smoothing=label_smoothing,
         amp_dtype=amp_dtype,
         amp_enabled=amp_enabled,
         grad_accumulation_steps=grad_accumulation_steps,
