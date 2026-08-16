@@ -8,6 +8,13 @@ import wandb
 # $ CUDA_VISIBLE_DEVICES=0 uv run wandb agent --forward-signals <entity/project/sweep_id>
 
 
+def percentage(value: str) -> float:
+    parsed_value = float(value)
+    if not 0.0 <= parsed_value <= 100.0:
+        raise argparse.ArgumentTypeError("must be between 0 and 100")
+    return parsed_value
+
+
 def add_training_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--data", type=str, help="Dataset name", required=True)
     parser.add_argument("--data_dir", type=str, default="./data")
@@ -18,6 +25,12 @@ def add_training_args(parser: argparse.ArgumentParser) -> None:
         default="resnet50",
     )
     parser.add_argument("--epochs", type=int, default=200)
+    parser.add_argument(
+        "--val_acc_target",
+        type=percentage,
+        default=75.0,
+        help="Validation-accuracy target (%) used for convergence-speed metrics (0-100).",
+    )
     parser.add_argument(
         "--amp_dtype",
         choices=("bfloat16", "float32"),
@@ -120,6 +133,8 @@ if __name__ == "__main__":
             args.arch,
             "--epochs",
             args.epochs,
+            "--val_acc_target",
+            args.val_acc_target,
             "--amp_dtype",
             args.amp_dtype,
             "--float32_precision",
