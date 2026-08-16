@@ -316,6 +316,7 @@ def main():
     seed = config.seed
     in_place = config.in_place
     scale = config.scale
+    pwr = config.pwr
 
     if bs >= 2 * MAX_MICRO_BATCH_SIZE:
         if bs % MAX_MICRO_BATCH_SIZE != 0:
@@ -331,7 +332,7 @@ def main():
         args.float32_precision,
     )
 
-    run.name = f"{align}_inp:{str(in_place)[0]}_scl:{str(scale)[0]}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
+    run.name = f"{align}_inp:{str(in_place)[0]}_scl:{str(scale)[0]}_pwr{pwr}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
 
     set_seed(seed)
 
@@ -391,6 +392,7 @@ def main():
             weight_decay=weight_decay,
             in_place=in_place,
             scale=scale,
+            pwr=pwr,
             nesterov=nest,
         )
 
