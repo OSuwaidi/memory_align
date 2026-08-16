@@ -34,7 +34,7 @@ def add_training_args(parser: argparse.ArgumentParser) -> None:
 
 
 ENTITY_NAME = "osuwaidi-khalifa-university"
-SEEDS = (42,)  # 1337, 2026)
+SEEDS = (1337, 2026)
 LRs = (
     # 0.025,
     # 0.05,
@@ -44,16 +44,17 @@ LRs = (
     # 0.8,
     # 1.0,
 )
-BATCH_SIZES = (512, 2048, 4096)[::-1]
+BATCH_SIZES = (128, 512, 2048, 4096)[::-1]
 WEIGHT_DECAY = (5e-4,)
 
 
-def get_finished_run_ids(sweep_path: str) -> list[str]:
+def get_finished_run_ids(sweep_id: str) -> list[str]:
     """
     Retrieves the IDs of all finished runs within a specified sweep.
-    :param sweep_path: The path to the sweep in the format "entity/project/sweep_id".
+    :param sweep_id: The ID of the prior sweep.
     :return: A list of strings containing the IDs of all finished runs.
     """
+    sweep_path = f"{ENTITY_NAME}/{args.project_name}/{sweep_id}"
     api = wandb.Api()
     sweep = api.sweep(sweep_path)
 
@@ -68,7 +69,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--prior_sweep",
         type=str,
-        help="Previous sweep path: entity/project/sweep_id",
+        help="Previous sweep ID",
     )
     parser.add_argument(
         "--method",
@@ -98,7 +99,8 @@ if __name__ == "__main__":
                 )
             },
             "in_place": {"values": (True, False)},
-            "scale": {"values": (True, False)},
+            "scale": {"values": (True,)},
+            "pwr": {"values": (0.5, 1.0,)},
             "nesterov": {"values": (False,)},
             "batch_size": {"values": BATCH_SIZES},
             "lr": {"values": LRs},
@@ -128,10 +130,10 @@ if __name__ == "__main__":
 
     # Fetch successfully completed runs from previous sweep
     prior_run_ids = None
-    if (sweep_path := args.prior_sweep) is not None:
-        prior_run_ids = get_finished_run_ids(sweep_path)
+    if prior_sweep_id := args.prior_sweep:
+        prior_run_ids = get_finished_run_ids(prior_sweep_id)
 
-        print(f"Adding {len(prior_run_ids)} finished runs from sweep:{sweep_path.split('/')[-1]} as prior runs.")
+        print(f"Adding {len(prior_run_ids)} finished runs from sweep ID:{prior_sweep_id} as prior runs.")
 
     # 2. Initialize the sweep on W&B servers, seeded with completed runs
     sweep_id = wandb.sweep(
