@@ -29,7 +29,7 @@ def add_training_args(parser: argparse.ArgumentParser) -> None:
         "--val_acc_target",
         type=percentage,
         default=75.0,
-        help="Validation-accuracy target (%) used for convergence-speed metrics (0-100).",
+        help="Validation-accuracy target percentage used for convergence-speed metrics (0-100).",
     )
     parser.add_argument(
         "--amp_dtype",
