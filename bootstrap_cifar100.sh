@@ -9,7 +9,7 @@ readonly DATA_ARCHIVE="${DATA_DIR}/cifar-100-python.tar.gz"
 readonly DATASET_URL="https://huggingface.co/datasets/nakroy/cifar100-python/resolve/main/cifar-100-python.tar.gz"
 readonly UV_BIN_DIR="${HOME}/.local/bin"
 readonly TMUX_SESSION="sweep"
-readonly SWEEP_PATH="osuwaidi-khalifa-university/FINAL_MAL_CIFAR100/vp6dazyc"
+readonly SWEEP_PATH="osuwaidi-khalifa-university/FINAL_MAL_CIFAR100/bbwuutco"
 
 if ! command -v tmux >/dev/null 2>&1 || ! command -v wget >/dev/null 2>&1; then
     apt-get update
