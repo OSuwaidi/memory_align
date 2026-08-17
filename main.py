@@ -95,7 +95,8 @@ def train_val_model(
     speed = 0.0
     best_model: dict[str, Any] = {}
     best_val_epoch = 0
-    epochs_to_target: int = -1
+    epochs_to_target = -1
+    target_reached = False
 
     print(f"Starting training on {next(model.parameters()).device} with {'AMP ' + str(amp_dtype) if amp_enabled else 'float32'}")
     optimizer_step = 0
@@ -147,8 +148,9 @@ def train_val_model(
 
         AUC += val_acc
         speed += val_acc / epoch
-        if epochs_to_target == -1 and val_acc >= val_acc_target:
+        if not target_reached and val_acc >= val_acc_target:
             epochs_to_target = epoch
+            target_reached = True
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc
@@ -164,10 +166,7 @@ def train_val_model(
             },
         )
 
-    # Keep unreached runs sortable while exposing the censoring explicitly.
-    epochs_to_target = epochs_to_target if epochs_to_target > 0 else epochs + 1
-
-    run.summary["target_reached"] = epochs_to_target > 0
+    run.summary["target_reached"] = target_reached
     run.summary["epochs_2_target"] = epochs_to_target
     run.summary["best_val_acc"] = round(best_val_acc, 2)
     run.summary["best_train_loss"] = round(best_train_loss, 2)
