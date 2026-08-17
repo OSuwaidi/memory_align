@@ -80,8 +80,21 @@ class MAL_SGDM(Optimizer):
     carries no alignment evidence, so :math:`c_t` falls back to the fixed ``beta``
     rather than treating an undefined direction as an artificial 0.5.
 
-    Alignment is always measured over the entire parameter tensor, producing one scalar
-    effective coefficient per parameter tensor and step.
+    **Granularity.** With ``per_unit=False`` alignment is measured over the whole
+    parameter tensor, giving one scalar :math:`c_t` per tensor and step. With
+    ``per_unit=True`` it is measured per *output unit*: the cosine reduces over the
+    fan-in axes, so a ``Linear`` gets one coefficient per neuron (reduce ``dim=1``)
+    and a ``ConvNd`` one per output kernel (reduce ``dims=1..N-1``). The resulting
+    coefficient has shape ``(out, 1, ..., 1)`` and broadcasts against the update, and
+    ``scale`` likewise matches each unit's step norm to that unit's plain heavy-ball
+    norm. Parameters with ``ndim <= 1`` (biases, norm affines) always use the
+    whole-tensor cosine: their "units" are single scalars, whose cosine could only be
+    :math:`\pm 1`.
+
+    Finer granularity lets the gate rotate the applied update further away from the
+    plain heavy-ball direction -- it is a per-layer scalar knob at ``per_unit=False``
+    and a per-neuron one at ``per_unit=True`` -- at the cost of a noisier cosine on
+    units with small fan-in (a stem conv with fan-in 27 is the extreme case).
     """
 
     def __init__(
@@ -94,6 +107,7 @@ class MAL_SGDM(Optimizer):
         in_place: bool = False,
         scale: bool = False,
         nesterov: bool = False,
+        per_unit: bool = False,
     ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -140,6 +154,7 @@ class MAL_SGDM(Optimizer):
             "in_place": in_place,
             "scale": scale,
             "nesterov": nesterov,
+            "per_unit": per_unit,
         }  # shared across all optim/param groups
         super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
 
@@ -159,6 +174,7 @@ class MAL_SGDM(Optimizer):
             in_place = group["in_place"]
             scale = group["scale"]
             nesterov = group["nesterov"]
+            per_unit = group["per_unit"]
 
             for p, m in zip(group["params"], group["momentum"]):
                 if p.grad is None:
@@ -171,9 +187,23 @@ class MAL_SGDM(Optimizer):
 
                 probe_m = m.mul(beta).add_(g)
 
-                g_norm = torch.linalg.vector_norm(g)
-                probe_norm = torch.linalg.vector_norm(probe_m)
-                cosine_sim = (torch.vdot(g.flatten(), probe_m.flatten()) / (g_norm * probe_norm).clamp_min(1e-8)).clamp(-1.0, 1.0)
+                # Fan-in axes for per-output-unit alignment; None keeps the
+                # whole-tensor cosine (also the only sane choice for ndim <= 1,
+                # where each "unit" is a lone scalar).
+                dims = tuple(range(1, p.ndim)) if (per_unit and p.ndim > 1) else None
+
+                if dims is None:
+                    g_norm = torch.linalg.vector_norm(g)
+                    probe_norm = torch.linalg.vector_norm(probe_m)
+                    dot = torch.vdot(g.flatten(), probe_m.flatten())
+                else:
+                    # vector_norm, not Tensor.norm: the latter dispatches to
+                    # matrix_norm for a tuple dim and raises on 3+ reduced axes.
+                    g_norm = torch.linalg.vector_norm(g, dim=dims, keepdim=True)
+                    probe_norm = torch.linalg.vector_norm(probe_m, dim=dims, keepdim=True)
+                    dot = (g * probe_m).sum(dim=dims, keepdim=True)
+
+                cosine_sim = (dot / (g_norm * probe_norm).clamp_min(1e-8)).clamp(-1.0, 1.0)
 
                 eff_beta = ((1.0 + cosine_sim) * 0.5) ** pwr  # effective momentum coefficient for this step
                 eff_beta = torch.where(g_norm > 0.0, eff_beta, beta)
@@ -185,17 +215,24 @@ class MAL_SGDM(Optimizer):
                     m.copy_(probe_m)  # plain heavy ball
 
                 if scale:
-                    s = probe_norm / torch.linalg.vector_norm(eff_m).clamp_min(1e-8)
+                    # Per unit under per_unit=True, whole-tensor otherwise: either way
+                    # the applied step carries exactly the plain heavy-ball norm.
+                    eff_norm = torch.linalg.vector_norm(eff_m) if dims is None else torch.linalg.vector_norm(eff_m, dim=dims, keepdim=True)
+                    s = probe_norm / eff_norm.clamp_min(1e-8)
                 else:
                     s = 1.0
 
-                if nesterov:
-                    # Sutskever form against the plain buffer, with MAL's coefficient
-                    # supplying the look-ahead weight.
-                    p.sub_(g, alpha=lr)
-                    p.addcmul_(m, eff_beta, value=-lr)
-                else:
+                # if nesterov:
+                #     # Sutskever form against the plain buffer, with MAL's coefficient
+                #     # supplying the look-ahead weight.
+                #     p.sub_(g, alpha=lr)
+                #     p.addcmul_(m, eff_beta, value=-lr)
+                if dims is None:
                     p.sub_(eff_m, alpha=lr * s)
+                else:
+                    # "s" is a per-unit tensor here, so it has to broadcast into the
+                    # update rather than ride along as a scalar "alpha".
+                    p.sub_(eff_m * s, alpha=lr)
 
         return loss
 

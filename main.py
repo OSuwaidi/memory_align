@@ -323,9 +323,9 @@ def main():
     lr = config.lr
     weight_decay = config.weight_decay
     seed = config.seed
-    in_place = config.in_place
+    in_place, pwr = config.inplace_pwr.split(",")
     scale = config.scale
-    pwr = config.pwr
+    per_unit = config.per_unit
 
     if bs >= 2 * MAX_MICRO_BATCH_SIZE:
         if bs % MAX_MICRO_BATCH_SIZE != 0:
@@ -341,7 +341,7 @@ def main():
         args.float32_precision,
     )
 
-    run.name = f"{align}_inp:{str(in_place)[0]}_scl:{str(scale)[0]}_pwr{pwr}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
+    run.name = f"{align}_inp:{str(in_place)[0]}_pwr{pwr}_scl:{str(scale)[0]}_per:{str(per_unit)[0]}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
 
     set_seed(seed)
 
@@ -394,17 +394,16 @@ def main():
     )
 
     if align == "MAL":
-        if (in_place and pwr == 1.0) or (not in_place and pwr == 0.5):
-            raise ValueError(f"In-place alignment requires pwr=1.0, but got in_place={in_place} and pwr={pwr}.")
         optimizer = MAL_SGDM(
             model.parameters(),
             lr=lr,
             beta=BETA,
             weight_decay=weight_decay,
-            in_place=in_place,
+            in_place=in_place == "True",
             scale=scale,
-            pwr=pwr,
+            pwr=float(pwr),
             nesterov=nest,
+            per_unit=per_unit,
         )
 
     elif align == "none":
