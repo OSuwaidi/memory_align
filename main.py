@@ -92,7 +92,7 @@ def train_val_model(
     best_val_acc = 0.0
     best_train_loss = 0.0
     AUC = 0.0
-    speed = 0.0
+    rise = 0.0
     best_model: dict[str, Any] = {}
     best_val_epoch = 0
     epochs_to_target = -1
@@ -146,8 +146,6 @@ def train_val_model(
             amp_enabled=amp_enabled,
         )
 
-        AUC += val_acc
-        speed += val_acc / epoch
         if not target_reached and val_acc >= val_acc_target:
             epochs_to_target = epoch
             target_reached = True
@@ -158,11 +156,16 @@ def train_val_model(
             best_model = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             best_val_epoch = epoch
 
+        AUC += val_acc
+        rise += val_acc / epoch
+
         run.log(
             {
                 "train_loss": round(epoch_loss / n_samples, 2),
                 "val_acc": val_acc,
                 "epoch": epoch,
+                "AUC": AUC / epochs,
+                "rise": rise,
             },
         )
 
@@ -171,8 +174,6 @@ def train_val_model(
     run.summary["best_val_acc"] = round(best_val_acc, 2)
     run.summary["best_train_loss"] = round(best_train_loss, 2)
     run.summary["best_val_epoch"] = best_val_epoch
-    run.summary["AUC"] = round(AUC / epochs, 2)
-    run.summary["speed"] = round(speed, 2)
     return best_model
 
 
