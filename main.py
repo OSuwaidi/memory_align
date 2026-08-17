@@ -341,7 +341,7 @@ def main():
         args.float32_precision,
     )
 
-    run.name = f"{align}_inp:{str(in_place)[0]}_pwr{pwr}_scl:{str(scale)[0]}_per:{str(per_unit)[0]}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
+    run.name = f"{align}_inp:{str(in_place)[0]}_pwr:{pwr}_scl:{str(scale)[0]}_per:{str(per_unit)[0]}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
 
     set_seed(seed)
 
