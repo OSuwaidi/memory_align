@@ -15,9 +15,11 @@ readonly UV_BIN="${UV_BIN_DIR}/uv"
 readonly TMUX_SESSION="sweep"
 readonly SWEEP_PATH="osuwaidi-khalifa-university/FINAL_MAL_CIFAR100/it79n63q"
 
-if ! command -v tmux >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+if ! command -v tmux >/dev/null 2>&1 || \
+    ! command -v curl >/dev/null 2>&1 || \
+    ! command -v wget >/dev/null 2>&1; then
     apt-get update
-    apt-get install -y ca-certificates curl tmux
+    apt-get install -y ca-certificates curl tmux wget
 fi
 
 if [[ ! -x "${UV_BIN}" ]]; then
