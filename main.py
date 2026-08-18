@@ -287,7 +287,7 @@ def main():
     # Start W&B Sweeps (W&B Sweep injects its parameters as configs automatically):
     run = wandb.init(  # the "entity" is known from the `wandb` run command, and "project" is inherited from the sweep config
         job_type="train",
-        tags=("new MAL",),
+        tags=("MAL per vs tensor",),
         config={
             "data": args.data,
             "model": args.arch,

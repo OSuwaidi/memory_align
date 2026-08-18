@@ -210,7 +210,10 @@ class MAL_SGDM(Optimizer):
                 eff_m = torch.addcmul(g, m, eff_beta)  # eff_beta * m_{t-1} + g
 
                 if in_place:
-                    m.copy_(eff_m)
+                    if pwr == 1.0:
+                        m.copy_(torch.addcmul(g, m, eff_beta**0.5))
+                    else:
+                        m.copy_(eff_m)
                 else:
                     m.copy_(probe_m)  # plain heavy ball
 
