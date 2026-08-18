@@ -8,8 +8,8 @@ readonly DATA_DIR="data"
 readonly DATA_ARCHIVE="${DATA_DIR}/cifar-100-python.tar.gz"
 readonly DATASET_DIR="${DATA_DIR}/cifar-100-python"
 readonly DATASET_MD5="eb9058c3a382ffc7106e4002c42a8d85"
-readonly DATASET_PRIMARY_URL="https://www.cs.toronto.edu/~kriz/cifar-100-python.tar.gz"
-readonly DATASET_FALLBACK_URL="https://huggingface.co/datasets/nakroy/cifar100-python/resolve/main/cifar-100-python.tar.gz"
+readonly DATASET_PRIMARY_URL="https://huggingface.co/datasets/nakroy/cifar100-python/resolve/main/cifar-100-python.tar.gz"
+readonly DATASET_FALLBACK_URL="https://www.cs.toronto.edu/~kriz/cifar-100-python.tar.gz"
 readonly UV_BIN_DIR="/usr/local/bin"
 readonly UV_BIN="${UV_BIN_DIR}/uv"
 readonly TMUX_SESSION="sweep"
@@ -72,9 +72,9 @@ download_cifar100_archive() {
     for dataset_url in "${DATASET_PRIMARY_URL}" "${DATASET_FALLBACK_URL}"; do
         echo "Trying ${dataset_url}"
         if curl --fail --location --show-error \
-            --retry 5 \
+            --retry 2 \
             --retry-all-errors \
-            --retry-delay 5 \
+            --retry-delay 2 \
             --connect-timeout 30 \
             --output "${partial_archive}" \
             "${dataset_url}"; then
