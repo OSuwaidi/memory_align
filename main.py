@@ -325,6 +325,7 @@ def main():
     weight_decay = config.weight_decay
     seed = config.seed
     in_place, pwr = config.inplace_pwr.split(",")
+    run.config.update({"in_place": in_place, "pwr": pwr}, allow_val_change=True)
     scale = config.scale
     per_unit = config.per_unit
 

@@ -8,17 +8,17 @@ import wandb
 # $ CUDA_VISIBLE_DEVICES=0 uv run wandb agent --forward-signals <entity/project/sweep_id>
 
 ENTITY_NAME = "osuwaidi-khalifa-university"
-SEEDS = (42, )#1337, 2026)
+SEEDS = (1337, )#2026)
 LRs = (
-    0.025,
+    # 0.025,
     # 0.05,
     0.1,
-    0.2,
-    0.4,
+    # 0.2,
+    # 0.4,
     # 0.8,
     # 1.0,
 )
-BATCH_SIZES = (2048, 4096)[::-1]
+BATCH_SIZES = (128, 512,)[::-1]
 WEIGHT_DECAY = (5e-4,)
 
 def percentage(value: str) -> float:
@@ -41,7 +41,7 @@ def add_training_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--val_acc_target",
         type=percentage,
-        default=75.0,
+        default=50.0,
         help="Validation-accuracy target percentage used for convergence-speed metrics (0-100).",
     )
     parser.add_argument(
@@ -59,17 +59,25 @@ def add_training_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def get_finished_run_ids(sweep_id: str) -> list[str]:
+def get_finished_run_ids(sweep_ids: list[str]) -> list[str]:
     """
     Retrieves the IDs of all finished runs within a specified sweep.
-    :param sweep_id: The ID of the prior sweep.
+    :param sweep_ids: The IDs of the prior sweep.
     :return: A list of strings containing the IDs of all finished runs.
     """
-    sweep_path = f"{ENTITY_NAME}/{args.project_name}/{sweep_id}"
     api = wandb.Api()
-    sweep = api.sweep(sweep_path)
+    runs = api.runs(
+        path=f"{ENTITY_NAME}/{args.project_name}",
+        filters={
+            "sweep": {"$in": sweep_ids},
+            "state": "finished",
+        },
+        per_page=200,
+        lazy=True,
+        include_sweeps=True,
+    )
 
-    return [run.id for run in sweep.runs if run.state.lower() == "finished"]
+    return [run.id for run in runs]
 
 
 if __name__ == "__main__":
@@ -78,9 +86,10 @@ if __name__ == "__main__":
     parser.add_argument("--sweep_name", type=str, help="Sweep name", required=True)
     parser.add_argument("--project_name", type=str, help="Project name", required=True)
     parser.add_argument(
-        "--prior_sweep",
+        "--prior_sweeps",
         type=str,
-        help="Previous sweep ID",
+        nargs="+",
+        help="Previous sweep(s) ID",
     )
     parser.add_argument(
         "--method",
@@ -109,9 +118,9 @@ if __name__ == "__main__":
                     # "cautious",
                 )
             },
-            "inplace_pwr": {"values": ("True,0.5", "False,1.0")},
+            "inplace_pwr": {"values": ("True,0.5", "False,1.0",)},
             "scale": {"values": (True,)},
-            "per_unit": {"values": (True,)},
+            "per_unit": {"values": (True, False)},
             "nesterov": {"values": (False,)},
             "batch_size": {"values": BATCH_SIZES},
             "lr": {"values": LRs},
@@ -143,10 +152,10 @@ if __name__ == "__main__":
 
     # Fetch successfully completed runs from previous sweep
     prior_run_ids = None
-    if prior_sweep_id := args.prior_sweep:
-        prior_run_ids = get_finished_run_ids(prior_sweep_id)
+    if prior_sweeps := args.prior_sweeps:
+        prior_run_ids = get_finished_run_ids(prior_sweeps)
 
-        print(f"Adding {len(prior_run_ids)} finished runs from sweep ID:{prior_sweep_id} as prior runs.")
+        print(f"Adding {len(prior_run_ids)} finished runs from sweep ID(s): {prior_sweeps} as prior runs.")
 
     # 2. Initialize the sweep on W&B servers, seeded with completed runs
     sweep_id = wandb.sweep(
