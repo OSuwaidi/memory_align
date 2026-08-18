@@ -87,6 +87,11 @@ download_cifar100_archive() {
             echo "Download from ${dataset_url} failed; trying another source." >&2
         fi
         rm -f "${partial_archive}"
+
+        # Make it obvious in the logs when the faster Hugging Face source was unavailable.
+        if [[ "${dataset_url}" == "${DATASET_PRIMARY_URL}" ]]; then
+            echo "Hugging Face download unavailable; falling back to the official Toronto source." >&2
+        fi
     done
 
     echo "Unable to download a valid CIFAR-100 archive from any source." >&2
