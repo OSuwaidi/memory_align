@@ -11,7 +11,7 @@ readonly DATASET_URL="https://huggingface.co/datasets/nakroy/cifar100-python/res
 readonly UV_BIN_DIR="/usr/local/bin"
 readonly UV_BIN="${UV_BIN_DIR}/uv"
 readonly TMUX_SESSION="sweep"
-readonly SWEEP_PATH="osuwaidi-khalifa-university/FINAL_MAL_CIFAR100/bbwuutco"
+readonly SWEEP_PATH="osuwaidi-khalifa-university/FINAL_MAL_CIFAR100/it79n63q"
 
 if ! command -v tmux >/dev/null 2>&1 || ! command -v wget >/dev/null 2>&1; then
     apt-get update

@@ -21,7 +21,6 @@ LRs = (
 BATCH_SIZES = (2048, 4096)[::-1]
 WEIGHT_DECAY = (5e-4,)
 
-
 def percentage(value: str) -> float:
     parsed_value = float(value)
     if not 0.0 <= parsed_value <= 100.0:
