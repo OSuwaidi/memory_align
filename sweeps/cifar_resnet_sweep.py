@@ -10,7 +10,7 @@ import wandb
 ENTITY_NAME = "osuwaidi-khalifa-university"
 SEEDS = (42, )#1337, 2026)
 LRs = (
-    # 0.025,
+    0.025,
     # 0.05,
     0.1,
     0.2,
