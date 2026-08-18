@@ -7,15 +7,17 @@ readonly REPO_DIR="memory_align"
 readonly DATA_DIR="data"
 readonly DATA_ARCHIVE="${DATA_DIR}/cifar-100-python.tar.gz"
 readonly DATASET_DIR="${DATA_DIR}/cifar-100-python"
-readonly DATASET_URL="https://huggingface.co/datasets/nakroy/cifar100-python/resolve/main/cifar-100-python.tar.gz"
+readonly DATASET_MD5="eb9058c3a382ffc7106e4002c42a8d85"
+readonly DATASET_PRIMARY_URL="https://www.cs.toronto.edu/~kriz/cifar-100-python.tar.gz"
+readonly DATASET_FALLBACK_URL="https://huggingface.co/datasets/nakroy/cifar100-python/resolve/main/cifar-100-python.tar.gz"
 readonly UV_BIN_DIR="/usr/local/bin"
 readonly UV_BIN="${UV_BIN_DIR}/uv"
 readonly TMUX_SESSION="sweep"
 readonly SWEEP_PATH="osuwaidi-khalifa-university/FINAL_MAL_CIFAR100/it79n63q"
 
-if ! command -v tmux >/dev/null 2>&1 || ! command -v wget >/dev/null 2>&1; then
+if ! command -v tmux >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
     apt-get update
-    apt-get install -y tmux wget
+    apt-get install -y ca-certificates curl tmux
 fi
 
 if [[ ! -x "${UV_BIN}" ]]; then
@@ -62,18 +64,45 @@ cifar100_is_ready() {
 
 download_cifar100_archive() {
     local partial_archive="${DATA_ARCHIVE}.part"
+    local dataset_url
 
     echo "Downloading CIFAR-100 dataset..."
-    wget -q --show-progress \
-        -O "${partial_archive}" \
-        "${DATASET_URL}"
-    mv -f "${partial_archive}" "${DATA_ARCHIVE}"
+    rm -f "${partial_archive}"
+
+    for dataset_url in "${DATASET_PRIMARY_URL}" "${DATASET_FALLBACK_URL}"; do
+        echo "Trying ${dataset_url}"
+        if curl --fail --location --show-error \
+            --retry 5 \
+            --retry-all-errors \
+            --retry-delay 5 \
+            --connect-timeout 30 \
+            --output "${partial_archive}" \
+            "${dataset_url}"; then
+            if echo "${DATASET_MD5}  ${partial_archive}" | md5sum --check --status; then
+                mv -f "${partial_archive}" "${DATA_ARCHIVE}"
+                return 0
+            fi
+            echo "Downloaded file from ${dataset_url} failed its checksum; trying another source." >&2
+        else
+            echo "Download from ${dataset_url} failed; trying another source." >&2
+        fi
+        rm -f "${partial_archive}"
+    done
+
+    echo "Unable to download a valid CIFAR-100 archive from any source." >&2
+    return 1
+}
+
+cifar100_archive_is_valid() {
+    [[ -s "${DATA_ARCHIVE}" ]] && \
+        echo "${DATASET_MD5}  ${DATA_ARCHIVE}" | md5sum --check --status && \
+        tar -tzf "${DATA_ARCHIVE}" >/dev/null 2>&1
 }
 
 if cifar100_is_ready; then
     echo "CIFAR-100 already exists in ${DATASET_DIR}; skipping download."
 else
-    if [[ ! -s "${DATA_ARCHIVE}" ]] || ! tar -tzf "${DATA_ARCHIVE}" >/dev/null 2>&1; then
+    if ! cifar100_archive_is_valid; then
         download_cifar100_archive
     else
         echo "Using existing CIFAR-100 archive: ${DATA_ARCHIVE}"
