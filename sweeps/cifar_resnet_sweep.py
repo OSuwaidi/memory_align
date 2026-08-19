@@ -119,7 +119,7 @@ if __name__ == "__main__":
                 )
             },
             "MAL_config": {"values":  # in_place, pwr, scale, per_unit
-                               ("False,1.0,True,False", "False,1.0,False,True", "True,0.5,True,False")
+                               ("False,1.0,False,False", "False,1.0,True,False", "False,1.0,False,True", "True,0.5,True,False", "True,0.5,False,False")
                            },
             "nesterov": {"values": (False,)},
             "batch_size": {"values": BATCH_SIZES},
