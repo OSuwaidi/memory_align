@@ -13,7 +13,7 @@ readonly DATASET_FALLBACK_URL="https://www.cs.toronto.edu/~kriz/cifar-100-python
 readonly UV_BIN_DIR="/usr/local/bin"
 readonly UV_BIN="${UV_BIN_DIR}/uv"
 readonly TMUX_SESSION="sweep"
-readonly SWEEP_PATH="osuwaidi-khalifa-university/FINAL_MAL_CIFAR100/lv3vf8l2"
+readonly SWEEP_PATH="osuwaidi-khalifa-university/FINAL_MAL_CIFAR100/wgg2kc8x"
 
 if ! command -v tmux >/dev/null 2>&1 || \
     ! command -v curl >/dev/null 2>&1 || \

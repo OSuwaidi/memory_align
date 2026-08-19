@@ -324,8 +324,15 @@ def main():
     lr = config.lr
     weight_decay = config.weight_decay
     seed = config.seed
-    in_place, pwr = config.inplace_pwr.split(",")
-    run.config.update({"in_place": in_place == "True", "pwr": float(pwr)}, allow_val_change=True)
+
+    in_place, pwr, scale, per_unit = config.MAL_config.split(",")
+    in_place = in_place == "True"
+    pwr = float(pwr)
+    scale = scale == "True"
+    per_unit = scale == "True"
+    MAL_config = {"in_place": in_place, "pwr": pwr, "scale": scale, "per_unit": per_unit}
+    run.config.update(MAL_config, allow_val_change=True)
+
     scale = config.scale
     per_unit = config.per_unit
 
@@ -396,17 +403,7 @@ def main():
     )
 
     if align == "MAL":
-        optimizer = MAL_SGDM(
-            model.parameters(),
-            lr=lr,
-            beta=BETA,
-            weight_decay=weight_decay,
-            in_place=in_place == "True",
-            scale=scale,
-            pwr=float(pwr),
-            nesterov=nest,
-            per_unit=per_unit,
-        )
+        optimizer = MAL_SGDM(model.parameters(), lr=lr, beta=BETA, weight_decay=weight_decay, nesterov=nest, **MAL_config)
 
     elif align == "none":
         optimizer = SGD(
