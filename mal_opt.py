@@ -65,16 +65,21 @@ class MAL_SGDM(Optimizer):
     :math:`\hat{u}_t = g_t + \beta\hat{m}_t`.
 
     MAL measures :math:`s_t=\cos(\hat{u}_t,g_t)` and computes
-    :math:`c_t=((1+s_t)/2)^{\mathrm{pwr}}` for a non-zero gradient. The gate
-    reweights only the direction applied on this step: heavy-ball uses
-    :math:`u_t=g_t+c_t m_{t-1}`, while Nesterov uses
-    :math:`u_t=g_t+c_t m_t`. In both cases, the stored buffer advances independently
-    as :math:`m_t=\beta m_{t-1}+g_t`; MAL never compounds :math:`c_t` into memory.
-
-    Consequently, ``beta`` controls both the fixed probe and stored heavy-ball
-    memory, while :math:`c_t` controls only the current applied direction. Under
-    Nesterov, :math:`m_t` in that direction is the *updated* plain buffer
+    :math:`c_t=((1+s_t)/2)^{\mathrm{pwr}}` for a non-zero gradient. Heavy-ball
+    applies :math:`u_t=g_t+c_t m_{t-1}`. Nesterov applies
+    :math:`u_t=g_t+c_t m_t`, where :math:`m_t` is the buffer selected below
     (PyTorch/Sutskever form).
+
+    With ``in_place=False``, the original MAL formulation is used: the stored
+    buffer advances independently as :math:`m_t=\beta m_{t-1}+g_t`, so
+    :math:`c_t` reweights only the direction applied on the current step. With
+    ``in_place=True``, the adaptive coefficient is also written into memory:
+    :math:`m_t=c_t m_{t-1}+g_t`. In either mode, the alignment probe itself uses
+    the fixed ``beta`` so variants are scored against the same base optimizer.
+
+    With ``scale=True``, the final applied direction is rescaled to the norm of
+    the corresponding fixed-beta probe. This preserves the base optimizer's
+    step magnitude while retaining MAL's change in direction.
 
     A zero buffer makes the probe self-aligned (:math:`c_t=1`). A zero gradient
     carries no alignment evidence, so :math:`c_t` falls back to the fixed ``beta``
@@ -86,7 +91,7 @@ class MAL_SGDM(Optimizer):
     fan-in axes, so a ``Linear`` gets one coefficient per neuron (reduce ``dim=1``)
     and a ``ConvNd`` one per output kernel (reduce ``dims=1..N-1``). The resulting
     coefficient has shape ``(out, 1, ..., 1)`` and broadcasts against the update, and
-    ``scale`` likewise matches each unit's step norm to that unit's plain heavy-ball
+    ``scale`` likewise matches each unit's step norm to that unit's fixed-beta probe
     norm. Parameters with ``ndim <= 1`` (biases, norm affines) always use the
     whole-tensor cosine: their "units" are single scalars, whose cosine could only be
     :math:`\pm 1`.
@@ -185,7 +190,8 @@ class MAL_SGDM(Optimizer):
                     # Coupled weight decay without mutating "p.grad" in-place.
                     g = g.add(p, alpha=wd)
 
-                probe_m = m.mul(beta).add_(g)
+                probe_m = torch.add(g, m, alpha=beta)
+                probe_u = torch.add(g, probe_m, alpha=beta) if nesterov else probe_m
 
                 # Fan-in axes for per-output-unit alignment; None keeps the
                 # whole-tensor cosine (also the only sane choice for ndim <= 1,
@@ -194,16 +200,17 @@ class MAL_SGDM(Optimizer):
 
                 if dims is None:
                     g_norm = torch.linalg.vector_norm(g)
-                    probe_norm = torch.linalg.vector_norm(probe_m)
-                    dot = torch.vdot(g.flatten(), probe_m.flatten())
+                    probe_norm = torch.linalg.vector_norm(probe_u)
+                    dot = torch.vdot(g.flatten(), probe_u.flatten())
                 else:
                     # vector_norm, not Tensor.norm: the latter dispatches to
                     # matrix_norm for a tuple dim and raises on 3+ reduced axes.
                     g_norm = torch.linalg.vector_norm(g, dim=dims, keepdim=True)
-                    probe_norm = torch.linalg.vector_norm(probe_m, dim=dims, keepdim=True)
-                    dot = (g * probe_m).sum(dim=dims, keepdim=True)
+                    probe_norm = torch.linalg.vector_norm(probe_u, dim=dims, keepdim=True)
+                    dot = (g * probe_u).sum(dim=dims, keepdim=True)
 
-                cosine_sim = (dot / (g_norm * probe_norm).clamp_min(1e-8)).clamp(-1.0, 1.0)
+                denominator = g_norm.clamp_min(1e-8) * probe_norm.clamp_min(1e-8)
+                cosine_sim = (dot / denominator).clamp(-1.0, 1.0)
 
                 eff_beta = ((1.0 + cosine_sim) * 0.5) ** pwr  # effective momentum coefficient for this step
                 eff_beta = torch.where(g_norm > 0.0, eff_beta, beta)
@@ -214,25 +221,17 @@ class MAL_SGDM(Optimizer):
                 else:
                     m.copy_(probe_m)  # plain heavy ball
 
-                if scale:
-                    # Per unit under per_unit=True, whole-tensor otherwise: either way
-                    # the applied step carries exactly the plain heavy-ball norm.
-                    eff_norm = torch.linalg.vector_norm(eff_m) if dims is None else torch.linalg.vector_norm(eff_m, dim=dims, keepdim=True)
-                    s = probe_norm / eff_norm.clamp_min(1e-8)
-                else:
-                    s = 1.0
+                applied = torch.addcmul(g, m, eff_beta) if nesterov else eff_m
 
-                # if nesterov:
-                #     # Sutskever form against the plain buffer, with MAL's coefficient
-                #     # supplying the look-ahead weight.
-                #     p.sub_(g, alpha=lr)
-                #     p.addcmul_(m, eff_beta, value=-lr)
-                if dims is None:
-                    p.sub_(eff_m, alpha=lr * s)
-                else:
-                    # "s" is a per-unit tensor here, so it has to broadcast into the
-                    # update rather than ride along as a scalar "alpha".
-                    p.sub_(eff_m * s, alpha=lr)
+                if scale:
+                    applied_norm = (
+                        torch.linalg.vector_norm(applied)
+                        if dims is None
+                        else torch.linalg.vector_norm(applied, dim=dims, keepdim=True)
+                    )
+                    applied.mul_(probe_norm / applied_norm.clamp_min(1e-8))
+
+                p.sub_(applied, alpha=lr)
 
         return loss
 
@@ -272,11 +271,12 @@ class MAL_AdamW(Optimizer):
     ``E[c*m_{t-1} + (1-c)*g] = (1 - c*beta1**(t-1))*g``, so the correction is
     ``1 - c*beta1**(t-1)`` -- no running product of past coefficients, hence no accumulated
     rounding drift, and it reduces to ``1 - beta1**t`` whenever ``c == beta1``. Smooth c is
-    capped at 1 - 1e-4 because c = 1 is the one degenerate EMA value (zero mass on g).
+    capped at 1 - 1e-3 because c = 1 is the one degenerate EMA value (zero mass on g).
 
     Weight decay is decoupled (AdamW) and never enters the alignment signal.
-    LayerNorm gains and biases (ndim <= 1) keep a fixed beta1 unless align_1d=True:
-    cosine similarity on small tensors can be noise-dominated.
+    Alignment is measured for every trainable parameter tensor, including biases
+    and normalization affines. Parameters with ``ndim <= 1`` are excluded only
+    from weight decay.
 
     Second-moment step counts are per parameter and serialized, so intermittent
     gradients and checkpoint resume retain the exact AdamW bias correction.
@@ -381,11 +381,15 @@ class MAL_AdamW(Optimizer):
                 cosine_sim, has_gradient = _get_cosine_sim(u_probe, g)
                 retention = (1.0 + cosine_sim) * 0.5
 
-                # Keep the coefficient in stable scalar precision. In fp16 or bf16,
-                # MAX_BETA1 would otherwise round to 1 and zero the bias correction on
-                # strongly aligned steps.
-                retention = (retention.to(torch.float32)) ** pwr
-                eff_beta1 = torch.where(has_gradient, retention, beta1).clamp_max(self.MAX_BETA1)
+                # Keep low-precision coefficients in stable scalar precision. In
+                # fp16 or bf16, MAX_BETA1 would otherwise round to 1 and zero the
+                # bias correction on strongly aligned steps. Preserve float64 when
+                # the optimizer is explicitly used with float64 parameters.
+                if retention.dtype in (torch.float16, torch.bfloat16):
+                    retention = retention.to(torch.float32)
+                retention = retention**pwr
+                retention = retention.clamp_max(self.MAX_BETA1)
+                eff_beta1 = torch.where(has_gradient, retention, beta1)
 
                 # Ungated stored memory: the coefficient reweights only this step's applied
                 # direction, while the buffer advances independently at fixed beta1.

@@ -35,14 +35,12 @@ def add_training_args(parser: argparse.ArgumentParser) -> None:
         "--arch",
         type=str,
         help="Architecture name",
-        default="resnet50",
     )
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument(
         "--val_acc_target",
         type=percentage,
-        default=50.0,
-        help="Validation-accuracy target percentage used for convergence-speed metrics (0-100).",
+        help="Validation-accuracy target percentage used for convergence-speed metrics (0-99).",
     )
     parser.add_argument(
         "--amp_dtype",
@@ -119,8 +117,7 @@ if __name__ == "__main__":
                 )
             },
             "MAL_config": {"values":  # in_place, pwr, scale, per_unit
-                               ("False,1.0,False,True",)
-                               # ("False,1.0,False,False", "False,1.0,True,False", "False,1.0,False,True", "True,0.5,True,False", "True,0.5,False,False")
+                               ("False,1.0,False,False", "False,1.0,True,False", "True,0.5,False,False", "True,0.5,True,False")
                            },
             "nesterov": {"values": (False,)},
             "batch_size": {"values": BATCH_SIZES},

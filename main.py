@@ -6,7 +6,6 @@ from multiprocessing import cpu_count
 from typing import Any
 
 import numpy as np
-import timm
 import torch
 import torch.nn.functional as F
 import wandb
@@ -31,7 +30,8 @@ DEVICE = torch.device("cuda")
 WARMUP_EPOCHS = 5
 BETA = 0.9
 NUM_GPUS = torch.cuda.device_count()
-NUM_WORKERS = min(cpu_count() // (2 * NUM_GPUS), 16)
+NUM_WORKERS = min(cpu_count() // (2 * max(NUM_GPUS, 1)), 16)
+EVAL_NUM_WORKERS = min(cpu_count() // (4 * max(NUM_GPUS, 1)), 6)
 MAX_MICRO_BATCH_SIZE = 512
 
 
@@ -224,6 +224,11 @@ def main():
     # "parse_known_args" only parses CLI args that are defined above; it doesn't capture/parse all args that are present in the actual command
     args, _unknown = parser.parse_known_args()  # W&B appends sweep params as CLI args; ignore them here as they're captured via "run.config"
 
+    if not torch.cuda.is_available():
+        raise RuntimeError("This training entry point requires a CUDA-capable PyTorch environment.")
+    if args.epochs <= WARMUP_EPOCHS:
+        parser.error(f"--epochs must be greater than {WARMUP_EPOCHS} warmup epochs")
+
     if args.data == "cifar10":
         DatasetCls = datasets.CIFAR10
         MEAN = (0.4914, 0.4822, 0.4465)
@@ -275,7 +280,7 @@ def main():
         test_ds,
         batch_size=1000,
         shuffle=False,
-        num_workers=min(cpu_count() // (4 * NUM_GPUS), 6),
+        num_workers=EVAL_NUM_WORKERS,
         persistent_workers=False,
         pin_memory=True,
     )
@@ -394,7 +399,7 @@ def main():
         val_ds,
         batch_size=1000,
         shuffle=False,
-        num_workers=min(cpu_count() // (4 * NUM_GPUS), 6),
+        num_workers=EVAL_NUM_WORKERS,
         persistent_workers=False,
         pin_memory=True,
     )
