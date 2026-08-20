@@ -34,13 +34,12 @@ if [[ ! -x "${UV_BIN}" ]]; then
 fi
 
 if [[ -d "${REPO_DIR}/.git" ]]; then
-    if git -C "${REPO_DIR}" show-ref --verify --quiet "refs/heads/${REPO_BRANCH}"; then
-        git -C "${REPO_DIR}" switch "${REPO_BRANCH}"
-    else
-        git -C "${REPO_DIR}" fetch origin "${REPO_BRANCH}"
-        git -C "${REPO_DIR}" switch --create "${REPO_BRANCH}" --track "origin/${REPO_BRANCH}"
-    fi
-    git -C "${REPO_DIR}" pull --ff-only origin "${REPO_BRANCH}"
+    echo "Force-syncing ${REPO_DIR} to origin/${REPO_BRANCH}..."
+    git -C "${REPO_DIR}" fetch --prune origin "${REPO_BRANCH}"
+    git -C "${REPO_DIR}" switch \
+        --discard-changes \
+        --force-create "${REPO_BRANCH}" \
+        "origin/${REPO_BRANCH}"
 elif [[ -e "${REPO_DIR}" ]]; then
     echo "${REPO_DIR} exists but is not a Git repository." >&2
     exit 1
