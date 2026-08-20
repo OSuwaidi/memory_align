@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly REPO_URL="https://github.com/OSuwaidi/memory_align.git"
-readonly REPO_BRANCH="run_mal"
+readonly REPO_BRANCH="raw_run"
 readonly REPO_DIR="memory_align"
 readonly DATA_DIR="data"
 readonly DATA_ARCHIVE="${DATA_DIR}/cifar-100-python.tar.gz"

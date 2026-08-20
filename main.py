@@ -27,7 +27,7 @@ from sweeps.cifar_resnet_sweep import add_training_args
 # Config
 # -------------------------
 DEVICE = torch.device("cuda")
-WARMUP_EPOCHS = 5
+WARMUP_EPOCHS = 0
 BETA = 0.9
 NUM_GPUS = torch.cuda.device_count()
 NUM_WORKERS = min(cpu_count() // (2 * max(NUM_GPUS, 1)), 16)
@@ -452,7 +452,7 @@ def main():
         train_loader,
         val_loader,
         run,
-        lr_scheduler=scheduler,
+        lr_scheduler=None,
         label_smoothing=label_smoothing,
         amp_dtype=amp_dtype,
         amp_enabled=amp_enabled,

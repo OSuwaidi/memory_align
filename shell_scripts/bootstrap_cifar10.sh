@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly REPO_URL="https://github.com/OSuwaidi/memory_align.git"
-readonly REPO_BRANCH="run_mal"
+readonly REPO_BRANCH="raw_run"
 readonly REPO_DIR="memory_align"
 readonly DATA_DIR="data"
 readonly DATA_ARCHIVE="${DATA_DIR}/cifar-10-python.tar.gz"
@@ -13,7 +13,7 @@ readonly DATASET_FALLBACK_URL="https://www.cs.toronto.edu/~kriz/cifar-10-python.
 readonly UV_BIN_DIR="/usr/local/bin"
 readonly UV_BIN="${UV_BIN_DIR}/uv"
 readonly TMUX_SESSION="sweep"
-readonly SWEEP_PATH="osuwaidi-khalifa-university/FINAL_MAL_CIFAR10/p1gn9cx2"
+readonly SWEEP_PATH="osuwaidi-khalifa-university/FINAL_MAL_CIFAR10/pg8zlzqr"
 
 if ! command -v tmux >/dev/null 2>&1 || \
     ! command -v curl >/dev/null 2>&1 || \
@@ -156,4 +156,4 @@ else
     echo "W&B agent exited; the tmux session has ended."
 fi
 
-# Run with: `$ curl -fsSLo /tmp/bootstrap_cifar10.sh https://raw.githubusercontent.com/OSuwaidi/memory_align/run_mal/shell_scripts/bootstrap_cifar10.sh && bash /tmp/bootstrap_cifar10.sh`
+# Run with: `$ curl -fsSLo /tmp/bootstrap_cifar10.sh https://raw.githubusercontent.com/OSuwaidi/memory_align/raw_run/shell_scripts/bootstrap_cifar10.sh && bash /tmp/bootstrap_cifar10.sh`

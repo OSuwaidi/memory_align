@@ -8,7 +8,7 @@ import wandb
 # $ CUDA_VISIBLE_DEVICES=0 uv run wandb agent --forward-signals <entity/project/sweep_id>
 
 ENTITY_NAME = "osuwaidi-khalifa-university"
-SEEDS = (42, )#1337, #2026)
+SEEDS = (42, 1337,) #2026)
 LRs = (
     0.025,
     0.05,
@@ -18,7 +18,7 @@ LRs = (
     0.8,
     1.0,
 )
-BATCH_SIZES = (2048, 4096,) #64, 512, 2048, 4096,)[::-1]
+BATCH_SIZES = (64, 512, 2048, 4096,)[::-1]
 WEIGHT_DECAY = (5e-4,)
 
 def percentage(value: str) -> float:
