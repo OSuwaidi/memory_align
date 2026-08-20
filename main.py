@@ -329,12 +329,9 @@ def main():
     in_place = in_place == "True"
     pwr = float(pwr)
     scale = scale == "True"
-    per_unit = scale == "True"
+    per_unit = per_unit == "True"
     MAL_config = {"in_place": in_place, "pwr": pwr, "scale": scale, "per_unit": per_unit}
     run.config.update(MAL_config, allow_val_change=True)
-
-    scale = config.scale
-    per_unit = config.per_unit
 
     if bs >= 2 * MAX_MICRO_BATCH_SIZE:
         if bs % MAX_MICRO_BATCH_SIZE != 0:
