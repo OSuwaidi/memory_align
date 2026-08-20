@@ -151,4 +151,4 @@ else
     echo "W&B agent exited; the tmux session has ended."
 fi
 
-# Run with: `$ curl -fsSLo /tmp/bootstrap_cifar100.sh https://raw.githubusercontent.com/OSuwaidi/memory_align/run_mal/bootstrap_cifar100.sh && bash /tmp/bootstrap_cifar100.sh`
+# Run with: `$ curl -fsSLo /tmp/bootstrap_cifar100.sh https://raw.githubusercontent.com/OSuwaidi/memory_align/run_mal/shell_scripts/bootstrap_cifar100.sh && bash /tmp/bootstrap_cifar100.sh`
