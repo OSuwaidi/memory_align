@@ -8,7 +8,7 @@ import wandb
 # $ CUDA_VISIBLE_DEVICES=0 uv run wandb agent --forward-signals <entity/project/sweep_id>
 
 ENTITY_NAME = "osuwaidi-khalifa-university"
-SEEDS = (42, 1337,) #2026)
+SEEDS = (42, )#1337,) #2026)
 LRs = (
     0.025,
     0.05,
@@ -18,7 +18,7 @@ LRs = (
     0.8,
     1.0,
 )
-BATCH_SIZES = (64, 512, 2048, 4096,)[::-1]
+BATCH_SIZES = (2048, 4096,)[::-1]
 WEIGHT_DECAY = (5e-4,)
 
 def percentage(value: str) -> float:
@@ -68,9 +68,9 @@ def get_finished_run_ids(sweep_ids: list[str]) -> list[str]:
         path=f"{ENTITY_NAME}/{args.project_name}",
         filters={
             "sweep": {"$in": sweep_ids},
-            "state": "finished",
+            "state": {"$in": ["finished", "running"]},
         },
-        per_page=200,
+        per_page=100,
         lazy=True,
         include_sweeps=True,
     )
@@ -86,7 +86,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--prior_sweeps",
         type=str,
-        nargs="+",
+        nargs="+",  # creates a list of strings
         help="Previous sweep(s) ID",
     )
     parser.add_argument(
@@ -116,8 +116,9 @@ if __name__ == "__main__":
                     # "cautious",
                 )
             },
+            "boost": {"values": [False]},
             "MAL_config": {"values":  # in_place, pwr, scale, per_unit
-                               ("False,1.0,False,False", "False,1.0,True,False", "True,0.5,False,False", "True,0.5,True,False")
+                               ("False,1.0,True,False",)
                            },
             "nesterov": {"values": (False,)},
             "batch_size": {"values": BATCH_SIZES},

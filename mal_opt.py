@@ -229,7 +229,7 @@ class MAL_SGDM(Optimizer):
                         if dims is None
                         else torch.linalg.vector_norm(applied, dim=dims, keepdim=True)
                     )
-                    applied.mul_(probe_norm / applied_norm.clamp_min(1e-8))
+                    applied.mul_((probe_norm / applied_norm.clamp_min(1e-8)).clamp_max(1.0))
 
                 p.sub_(applied, alpha=lr)
 

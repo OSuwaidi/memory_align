@@ -95,7 +95,7 @@ def train_val_model(
     rise = 0.0
     best_model: dict[str, Any] = {}
     best_val_epoch = 0
-    epochs_to_target = -1
+    epochs_to_target = epochs + 1
     target_reached = False
 
     print(f"Starting training on {next(model.parameters()).device} with {'AMP ' + str(amp_dtype) if amp_enabled else 'float32'}")
@@ -169,7 +169,7 @@ def train_val_model(
             },
         )
 
-    run.summary["target_reached"] = target_reached
+    run.summary["target_reached"] = int(target_reached)
     run.summary["epochs_2_target"] = epochs_to_target
     run.summary["best_val_acc"] = round(best_val_acc, 2)
     run.summary["best_train_loss"] = round(best_train_loss, 2)
@@ -352,7 +352,7 @@ def main():
         args.float32_precision,
     )
 
-    run.name = f"{align}_inp:{str(in_place)[0]}_pwr:{pwr}_scl:{str(scale)[0]}_per:{str(per_unit)[0]}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
+    run.name = f"{align}_inp:{str(in_place)[0]}_pwr:{pwr}_scl:DECAY_per:{str(per_unit)[0]}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
 
     set_seed(seed)
 
