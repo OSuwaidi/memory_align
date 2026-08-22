@@ -4,49 +4,15 @@ import torch
 from torch.optim import Optimizer
 
 
-def _get_cosine_sim(
-    momentum_or_candidate: torch.Tensor,
-    gradient: torch.Tensor,
-    momentum_scale: float | torch.Tensor | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return candidate/gradient cosine similarity and gradient non-zero status.
+def get_norms_and_eff_beta(g: torch.Tensor, probe: torch.Tensor, pwr: float, eps: float = 1e-8) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    g_norm = torch.linalg.vector_norm(g)
+    probe_norm = torch.linalg.vector_norm(probe)
+    dot = torch.dot(g.flatten(), probe.flatten())
 
-    When ``momentum_scale`` is omitted, ``momentum_or_candidate`` is the already
-    materialized candidate. When it is supplied, the candidate is
-    ``momentum_scale * momentum_or_candidate + gradient``. Whole-tensor
-    alignment expands that affine candidate into three vector dot products so
-    it never needs to be materialized.
+    denominator = g_norm.clamp_min(eps) * probe_norm.clamp_min(eps)
+    cosine_sim = (dot / denominator).clamp(-1.0, 1.0)
 
-    A zero-fresh gradient has no direction, so callers use ``has_gradient`` to select their configured fallback coefficient.
-
-    The whole-tensor expansion can lose precision if the candidate nearly
-    vanishes through cancellation. The final clamp prevents a negative value
-    from roundoff; ordinary optimizer states stay well away from the regime
-    where this formulation would become inaccurate.
-    """
-    if momentum_scale is None:
-        candidate_vec = momentum_or_candidate.flatten()
-        gradient_vec = gradient.flatten()
-        gradient_norm = torch.linalg.vector_norm(gradient_vec)
-        cosine = torch.cosine_similarity(candidate_vec, gradient_vec, dim=0, eps=1e-8).clamp(-1.0, 1.0)
-        return cosine, gradient_norm > 0.0
-
-    momentum_vec = momentum_or_candidate.flatten()
-    gradient_vec = gradient.flatten()
-    dot = momentum_vec @ gradient_vec
-    momentum_sq = momentum_vec @ momentum_vec
-    gradient_sq = gradient_vec @ gradient_vec
-
-    numerator = momentum_scale * dot + gradient_sq
-    candidate_sq = (momentum_scale**2 * momentum_sq + 2.0 * momentum_scale * dot + gradient_sq).clamp_min(0.0)
-    # Match cosine_similarity's per-vector epsilon. Clamping the product instead
-    # would suppress valid cosines whenever both norms are small but individually
-    # still exceed eps.
-    candidate_norm = candidate_sq.sqrt().clamp_min(1e-8)
-    gradient_norm = gradient_sq.sqrt().clamp_min(1e-8)
-    denominator = candidate_norm * gradient_norm
-
-    return (numerator / denominator).clamp(-1.0, 1.0), gradient_sq > 0.0
+    return g_norm, probe_norm, ((1.0 + cosine_sim) * 0.5) ** pwr  # effective momentum coefficient for this step
 
 
 class MAL_SGDM(Optimizer):
@@ -110,7 +76,7 @@ class MAL_SGDM(Optimizer):
         weight_decay: float = 0.0,
         pwr: float = 1.0,
         in_place: bool = False,
-        scale: bool = False,
+        scale: bool = True,
         nesterov: bool = False,
         per_unit: bool = False,
     ) -> None:
@@ -187,11 +153,11 @@ class MAL_SGDM(Optimizer):
 
                 g = p.grad
                 if wd > 0.0:
-                    # Coupled weight decay without mutating "p.grad" in-place.
+                    # Coupled weight decay
                     g = g.add(p, alpha=wd)
 
-                probe_m = torch.add(g, m, alpha=beta)
-                probe_u = torch.add(g, probe_m, alpha=beta) if nesterov else probe_m
+                probe_m = g.add(m, alpha=beta)
+                probe_u = g.add(probe_m, alpha=beta) if nesterov else probe_m
 
                 # Fan-in axes for per-output-unit alignment; None keeps the
                 # whole-tensor cosine (also the only sane choice for ndim <= 1,
@@ -201,10 +167,8 @@ class MAL_SGDM(Optimizer):
                 if dims is None:
                     g_norm = torch.linalg.vector_norm(g)
                     probe_norm = torch.linalg.vector_norm(probe_u)
-                    dot = torch.vdot(g.flatten(), probe_u.flatten())
+                    dot = torch.dot(g.flatten(), probe_u.flatten())
                 else:
-                    # vector_norm, not Tensor.norm: the latter dispatches to
-                    # matrix_norm for a tuple dim and raises on 3+ reduced axes.
                     g_norm = torch.linalg.vector_norm(g, dim=dims, keepdim=True)
                     probe_norm = torch.linalg.vector_norm(probe_u, dim=dims, keepdim=True)
                     dot = (g * probe_u).sum(dim=dims, keepdim=True)
@@ -221,68 +185,19 @@ class MAL_SGDM(Optimizer):
                 else:
                     m.copy_(probe_m)  # plain heavy ball
 
-                applied = torch.addcmul(g, m, eff_beta) if nesterov else eff_m
+                u = torch.addcmul(g, m, eff_beta) if nesterov else eff_m
 
                 if scale:
-                    applied_norm = (
-                        torch.linalg.vector_norm(applied)
-                        if dims is None
-                        else torch.linalg.vector_norm(applied, dim=dims, keepdim=True)
-                    )
-                    applied.mul_((probe_norm / applied_norm.clamp_min(1e-8)).clamp_max(1.0))
+                    u_norm = torch.linalg.vector_norm(u) if dims is None else torch.linalg.vector_norm(u, dim=dims, keepdim=True)
+                    u.mul_(probe_norm / u_norm.clamp_min(1e-8))
 
-                p.sub_(applied, alpha=lr)
+                p.sub_(u, alpha=lr)
 
         return loss
 
 
 class MAL_AdamW(Optimizer):
-    r"""Memory-ALigned AdamW for transformer training (ViT / LLM).
-
-    The alignment gate modulates only the first moment applied on the current step,
-    with one scalar coefficient per parameter tensor; it does not alter the stored
-    EMA. Crucially, MAL scores the proposed
-    *parameter direction*, not the (unpreconditioned) first moment. Given probe moments
-
-    :math:`m_t^{probe}=\beta_1m_{t-1}+(1-\beta_1)g_t`,
-
-    :math:`v_t=\beta_2v_{t-1}+(1-\beta_2)g_t^2`,
-
-    it forms the AdamW direction
-
-    :math:`u_t^{probe}=\hat m_t^{probe}/(\sqrt{\hat v_t}+\epsilon)`
-
-    and measures :math:`s_t=\cos(u_t^{probe},g_t)`. This matters because Adam's
-    positive diagonal preconditioner preserves coordinate signs but generally changes
-    a whole-tensor cosine.
-
-    The candidate always uses the fixed ``beta1``. On every aligned parameter step,
-    MAL applies the smooth adaptive coefficient
-    :math:`c_t=((1+s_t)/2)^{\mathrm{pwr}}`, capped below one for numerical stability.
-
-    **The stored buffer is ungated.** The applied first moment is the one-step
-    reweighting ``c*m_{t-1} + (1-c)*g``, while the stored EMA advances independently
-    as plain AdamW, ``m <- beta1*m + (1-beta1)*g``, and never sees ``c``. The second
-    moment (scale tracker, beta2) and its bias correction are standard AdamW and are
-    never gated.
-
-    Because the buffer stays a plain EMA, first-moment bias correction is exact in closed
-    form: ``E[m_{t-1}] = (1 - beta1**(t-1))*g`` gives
-    ``E[c*m_{t-1} + (1-c)*g] = (1 - c*beta1**(t-1))*g``, so the correction is
-    ``1 - c*beta1**(t-1)`` -- no running product of past coefficients, hence no accumulated
-    rounding drift, and it reduces to ``1 - beta1**t`` whenever ``c == beta1``. Smooth c is
-    capped at 1 - 1e-3 because c = 1 is the one degenerate EMA value (zero mass on g).
-
-    Weight decay is decoupled (AdamW) and never enters the alignment signal.
-    Alignment is measured for every trainable parameter tensor, including biases
-    and normalization affines. Parameters with ``ndim <= 1`` are excluded only
-    from weight decay.
-
-    Second-moment step counts are per parameter and serialized, so intermittent
-    gradients and checkpoint resume retain the exact AdamW bias correction.
-    """
-
-    MAX_BETA1 = 1.0 - 1e-3
+    MAX_BETA1 = 0.999
 
     def __init__(
         self,
@@ -292,6 +207,8 @@ class MAL_AdamW(Optimizer):
         eps: float = 1e-8,
         weight_decay: float = 0.0,
         pwr: float = 1.0,
+        in_place: bool = False,
+        scale: bool = True,
     ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -341,6 +258,8 @@ class MAL_AdamW(Optimizer):
             "beta2": betas[1],
             "pwr": pwr,
             "eps": eps,
+            "in_place": in_place,
+            "scale": scale,
         }
         super().__init__(optim_groups, defaults)
 
@@ -357,6 +276,8 @@ class MAL_AdamW(Optimizer):
             beta1 = group["beta1"]
             beta2 = group["beta2"]
             pwr = group["pwr"]
+            in_place = group["in_place"]
+            scale = group["scale"]
             eps = group["eps"]
             steps = group["step"]
 
@@ -366,45 +287,39 @@ class MAL_AdamW(Optimizer):
 
                 g = p.grad
                 steps[i] += 1
-                bc2_sqrt = (1.0 - beta2 ** steps[i]) ** 0.5
+
+                probe_m = m.lerp(g, weight=(1.0 - beta1))
+                v.lerp_(g**2, weight=(1.0 - beta2))
+
+                unbias_probe_m = probe_m / (1.0 + beta1 ** steps[i])
+                unbias_v = (v / (1.0 + beta2 ** steps[i])).sqrt_().clamp_min_(eps)
+
+                probe_u = unbias_probe_m.div_(unbias_v)
+
+                g_norm, probe_norm, eff_beta1 = get_norms_and_eff_beta(g, probe_u, pwr, eps)
+                # TODO: g_norm, probe_norm, eff_beta1 = get_norms_and_eff_beta(g, probe_m, pwr, eps)
+                eff_beta1 = torch.where(g_norm > 0.0, eff_beta1, beta1).clamp_max(self.MAX_BETA1)
+                eff_m = m.lerp(g, weight=(1.0 - eff_beta1))  # eff_beta1 * m_{t-1} + (1.0 - eff_beta1) * g
+
+                if in_place:
+                    m.copy_(eff_m)
+                else:
+                    m.copy_(probe_m)
+
+                # TODO:
+                # if scale:
+                #     eff_m_norm = torch.linalg.vector_norm(eff_m)
+                #     eff_m.mul_(probe_norm / eff_m_norm.clamp_min(eps))
+
+                u = eff_m.div_(unbias_v)
+
+                if scale:
+                    u_norm = torch.linalg.vector_norm(u)
+                    u.mul_(probe_norm / u_norm.clamp_min(eps))
 
                 if wd > 0.0:
-                    p.mul_(1.0 - lr * wd)  # decoupled decay; never enters the gate
+                    p.mul_(1.0 - lr * wd)  # decoupled decay
 
-                v.mul_(beta2).addcmul_(g, g, value=1.0 - beta2)
-                denominator = v.sqrt().div_(bc2_sqrt).add_(eps)
-
-                # Alignment of the proposed, fully preconditioned AdamW update
-                # with the fresh gradient. First-moment bias correction is a
-                # positive tensor-wide scalar, so it cannot change this cosine.
-                u_probe = m.lerp(g, 1.0 - beta1).div(denominator)
-                cosine_sim, has_gradient = _get_cosine_sim(u_probe, g)
-                retention = (1.0 + cosine_sim) * 0.5
-
-                # Keep low-precision coefficients in stable scalar precision. In
-                # fp16 or bf16, MAX_BETA1 would otherwise round to 1 and zero the
-                # bias correction on strongly aligned steps. Preserve float64 when
-                # the optimizer is explicitly used with float64 parameters.
-                if retention.dtype in (torch.float16, torch.bfloat16):
-                    retention = retention.to(torch.float32)
-                retention = retention**pwr
-                retention = retention.clamp_max(self.MAX_BETA1)
-                eff_beta1 = torch.where(has_gradient, retention, beta1)
-
-                # Ungated stored memory: the coefficient reweights only this step's applied
-                # direction, while the buffer advances independently at fixed beta1.
-                eff_m = torch.lerp(g, m, eff_beta1)  # c*m_{t-1} + (1-c)*g
-                m.lerp_(g, 1.0 - beta1)  # plain AdamW EMA, untouched by MAL
-
-                # Bias correction, exact and closed form. Because the buffer is a plain EMA,
-                #   E[m_{t-1}] = (1 - beta1**(t-1)) * g,
-                # so the applied reweighting has
-                #   E[c*m_{t-1} + (1-c)*g] = (1 - c*beta1**(t-1)) * g.
-                # No running product of past coefficients is needed -- which also means the
-                # correction cannot drift with accumulated rounding and reduces to the
-                # familiar 1 - beta1**t whenever c == beta1.
-                correction = 1.0 - eff_beta1 * (beta1 ** (steps[i] - 1))
-                u = eff_m.div_(correction).div_(denominator)
-                p.add_(u, alpha=-lr)
+                p.sub_(u, alpha=lr)
 
         return loss

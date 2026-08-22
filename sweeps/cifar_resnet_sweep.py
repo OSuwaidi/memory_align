@@ -116,7 +116,6 @@ if __name__ == "__main__":
                     # "cautious",
                 )
             },
-            "boost": {"values": [False]},
             "MAL_config": {"values":  # in_place, pwr, scale, per_unit
                                ("False,1.0,True,False",)
                            },
