@@ -123,10 +123,10 @@ if __name__ == "__main__":
             },
             "MAL_config": {
                 "values":  # in_place, pwr, scale
-                ("False,1.0,True", "False,1.0,False", "True,0.5,False", "True,0.5,True")
+                ("False,1.0,True", "False,1.0,False",)
             },
             "nesterov": {"values": (False,)},
-            "lerp": {"values": (True,)},
+            "lerp": {"values": (False,)},
             "batch_size": {"values": BATCH_SIZES},
             "lr": {"values": LRs},
             "weight_decay": {"values": WEIGHT_DECAY},

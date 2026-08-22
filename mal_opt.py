@@ -331,15 +331,15 @@ class MAL_AdamW(Optimizer):
 
                 probe_u = unbiased_probe_m.div_(denominator)
 
-                g_norm, probe_norm, eff_beta1 = get_norms_and_eff_beta(g, probe_u, pwr)
+                g_norm, probe_norm, eff_beta1 = get_norms_and_eff_beta(g.div(denominator), probe_u, pwr)
                 # TODO: g_norm, probe_norm, eff_beta1 = get_norms_and_eff_beta(g, probe_m, pwr)
                 eff_beta1 = torch.where(g_norm > 0.0, eff_beta1, beta1).clamp_max(self.MAX_BETA1)
 
-                # eff_m = m.mul(eff_beta1).add_(g, alpha=(1.0 - beta1))  # lerp == False
-                # eff_mass = mass.mul(eff_beta1.to(mass.dtype)).add(1.0 - beta1)
+                eff_m = m.mul(eff_beta1).add_(g, alpha=(1.0 - beta1))  # lerp == False
+                eff_mass = mass.mul(eff_beta1.to(mass.dtype)).add(1.0 - beta1)
 
-                eff_m = m.lerp(g, weight=(1.0 - eff_beta1))  # lerp == True
-                eff_mass = mass.mul(eff_beta1.to(mass.dtype)).add(1.0 - eff_beta1)
+                # eff_m = m.lerp(g, weight=(1.0 - eff_beta1))  # lerp == True
+                # eff_mass = mass.mul(eff_beta1.to(mass.dtype)).add(1.0 - eff_beta1)
 
                 if in_place:
                     m.copy_(eff_m)

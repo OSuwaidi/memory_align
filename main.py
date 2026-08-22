@@ -358,7 +358,7 @@ def main():
 
     if "adam" in align.lower():
         lerp = config.lerp
-        run.name = f"{align}_inp:{str(in_place)[0]}_pwr:{pwr}_scl:{str(scale)[0]}_lerp:{str(lerp)[0]}_bs:{bs}_{lr}_{seed}"
+        run.name = f"CLD_{align}_inp:{str(in_place)[0]}_pwr:{pwr}_scl:{str(scale)[0]}_lerp:{str(lerp)[0]}_bs:{bs}_{lr}_{seed}"
     else:
         run.name = f"{align}_inp:{str(in_place)[0]}_pwr:{pwr}_scl:{str(scale)[0]}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
 
