@@ -335,7 +335,7 @@ class MAL_AdamW(Optimizer):
                 # TODO: g_norm, probe_norm, eff_beta1 = get_norms_and_eff_beta(g, probe_m, pwr)
                 eff_beta1 = torch.where(g_norm > 0.0, eff_beta1, beta1)
 
-                eff_m = m.mul(eff_beta1).add_(g, alpha=(1.0 - beta1))
+                eff_m = m.mul(eff_beta1).add_(g, alpha=(1.0 - beta1))  # lerp == False
                 # TODO: eff_m = m.lerp(g, weight=(1.0 - eff_beta1.clamp_max(self.MAX_BETA1)))
                 eff_mass = mass.mul(eff_beta1.to(mass.dtype)).add(1.0 - beta1)  # TODO: mass.mul(eff_beta1).add(1.0 - eff_beta1)
 
@@ -346,7 +346,8 @@ class MAL_AdamW(Optimizer):
                     m.copy_(probe_m)
                     mass.copy_(probe_mass)
 
-                u = eff_m.div(eff_mass.to(eff_m.dtype)).div_(denominator)
+                unbiased_eff_m = eff_m.div_(eff_mass.to(eff_m.dtype))
+                u = unbiased_eff_m.div_(denominator)
 
                 if scale:
                     u_norm = torch.linalg.vector_norm(u)

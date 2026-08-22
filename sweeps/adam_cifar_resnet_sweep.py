@@ -18,11 +18,12 @@ LRs = (
     0.8,
     1.0,
 )
+LRs = [lr / 100.0 for lr in LRs]
 BATCH_SIZES = (
     2048,
     4096,
 )[::-1]
-WEIGHT_DECAY = (5e-4,)
+WEIGHT_DECAY = (5e-2,)
 
 
 def percentage(value: str) -> float:
@@ -115,16 +116,17 @@ if __name__ == "__main__":
         "parameters": {
             "align": {
                 "values": (
-                    "MAL",
+                    "MAL-Adam",
                     # "none",
                     # "cautious",
                 )
             },
             "MAL_config": {
-                "values":  # in_place, pwr, scale, per_unit
-                ("False,1.0,True,False",)
+                "values":  # in_place, pwr, scale
+                ("False,1.0,True", "False,1.0,False", "True,0.5,False", "True,0.5,True")
             },
             "nesterov": {"values": (False,)},
+            "lerp": {"values": (False,)},
             "batch_size": {"values": BATCH_SIZES},
             "lr": {"values": LRs},
             "weight_decay": {"values": WEIGHT_DECAY},

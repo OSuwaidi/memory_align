@@ -20,7 +20,7 @@ from torchvision.transforms import v2
 from tqdm.auto import tqdm, trange
 
 from cautious_opt import CAUTIOUS_SGD
-from mal_opt import MAL_SGDM
+from mal_opt import MAL_SGDM, MAL_AdamW
 from sweeps.cifar_resnet_sweep import add_training_args
 
 # -------------------------
@@ -331,12 +331,15 @@ def main():
     weight_decay = config.weight_decay
     seed = config.seed
 
-    in_place, pwr, scale, per_unit = config.MAL_config.split(",")
+    in_place, pwr, scale = config.MAL_config.split(",")
     in_place = in_place == "True"
     pwr = float(pwr)
     scale = scale == "True"
-    per_unit = per_unit == "True"
-    MAL_config = {"in_place": in_place, "pwr": pwr, "scale": scale, "per_unit": per_unit}
+    MAL_config = {
+        "in_place": in_place,
+        "pwr": pwr,
+        "scale": scale,
+    }
     run.config.update(MAL_config, allow_val_change=True)
 
     if bs >= 2 * MAX_MICRO_BATCH_SIZE:
@@ -353,7 +356,11 @@ def main():
         args.float32_precision,
     )
 
-    run.name = f"{align}_inp:{str(in_place)[0]}_pwr:{pwr}_scl:{str(scale)[0]}_per:{str(per_unit)[0]}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
+    if "adam" in align.lower():
+        lerp = config.lerp
+        run.name = f"{align}_inp:{str(in_place)[0]}_pwr:{pwr}_scl:{str(scale)[0]}_lerp:{str(lerp)[0]}_bs:{bs}_{lr}_{seed}"
+    else:
+        run.name = f"{align}_inp:{str(in_place)[0]}_pwr:{pwr}_scl:{str(scale)[0]}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
 
     set_seed(seed)
 
@@ -407,6 +414,9 @@ def main():
 
     if align == "MAL":
         optimizer = MAL_SGDM(model.parameters(), lr=lr, beta=BETA, weight_decay=weight_decay, nesterov=nest, **MAL_config)
+
+    elif align == "MAL-Adam":
+        optimizer = MAL_AdamW(model.parameters(), lr=lr, weight_decay=weight_decay, **MAL_config)
 
     elif align == "none":
         optimizer = SGD(
