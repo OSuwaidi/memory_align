@@ -1,11 +1,15 @@
 from collections.abc import Callable, Iterable
 
 import torch
-from test import denominator
 from torch.optim import Optimizer
 
 
-def get_norms_and_eff_beta(g: torch.Tensor, probe: torch.Tensor, pwr: float, eps: float = 1e-8) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def get_norms_and_eff_beta(
+    g: torch.Tensor,
+    probe: torch.Tensor,
+    pwr: float,
+    eps: float = 1e-8,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     g_norm = torch.linalg.vector_norm(g)
     probe_norm = torch.linalg.vector_norm(probe)
     dot = torch.dot(g.flatten(), probe.flatten())
@@ -198,6 +202,25 @@ class MAL_SGDM(Optimizer):
 
 
 class MAL_AdamW(Optimizer):
+    r"""Memory-ALigned AdamW.
+
+    ``m`` is AdamW's first-moment state and ``mass`` is the sum of its raw
+    gradient weights. The fixed-beta probe is
+
+        probe_m = beta1 * m + (1 - beta1) * g,
+
+    while MAL applies
+
+        eff_m = c * m + (1 - beta1) * g.
+
+    Keeping the fresh-gradient coefficient fixed makes this the Adam-coordinate
+    equivalent of MAL-SGDM's ``g + c * momentum``. Both the probe and effective
+    first moments are divided by their corresponding weight mass, which gives
+    the ordinary AdamW bias correction when ``c == beta1`` and remains valid
+    with adaptive in-place memory. The second moment and decoupled weight decay
+    remain plain AdamW.
+    """
+
     MAX_BETA1 = 0.999
 
     def __init__(
@@ -248,6 +271,14 @@ class MAL_AdamW(Optimizer):
                         "params": group_params,
                         "m": [torch.zeros_like(p) for p in group_params],
                         "v": [torch.zeros_like(p) for p in group_params],
+                        "m_mass": [
+                            torch.zeros(
+                                (),
+                                dtype=torch.float32,
+                                device=p.device,
+                            )
+                            for p in group_params
+                        ],
                         "weight_decay": group_wd,
                         "step": [0 for _ in group_params],
                     }
@@ -281,8 +312,9 @@ class MAL_AdamW(Optimizer):
             scale = group["scale"]
             eps = group["eps"]
             steps = group["step"]
+            masses = group["m_mass"]
 
-            for i, (p, m, v) in enumerate(zip(group["params"], group["m"], group["v"])):
+            for i, (p, m, v, mass) in enumerate(zip(group["params"], group["m"], group["v"], masses)):
                 if p.grad is None:
                     continue
 
@@ -290,35 +322,35 @@ class MAL_AdamW(Optimizer):
                 steps[i] += 1
 
                 probe_m = m.lerp(g, weight=(1.0 - beta1))
-                v.lerp_(g**2, weight=(1.0 - beta2))
+                probe_mass = mass.mul(beta1).add(1.0 - beta1)
+                unbiased_probe_m = probe_m.div(probe_mass.to(probe_m.dtype))
 
-                unbias_probe_m = probe_m / (1.0 - beta1 ** steps[i])
-                unbias_v = v / (1.0 - beta2 ** steps[i])
-                denominator = unbias_v.sqrt_().add_(eps)
+                v.mul_(beta2).addcmul_(g, g, value=(1.0 - beta2))
+                unbiased_v = v / (1.0 - beta2 ** steps[i])
+                denominator = unbiased_v.sqrt_().add_(eps)
 
-                probe_u = unbias_probe_m.div_(denominator)
+                probe_u = unbiased_probe_m.div_(denominator)
 
-                g_norm, probe_norm, eff_beta1 = get_norms_and_eff_beta(g, probe_u, pwr, eps)
-                # TODO: g_norm, probe_norm, eff_beta1 = get_norms_and_eff_beta(g, probe_m, pwr, eps)
-                eff_beta1 = torch.where(g_norm > 0.0, eff_beta1, beta1).clamp_max(self.MAX_BETA1)
-                eff_m = m.lerp(g, weight=(1.0 - eff_beta1))  # eff_beta1 * m_{t-1} + (1.0 - eff_beta1) * g
-                # TODO: eff_m = m.mul_(eff_beta1).add_(g, alpha=(1.0 - beta1))
+                g_norm, probe_norm, eff_beta1 = get_norms_and_eff_beta(g, probe_u, pwr)
+                # TODO: g_norm, probe_norm, eff_beta1 = get_norms_and_eff_beta(g, probe_m, pwr)
+                eff_beta1 = torch.where(g_norm > 0.0, eff_beta1, beta1)
+
+                eff_m = m.mul(eff_beta1).add_(g, alpha=(1.0 - beta1))
+                # TODO: eff_m = m.lerp(g, weight=(1.0 - eff_beta1.clamp_max(self.MAX_BETA1)))
+                eff_mass = mass.mul(eff_beta1.to(mass.dtype)).add(1.0 - beta1)  # TODO: mass.mul(eff_beta1).add(1.0 - eff_beta1)
 
                 if in_place:
                     m.copy_(eff_m)
+                    mass.copy_(eff_mass)
                 else:
                     m.copy_(probe_m)
+                    mass.copy_(probe_mass)
 
-                # TODO:
-                # if scale:
-                #     eff_m_norm = torch.linalg.vector_norm(eff_m)
-                #     eff_m.mul_(probe_norm / eff_m_norm.clamp_min(eps))
-
-                u = eff_m.div_(denominator)
+                u = eff_m.div(eff_mass.to(eff_m.dtype)).div_(denominator)
 
                 if scale:
                     u_norm = torch.linalg.vector_norm(u)
-                    u.mul_(probe_norm / u_norm.clamp_min(eps))
+                    u.mul_(probe_norm / u_norm.clamp_min(1e-8))
 
                 if wd > 0.0:
                     p.mul_(1.0 - lr * wd)  # decoupled decay
