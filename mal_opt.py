@@ -1,6 +1,7 @@
 from collections.abc import Callable, Iterable
 
 import torch
+from test import denominator
 from torch.optim import Optimizer
 
 
@@ -291,15 +292,17 @@ class MAL_AdamW(Optimizer):
                 probe_m = m.lerp(g, weight=(1.0 - beta1))
                 v.lerp_(g**2, weight=(1.0 - beta2))
 
-                unbias_probe_m = probe_m / (1.0 + beta1 ** steps[i])
-                unbias_v = (v / (1.0 + beta2 ** steps[i])).sqrt_().clamp_min_(eps)
+                unbias_probe_m = probe_m / (1.0 - beta1 ** steps[i])
+                unbias_v = v / (1.0 - beta2 ** steps[i])
+                denominator = unbias_v.sqrt_().add_(eps)
 
-                probe_u = unbias_probe_m.div_(unbias_v)
+                probe_u = unbias_probe_m.div_(denominator)
 
                 g_norm, probe_norm, eff_beta1 = get_norms_and_eff_beta(g, probe_u, pwr, eps)
                 # TODO: g_norm, probe_norm, eff_beta1 = get_norms_and_eff_beta(g, probe_m, pwr, eps)
                 eff_beta1 = torch.where(g_norm > 0.0, eff_beta1, beta1).clamp_max(self.MAX_BETA1)
                 eff_m = m.lerp(g, weight=(1.0 - eff_beta1))  # eff_beta1 * m_{t-1} + (1.0 - eff_beta1) * g
+                # TODO: eff_m = m.mul_(eff_beta1).add_(g, alpha=(1.0 - beta1))
 
                 if in_place:
                     m.copy_(eff_m)
@@ -311,7 +314,7 @@ class MAL_AdamW(Optimizer):
                 #     eff_m_norm = torch.linalg.vector_norm(eff_m)
                 #     eff_m.mul_(probe_norm / eff_m_norm.clamp_min(eps))
 
-                u = eff_m.div_(unbias_v)
+                u = eff_m.div_(denominator)
 
                 if scale:
                     u_norm = torch.linalg.vector_norm(u)
