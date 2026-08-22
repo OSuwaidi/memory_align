@@ -126,7 +126,7 @@ if __name__ == "__main__":
                 ("False,1.0,True", "False,1.0,False", "True,0.5,False", "True,0.5,True")
             },
             "nesterov": {"values": (False,)},
-            "lerp": {"values": (False,)},
+            "lerp": {"values": (True,)},
             "batch_size": {"values": BATCH_SIZES},
             "lr": {"values": LRs},
             "weight_decay": {"values": WEIGHT_DECAY},
