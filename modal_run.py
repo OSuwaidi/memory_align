@@ -32,8 +32,8 @@ import time
 
 import modal
 
-APP_NAME = "cifar10-wandb-sweep-d3vh2qqw"
-SWEEP_ID = "osuwaidi-khalifa-university/FINAL_MAL_CIFAR10/d3vh2qqw"
+APP_NAME = "cifar10-wandb-sweep-86q26b8k"
+SWEEP_ID = "osuwaidi-khalifa-university/FINAL_MAL_CIFAR10/86q26b8k"
 
 # L40S is the best practical speed/credit trade-off for this small CNN workload:
 # substantially faster than L4/A10, without paying H100/B200 rates for compute

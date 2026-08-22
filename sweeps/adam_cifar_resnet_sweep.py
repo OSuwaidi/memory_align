@@ -127,6 +127,7 @@ if __name__ == "__main__":
             },
             "nesterov": {"values": (False,)},
             "lerp": {"values": (False,)},
+            "probe": {"values": ("white",)},
             "batch_size": {"values": BATCH_SIZES},
             "lr": {"values": LRs},
             "weight_decay": {"values": WEIGHT_DECAY},
