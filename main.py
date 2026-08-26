@@ -18,16 +18,17 @@ from torchvision import datasets
 from torchvision.models import resnet18, resnet50
 from torchvision.transforms import v2
 from tqdm.auto import tqdm, trange
+from wandb.sdk.internal.internal_api import Api as WandbInternalApi
 
-from cautious_opt import CAUTIOUS_SGD
+from cautious_opt import CAUTIOUS_ADAMW, CAUTIOUS_SGD
 from mal_opt import MAL_SGDM, MAL_AdamW
 from sweeps.cifar_resnet_sweep import add_training_args
+from tam_opt import TAM_SGDM, AdaTAMW
 
 # -------------------------
 # Config
 # -------------------------
 DEVICE = torch.device("cuda")
-SCHEDULER = False
 WARMUP_EPOCHS = 5
 BETA = 0.9
 NUM_GPUS = torch.cuda.device_count()
@@ -306,42 +307,48 @@ def main():
         },
     )
 
-    # Handle system-level interruptions (e.g., SLURM, AWS Spot, manual kills)
-    def handle_preemption(signum, frame):
-        print(f"Received signal {signum}; re-queueing sweep run...")
+    def handle_interruption(signum, frame):
+        manual_stop = signum == signal.SIGINT
+        if signum == signal.SIGTERM:
+            try:
+                manual_stop = WandbInternalApi().check_stop_requested(run.project, run.entity, run.id)
+            except Exception:
+                pass  # If W&B is unreachable, preserve the config by requeueing it.
 
-        run.mark_preempting()
+        action = "skipping config" if manual_stop else "re-queueing config"
+        print(f"Received signal {signum}; {action}...")
 
-        exit_code = 128 + signum
+        if not manual_stop:
+            run.mark_preempting()
+
+        exit_code = 0 if manual_stop else 128 + signum
         run.finish(exit_code=exit_code)
         sys.exit(exit_code)
 
-    signal.signal(signal.SIGTERM, handle_preemption)
-    signal.signal(signal.SIGUSR1, handle_preemption)
-    signal.signal(signal.SIGINT, handle_preemption)  # Ctrl+C
+    signal.signal(signal.SIGTERM, handle_interruption)
+    signal.signal(signal.SIGUSR1, handle_interruption)
+    signal.signal(signal.SIGINT, handle_interruption)
 
     run.define_metric("*", step_metric="epoch")  # let epoch be the default x-axis for all metrics
 
     config = run.config
 
-    align = config.align
+    optimizer = config.optimizer
     nest = config.nesterov
     bs = config.batch_size
     lr = config.lr
     weight_decay = config.weight_decay
     seed = config.seed
+    use_scheduler = config.use_scheduler
 
-    in_place, pwr, scale = config.MAL_config.split(",")
+    in_place, pwr, scale, gate_mode = config.MAL_config.split(",")
     in_place = in_place == "True"
     pwr = float(pwr)
     scale = scale == "True"
-    MAL_config = {
-        "in_place": in_place,
-        "pwr": pwr,
-        "scale": scale,
-    }
+    MAL_config = {"in_place": in_place, "pwr": pwr, "scale": scale, "gate_mode": gate_mode}
     run.config.update(MAL_config, allow_val_change=True)
 
+    run.name = f"{optimizer}_inp:{str(in_place)[0]}_pwr:{pwr}_scl:{str(scale)[0]}_gate:{gate_mode}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
     if bs >= 2 * MAX_MICRO_BATCH_SIZE:
         if bs % MAX_MICRO_BATCH_SIZE != 0:
             raise ValueError(f"Batch size {bs} must be divisible by {MAX_MICRO_BATCH_SIZE} for gradient accumulation.")
@@ -355,12 +362,6 @@ def main():
         args.amp_dtype,
         args.float32_precision,
     )
-
-    if "adam" in align.lower():
-        lerp = config.lerp
-        run.name = f"CLD_{align}_inp:{str(in_place)[0]}_pwr:{pwr}_scl:{str(scale)[0]}_lerp:{str(lerp)[0]}_bs:{bs}_{lr}_{seed}"
-    else:
-        run.name = f"{align}_inp:{str(in_place)[0]}_pwr:{pwr}_scl:{str(scale)[0]}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
 
     set_seed(seed)
 
@@ -412,13 +413,13 @@ def main():
         pin_memory=True,
     )
 
-    if align == "MAL":
+    if optimizer == "MAL_SGDM":
         optimizer = MAL_SGDM(model.parameters(), lr=lr, beta=BETA, weight_decay=weight_decay, nesterov=nest, **MAL_config)
 
-    elif align == "MAL-Adam":
+    elif optimizer == "MAL_AdamW":
         optimizer = MAL_AdamW(model.parameters(), lr=lr, weight_decay=weight_decay, **MAL_config)
 
-    elif align == "none":
+    elif optimizer == "SGDM":
         optimizer = SGD(
             model.parameters(),
             lr=lr,
@@ -428,7 +429,7 @@ def main():
             nesterov=nest,
         )
 
-    elif align == "cautious":
+    elif optimizer == "CAUTIOUS_SGDM":
         optimizer = CAUTIOUS_SGD(
             model.parameters(),
             lr=lr,
@@ -437,8 +438,30 @@ def main():
             nesterov=nest,
         )
 
+    elif optimizer == "CAUTIOUS_AdamW":
+        optimizer = CAUTIOUS_ADAMW(
+            model.parameters(),
+            lr=lr,
+            weight_decay=weight_decay,
+        )
+
+    elif optimizer == "TAM_SGDM":
+        optimizer = TAM_SGDM(
+            model.parameters(),
+            lr=lr,
+            beta=BETA,
+            weight_decay=weight_decay,
+        )
+
+    elif optimizer == "AdaTAMW":
+        optimizer = AdaTAMW(
+            model.parameters(),
+            lr=lr,
+            weight_decay=weight_decay,
+        )
+
     else:
-        raise ValueError(f'The given alignment method "{align}" is not valid')
+        raise ValueError(f'The given optimizerment method "{optimizer}" is not valid')
 
     steps_per_epoch = len(train_loader) // grad_accumulation_steps
     total_steps = steps_per_epoch * args.epochs
@@ -463,7 +486,7 @@ def main():
         train_loader,
         val_loader,
         run,
-        lr_scheduler=scheduler if SCHEDULER else None,
+        lr_scheduler=scheduler if use_scheduler else None,
         label_smoothing=label_smoothing,
         amp_dtype=amp_dtype,
         amp_enabled=amp_enabled,

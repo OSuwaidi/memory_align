@@ -11,13 +11,22 @@ def get_norms_and_eff_beta(
     eps: float = 1e-8,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     g_norm = torch.linalg.vector_norm(g)
-    probe_norm = torch.linalg.vector_norm(probe)
+    probe_norm = torch.linalg.vector_norm(probe).clamp_min(eps)
     dot = torch.dot(g.flatten(), probe.flatten())
 
-    denominator = g_norm.clamp_min(eps) * probe_norm.clamp_min(eps)
+    denominator = g_norm.clamp_min(eps) * probe_norm
     cosine_sim = (dot / denominator).clamp(-1.0, 1.0)
 
-    return g_norm, probe_norm, ((1.0 + cosine_sim) * 0.5) ** pwr  # effective momentum coefficient for this step
+    return g_norm, probe_norm, ((1.0 + cosine_sim) * 0.5) ** pwr
+
+
+def _apply_gate(base_beta: float, gate: torch.Tensor, gate_mode: str) -> torch.Tensor:
+    """Map an alignment gate in [0, 1] to the memory coefficient."""
+    if gate_mode == "attenuate":
+        return gate.mul(base_beta)
+    if gate_mode == "cap":
+        return gate.clamp_max(base_beta)
+    return gate  # historical MAL rule: replace the base coefficient
 
 
 class MAL_SGDM(Optimizer):
@@ -35,11 +44,16 @@ class MAL_SGDM(Optimizer):
 
     :math:`\hat{u}_t = g_t + \beta\hat{m}_t`.
 
-    MAL measures :math:`s_t=\cos(\hat{u}_t,g_t)` and computes
-    :math:`c_t=((1+s_t)/2)^{\mathrm{pwr}}` for a non-zero gradient. Heavy-ball
-    applies :math:`u_t=g_t+c_t m_{t-1}`. Nesterov applies
-    :math:`u_t=g_t+c_t m_t`, where :math:`m_t` is the buffer selected below
-    (PyTorch/Sutskever form).
+    MAL measures :math:`s_t=\cos(\hat{u}_t,g_t)` and computes the alignment
+    gate :math:`q_t=((1+s_t)/2)^{\mathrm{pwr}}` for a non-zero gradient. With
+    ``gate_mode="replace"`` (the historical implementation), the applied memory
+    coefficient is :math:`c_t=q_t`. With ``gate_mode="attenuate"``, it is
+    :math:`c_t=\beta q_t`; this is a literal gate on the base optimizer. The
+    exploratory ``gate_mode="cap"`` uses :math:`c_t=\min(\beta,q_t)`, retaining
+    more memory while preventing amplification. Both bounded modes keep
+    :math:`c_t\in[0,\beta]`. Heavy-ball applies
+    :math:`u_t=g_t+c_t m_{t-1}`. Nesterov applies :math:`u_t=g_t+c_t m_t`, where
+    :math:`m_t` is the buffer selected below (PyTorch/Sutskever form).
 
     With ``in_place=False``, the original MAL formulation is used: the stored
     buffer advances independently as :math:`m_t=\beta m_{t-1}+g_t`, so
@@ -47,30 +61,19 @@ class MAL_SGDM(Optimizer):
     ``in_place=True``, the adaptive coefficient is also written into memory:
     :math:`m_t=c_t m_{t-1}+g_t`. In either mode, the alignment probe itself uses
     the fixed ``beta`` so variants are scored against the same base optimizer.
+    Replacement plus in-place state has no uniform contraction because
+    :math:`c_t` can equal one; attenuation keeps :math:`c_t\leq\beta<1`.
 
     With ``scale=True``, the final applied direction is rescaled to the norm of
     the corresponding fixed-beta probe. This preserves the base optimizer's
     step magnitude while retaining MAL's change in direction.
 
-    A zero buffer makes the probe self-aligned (:math:`c_t=1`). A zero gradient
+    A zero buffer makes the probe self-aligned (:math:`q_t=1`). A zero gradient
     carries no alignment evidence, so :math:`c_t` falls back to the fixed ``beta``
     rather than treating an undefined direction as an artificial 0.5.
 
-    **Granularity.** With ``per_unit=False`` alignment is measured over the whole
-    parameter tensor, giving one scalar :math:`c_t` per tensor and step. With
-    ``per_unit=True`` it is measured per *output unit*: the cosine reduces over the
-    fan-in axes, so a ``Linear`` gets one coefficient per neuron (reduce ``dim=1``)
-    and a ``ConvNd`` one per output kernel (reduce ``dims=1..N-1``). The resulting
-    coefficient has shape ``(out, 1, ..., 1)`` and broadcasts against the update, and
-    ``scale`` likewise matches each unit's step norm to that unit's fixed-beta probe
-    norm. Parameters with ``ndim <= 1`` (biases, norm affines) always use the
-    whole-tensor cosine: their "units" are single scalars, whose cosine could only be
-    :math:`\pm 1`.
-
-    Finer granularity lets the gate rotate the applied update further away from the
-    plain heavy-ball direction -- it is a per-layer scalar knob at ``per_unit=False``
-    and a per-neuron one at ``per_unit=True`` -- at the cost of a noisier cosine on
-    units with small fan-in (a stem conv with fan-in 27 is the extreme case).
+    Alignment is measured once over each complete parameter tensor, producing one
+    scalar gate per tensor and optimizer step.
     """
 
     def __init__(
@@ -83,7 +86,7 @@ class MAL_SGDM(Optimizer):
         in_place: bool = False,
         scale: bool = True,
         nesterov: bool = False,
-        per_unit: bool = False,
+        gate_mode: str = "attenuate",
     ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -91,10 +94,12 @@ class MAL_SGDM(Optimizer):
             raise ValueError(f"Invalid beta value: {beta}")
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
-        if not 0.0 < pwr <= 1.0:
+        if pwr not in (0.5, 1.0):
             raise ValueError(f"Invalid p value: {pwr}")
         if nesterov and beta <= 0.0:
             raise ValueError("Nesterov momentum requires a positive initial beta")
+        if gate_mode not in ("replace", "attenuate", "cap"):
+            raise ValueError(f"Invalid gate_mode value: {gate_mode}")
 
         decay_params: list[torch.nn.Parameter] = []
         no_decay_params: list[torch.nn.Parameter] = []
@@ -130,7 +135,7 @@ class MAL_SGDM(Optimizer):
             "in_place": in_place,
             "scale": scale,
             "nesterov": nesterov,
-            "per_unit": per_unit,
+            "gate_mode": gate_mode,
         }  # shared across all optim/param groups
         super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
 
@@ -150,7 +155,7 @@ class MAL_SGDM(Optimizer):
             in_place = group["in_place"]
             scale = group["scale"]
             nesterov = group["nesterov"]
-            per_unit = group["per_unit"]
+            gate_mode = group["gate_mode"]
 
             for p, m in zip(group["params"], group["momentum"]):
                 if p.grad is None:
@@ -161,42 +166,26 @@ class MAL_SGDM(Optimizer):
                     # Coupled weight decay
                     g = g.add(p, alpha=wd)
 
-                probe_m = g.add(m, alpha=beta)
-                probe_u = g.add(probe_m, alpha=beta) if nesterov else probe_m
+                m_probe = g.add(m, alpha=beta)
+                u_probe = g.add(m_probe, alpha=beta) if nesterov else m_probe
 
-                # Fan-in axes for per-output-unit alignment; None keeps the
-                # whole-tensor cosine (also the only sane choice for ndim <= 1,
-                # where each "unit" is a lone scalar).
-                dims = tuple(range(1, p.ndim)) if (per_unit and p.ndim > 1) else None
-
-                if dims is None:
-                    g_norm = torch.linalg.vector_norm(g)
-                    probe_norm = torch.linalg.vector_norm(probe_u)
-                    dot = torch.dot(g.flatten(), probe_u.flatten())
-                else:
-                    g_norm = torch.linalg.vector_norm(g, dim=dims, keepdim=True)
-                    probe_norm = torch.linalg.vector_norm(probe_u, dim=dims, keepdim=True)
-                    dot = (g * probe_u).sum(dim=dims, keepdim=True)
-
-                denominator = g_norm.clamp_min(1e-8) * probe_norm.clamp_min(1e-8)
-                cosine_sim = (dot / denominator).clamp(-1.0, 1.0)
-
-                eff_beta = ((1.0 + cosine_sim) * 0.5) ** pwr  # effective momentum coefficient for this step
-                eff_beta = torch.where(g_norm > 0.0, eff_beta, beta)
-                eff_m = torch.addcmul(g, m, eff_beta)  # eff_beta * m_{t-1} + g
+                g_norm, u_probe_norm, beta_eff = get_norms_and_eff_beta(g, u_probe, pwr)
+                beta_eff = _apply_gate(beta, beta_eff, gate_mode)
+                beta_eff = torch.where(g_norm > 0.0, beta_eff, beta)
+                m_eff = torch.addcmul(g, m, beta_eff)  # beta_eff * m_{t-1} + g
 
                 if in_place:
-                    m.copy_(eff_m)
+                    m.copy_(m_eff)
                 else:
-                    m.copy_(probe_m)  # plain heavy ball
+                    m.copy_(m_probe)  # plain heavy ball
 
-                u = torch.addcmul(g, m, eff_beta) if nesterov else eff_m
+                u_eff = torch.addcmul(g, m, beta_eff) if nesterov else m_eff
 
                 if scale:
-                    u_norm = torch.linalg.vector_norm(u) if dims is None else torch.linalg.vector_norm(u, dim=dims, keepdim=True)
-                    u.mul_(probe_norm / u_norm.clamp_min(1e-8))
+                    u_eff_norm = torch.linalg.vector_norm(u_eff).clamp_min(1e-8)
+                    u_eff.mul_(u_probe_norm / u_eff_norm)
 
-                p.sub_(u, alpha=lr)
+                p.sub_(u_eff, alpha=lr)
 
         return loss
 
@@ -204,24 +193,90 @@ class MAL_SGDM(Optimizer):
 class MAL_AdamW(Optimizer):
     r"""Memory-ALigned AdamW.
 
-    ``m`` is AdamW's first-moment state and ``mass`` is the sum of its raw
-    gradient weights. The fixed-beta probe is
+    Let :math:`m_{t-1}, v_{t-1}` be the stored first/second moments and :math:`g_t`
+    the current gradient. MAL first probes the step the base AdamW would take with
+    the fixed coefficient :math:`\beta_1`:
 
-        probe_m = beta1 * m + (1 - beta1) * g,
+    :math:`\hat{m}_t = \beta_1 m_{t-1} + (1-\beta_1) g_t`,\
+    :math:`D_t = \sqrt{\hat{v}_t} + \epsilon`,\
+    :math:`\hat{u}_t = \hat{m}_t / (r^{probe}_t D_t)`,
 
-    while MAL applies
+    where :math:`v_t` always advances with the fixed :math:`\beta_2` (MAL gates the
+    *direction* memory only) and :math:`r^{probe}_t` is the exact bias correction
+    below. The alignment cosine :math:`s_t` is measured according to ``align``:
 
-        eff_m = c * m + (1 - beta1) * g.
+    - ``"update"``: :math:`\cos(g_t,D_t^{-1}\hat m_t)`, the direct Euclidean
+      angle between the local gradient and AdamW's applied probe. Its numerator
+      is the first-order descent term :math:`g_t^T D_t^{-1}\hat m_t`.
+    - ``"metric"``: :math:`\cos(D_t^{-1/2}g_t,D_t^{-1/2}\hat m_t)`. Its numerator
+      is proportional to the preconditioned descent term
+      :math:`g_t^T D_t^{-1}\hat m_t`, making this the cleanest geometry for theory.
+    - ``"white"``: :math:`\cos(D_t^{-1}g_t,D_t^{-1}\hat m_t)`, the angle after
+      transforming both vectors by AdamW's diagonal map. Unlike ``"update"``
+      and ``"metric"``, its numerator need not have the sign of the local
+      descent term, so it is retained as an empirical ablation rather than the
+      theorem-facing geometry.
+    - ``"moment"``: :math:`\cos(g_t,\hat m_t)`, the raw first-moment geometry and
+      the most literal extension of MAL-SGDM.
 
-    Keeping the fresh-gradient coefficient fixed makes this the Adam-coordinate
-    equivalent of MAL-SGDM's ``g + c * momentum``. Both the probe and effective
-    first moments are divided by their corresponding weight mass, which gives
-    the ordinary AdamW bias correction when ``c == beta1`` and remains valid
-    with adaptive in-place memory. The second moment and decoupled weight decay
-    remain plain AdamW.
+    MAL computes :math:`q_t=((1+s_t)/2)^{\mathrm{pwr}}`. ``gate_mode`` maps this
+    to the applied memory coefficient :math:`c_t`:
+
+    - ``"replace"`` keeps the historical rule :math:`c_t=q_t`, which can either
+      attenuate or amplify memory relative to :math:`\beta_1`.
+    - ``"attenuate"`` uses :math:`c_t=\beta_1q_t`, so
+      :math:`c_t\in[0,\beta_1]`. Then the effective moment
+      :math:`\tilde m_t=c_tm_{t-1}+(1-\beta_1)g_t` lies on the segment from the
+      memoryless raw moment to the AdamW probe, and perfect alignment recovers
+      AdamW exactly. This is the literal gating interpretation.
+    - ``"cap"`` is an exploratory bounded replacement,
+      :math:`c_t=\min(\beta_1,q_t)`. It also stays in
+      :math:`[0,\beta_1]` and recovers AdamW whenever
+      :math:`q_t\geq\beta_1`, while damping less aggressively than
+      multiplicative attenuation.
+
+    **Exact bias correction.** Because :math:`c_t` varies per step, the classical
+    :math:`(1-\beta_1^t)` no longer unbiases the applied moment. Tracking one
+    scalar per tensor, :math:`r_t = \mathbb{E}[m_t]/\mathbb{E}[g]`:
+
+    :math:`r^{probe}_t = \beta_1 r_{t-1} + (1-\beta_1)` (equals :math:`1-\beta_1^t`
+    when ``in_place=False``) and :math:`r^{eff}_t = c_t r_{t-1} + (1-\beta_1)`,
+    and the applied update is :math:`u_t = \tilde{m}_t / (r^{eff}_t D_t)`. With
+    the gate frozen at :math:`\beta_1` every correction collapses to
+    :math:`1-\beta_1^t` and the update is exactly AdamW, for every ``scale`` mode
+    (under the norm-matching modes :math:`r^{eff}` cancels algebraically and only
+    :math:`r^{probe}` matters; :math:`r^{eff}` is load-bearing for ``"none"``).
+
+    With ``in_place=False`` (original MAL) the stored buffer advances with the
+    fixed :math:`\beta_1` and the gate is transient -- the stored state is then
+    *exactly* vanilla-AdamW state, which is also the formulation amenable to
+    convergence analysis (bounded :math:`c_t\in[0, 0.999]`, applied direction a
+    bounded rotation of the AdamW step toward :math:`g_t`). ``in_place=True``
+    writes :math:`\tilde{m}_t` (and :math:`r^{eff}_t`) into memory; it was
+    dominated everywhere empirically (gate-collapse feedback) and breaks that
+    clean decomposition.
+
+    ``scale`` selects where the applied magnitude comes from:
+
+    - ``"step"`` (or ``True``, default): rescale the applied step to the probe
+      *step's* norm -- a pure direction correction at AdamW's step length, in the
+      whitened geometry. The most overshoot-robust setting measured.
+    - ``"moment"``: momentum-space norm matching -- the direction comes from
+      :math:`\tilde{m}_t` but the magnitude is inherited from the probe moment,
+      :math:`u_t = \tilde{m}_t\,\lVert\hat{m}_t\rVert / (\lVert\tilde{m}_t\rVert\, r^{probe}_t D_t)`.
+      Because the magnitude is the probe's, the standard :math:`r^{probe}` is the
+      only correction needed (:math:`r^{eff}` cancels algebraically -- it cancels
+      under ``"step"`` too; it only matters for ``"none"``). The preconditioner
+      then prices the rotated direction into a step. The raw-space counterpart of
+      ``"step"``; strongest trust-region profile with ``align="moment"``.
+    - ``"none"`` (or ``False``): no matching; misalignment also shrinks the step,
+      which the exact correction keeps well-calibrated
+      (:math:`u_1 = g_1/D_1` on the first step).
+
+    A zero gradient carries no alignment evidence: :math:`c_t` falls back to
+    :math:`\beta_1`. The cosine's numerical floor is pinned at 1e-8 independently
+    of ``eps``, matching MAL-SGDM.
     """
-
-    MAX_BETA1 = 0.999
 
     def __init__(
         self,
@@ -231,8 +286,10 @@ class MAL_AdamW(Optimizer):
         eps: float = 1e-8,
         weight_decay: float = 0.0,
         pwr: float = 1.0,
+        align: str = "white",
         in_place: bool = False,
-        scale: bool = True,
+        scale: bool | str = True,
+        gate_mode: str = "attenuate",
     ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -244,8 +301,16 @@ class MAL_AdamW(Optimizer):
             raise ValueError(f"Invalid eps value: {eps}")
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
-        if not 0.0 < pwr <= 1.0:
+        if pwr not in (0.5, 1.0):
             raise ValueError(f"Invalid p value: {pwr}")
+        if align not in ("update", "metric", "white", "moment"):
+            raise ValueError(f"Invalid align value: {align}")
+        if isinstance(scale, bool):
+            scale = "step" if scale else "none"
+        if scale not in ("step", "moment", "none"):
+            raise ValueError(f"Invalid scale value: {scale}")
+        if gate_mode not in ("replace", "attenuate", "cap"):
+            raise ValueError(f"Invalid gate_mode value: {gate_mode}")
 
         decay_params: list[torch.nn.Parameter] = []
         no_decay_params: list[torch.nn.Parameter] = []
@@ -271,14 +336,8 @@ class MAL_AdamW(Optimizer):
                         "params": group_params,
                         "m": [torch.zeros_like(p) for p in group_params],
                         "v": [torch.zeros_like(p) for p in group_params],
-                        "m_mass": [
-                            torch.zeros(
-                                (),
-                                dtype=torch.float32,
-                                device=p.device,
-                            )
-                            for p in group_params
-                        ],
+                        # r = exact E[m]/E[g] correction of the stored buffer (starts at 0: empty memory)
+                        "r": [torch.zeros((), device=p.device, dtype=p.dtype) for p in group_params],
                         "weight_decay": group_wd,
                         "step": [0 for _ in group_params],
                     }
@@ -290,8 +349,10 @@ class MAL_AdamW(Optimizer):
             "beta2": betas[1],
             "pwr": pwr,
             "eps": eps,
+            "align": align,
             "in_place": in_place,
             "scale": scale,
+            "gate_mode": gate_mode,
         }
         super().__init__(optim_groups, defaults)
 
@@ -308,56 +369,80 @@ class MAL_AdamW(Optimizer):
             beta1 = group["beta1"]
             beta2 = group["beta2"]
             pwr = group["pwr"]
+            align = group["align"]
             in_place = group["in_place"]
             scale = group["scale"]
+            gate_mode = group["gate_mode"]
             eps = group["eps"]
             steps = group["step"]
-            masses = group["m_mass"]
 
-            for i, (p, m, v, mass) in enumerate(zip(group["params"], group["m"], group["v"], masses)):
+            for i, (p, m, v, r) in enumerate(zip(group["params"], group["m"], group["v"], group["r"])):
                 if p.grad is None:
                     continue
 
                 g = p.grad
                 steps[i] += 1
 
-                probe_m = m.lerp(g, weight=(1.0 - beta1))
-                probe_mass = mass.mul(beta1).add(1.0 - beta1)
-                unbiased_probe_m = probe_m.div(probe_mass.to(probe_m.dtype))
+                m_probe = m.lerp(g, weight=(1.0 - beta1))
+                v.lerp_(g**2, weight=(1.0 - beta2))
 
-                v.mul_(beta2).addcmul_(g, g, value=(1.0 - beta2))
-                unbiased_v = v / (1.0 - beta2 ** steps[i])
-                denominator = unbiased_v.sqrt_().add_(eps)
+                r_probe = beta1 * r + (1.0 - beta1)  # exact E[m_probe]/E[g]; equals 1-beta1^t when in_place=False
+                v_unbias = v / (1.0 - beta2 ** steps[i])
+                denominator = v_unbias.sqrt_().add_(eps)
 
-                probe_u = unbiased_probe_m.div_(denominator)
+                u_probe = (m_probe / r_probe).div_(denominator)
 
-                g_norm, probe_norm, eff_beta1 = get_norms_and_eff_beta(g.div(denominator), probe_u, pwr)
-                # TODO: g_norm, probe_norm, eff_beta1 = get_norms_and_eff_beta(g, probe_m, pwr)
-                eff_beta1 = torch.where(g_norm > 0.0, eff_beta1, beta1).clamp_max(self.MAX_BETA1)
+                if align == "update":
+                    a, b = g, u_probe
+                elif align == "metric":  # cosine in the D^{-1} inner product: numerator is the descent term g^T D^{-1} m, and m=0 is exactly self-aligned
+                    d_sqrt = denominator.sqrt()
+                    a, b = g / d_sqrt, m_probe / d_sqrt
+                elif (
+                    align == "white"
+                ):  # comparing \(D^{-1}g\) with \(D^{-1}m\), whose dot product can have the opposite sign from the actual descent term \(g^\top D^{-1}m\)
+                    a, b = g / denominator, u_probe
+                else:  # align == "moment":
+                    a, b = g, m_probe
 
-                eff_m = m.mul(eff_beta1).add_(g, alpha=(1.0 - beta1))  # lerp == False
-                eff_mass = mass.mul(eff_beta1.to(mass.dtype)).add(1.0 - beta1)
+                a_norm, b_norm, beta1_eff = get_norms_and_eff_beta(
+                    a,
+                    b,
+                    pwr,
+                )
+                beta1_eff = _apply_gate(beta1, beta1_eff, gate_mode)
+                # a vanishes iff g vanishes, so the zero-gradient fallback can guard on a_norm
+                beta1_eff = torch.where(a_norm > 0.0, beta1_eff, beta1)
 
-                # eff_m = m.lerp(g, weight=(1.0 - eff_beta1))  # lerp == True
-                # eff_mass = mass.mul(eff_beta1.to(mass.dtype)).add(1.0 - eff_beta1)
+                # Gradient weight pinned at (1-beta1); the gate touches memory only (out-of-place: buffer untouched)
+                m_eff = m.mul(beta1_eff).add_(g, alpha=(1.0 - beta1))
+                r_eff = beta1_eff * r + (1.0 - beta1)
 
                 if in_place:
-                    m.copy_(eff_m)
-                    mass.copy_(eff_mass)
+                    m.copy_(m_eff)
+                    r.copy_(r_eff)
                 else:
-                    m.copy_(probe_m)
-                    mass.copy_(probe_mass)
+                    m.copy_(m_probe)
+                    r.copy_(r_probe)
 
-                unbiased_eff_m = eff_m.div_(eff_mass.to(eff_m.dtype))
-                u = unbiased_eff_m.div_(denominator)
+                if scale == "moment":
+                    # Raw-space first-moment norm matching: direction from the gated moment, magnitude inherited from
+                    # the (unbiased) probe moment. r_eff cancels: u_eff == m_eff * ||m_probe|| / (||m_eff|| * r_probe)
+                    m_probe_norm = torch.linalg.vector_norm(m_probe)
+                    m_eff_norm = torch.linalg.vector_norm(m_eff).clamp_min(eps)
+                    m_eff_unbias = (m_eff / r_probe) * (m_probe_norm / m_eff_norm)
+                    u_eff = m_eff_unbias.div_(denominator)
 
-                if scale:
-                    u_norm = torch.linalg.vector_norm(u)
-                    u.mul_(probe_norm / u_norm.clamp_min(1e-8))
+                else:
+                    u_eff = (m_eff / r_eff).div_(denominator)
+                    if scale == "step":
+                        # ||u_probe|| must come from the probe *step*, not the align pair (b is not u_probe under "moment"/"metric")
+                        u_probe_norm = b_norm if align in ("update", "white") else torch.linalg.vector_norm(u_probe)
+                        u_eff_norm = torch.linalg.vector_norm(u_eff).clamp_min(eps)
+                        u_eff.mul_(u_probe_norm / u_eff_norm)
 
                 if wd > 0.0:
                     p.mul_(1.0 - lr * wd)  # decoupled decay
 
-                p.sub_(u, alpha=lr)
+                p.sub_(u_eff, alpha=lr)
 
         return loss

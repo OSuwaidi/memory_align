@@ -8,22 +8,18 @@ import wandb
 # $ CUDA_VISIBLE_DEVICES=0 uv run wandb agent --forward-signals <entity/project/sweep_id>
 
 ENTITY_NAME = "osuwaidi-khalifa-university"
-SEEDS = (42,)  # 1337,) #2026)
+EPOCHS = 300
+MODEL = "vit_tiny_patch16_224"
+PATCH_SIZE = 8
+WARMUP_EPOCHS = 15
+SEEDS = (42, 1337, 2026)
+WEIGHT_DECAY = (1e-4, 5e-4)
 LRs = (
-    0.025,
-    0.05,
-    # 0.1,
-    # 0.2,
-    # 0.4,
-    0.8,
-    1.0,
+    0.1,
+    0.2,
 )
-LRs = [lr / 100.0 for lr in LRs]
-BATCH_SIZES = (
-    2048,
-    4096,
-)[::-1]
-WEIGHT_DECAY = (5e-2,)
+BATCH_SIZES = (256, 512, 1024, 2048, 4096)[::-1]
+USE_SCHEDULER = (False,)
 
 
 def percentage(value: str) -> float:
@@ -86,6 +82,7 @@ def get_finished_run_ids(sweep_ids: list[str]) -> list[str]:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create a dynamic W&B Sweep configuration.")
     parser.add_argument("program", type=str, help="Python training script to run")  # required by default since positional arg
+    parser.add_argument("--data", type=str, help="Dataset name", required=True)
     parser.add_argument("--sweep_name", type=str, help="Sweep name", required=True)
     parser.add_argument("--project_name", type=str, help="Project name", required=True)
     parser.add_argument(
@@ -114,24 +111,20 @@ if __name__ == "__main__":
             "goal": "maximize",
         },
         "parameters": {
-            "align": {
+            "optimizer": {
                 "values": (
-                    "MAL-Adam",
-                    # "none",
-                    # "cautious",
+                    "SGDM",
+                    "CAUTIOUS_SGDM",
+                    "TAM_SGDM",
+                    "MAL_SGDM",
                 )
             },
-            "MAL_config": {
-                "values":  # in_place, pwr, scale
-                ("False,1.0,True", "False,1.0,False",)
-            },
             "nesterov": {"values": (False,)},
-            "lerp": {"values": (False,)},
-            "probe": {"values": ("white",)},
             "batch_size": {"values": BATCH_SIZES},
             "lr": {"values": LRs},
             "weight_decay": {"values": WEIGHT_DECAY},
             "seed": {"values": SEEDS},
+            "use_scheduler": {"values": USE_SCHEDULER},
         },
         # "command" key used to inject custom CLI args: the command agent uses to launch "program" (script)
         "command": [  # Order MATTERS: must form a valid run command

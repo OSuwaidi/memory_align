@@ -3,7 +3,7 @@ import argparse
 import wandb
 
 # To initialize W&B sweep config:
-# $ uv run create_sweep.py <main.py> --data <___> --sweep_name <___> --project_name <___> --> prints <entity/project/sweep/sweep_id>
+# $ uv run sweeps/cifar_resnet_sweep.py <main.py> --data <___> --sweep_name <___> --project_name <___> --> prints <entity/project/sweep/sweep_id>
 # To assign/tag a run agent to a sweep:
 # $ CUDA_VISIBLE_DEVICES=0 uv run wandb agent --forward-signals <entity/project/sweep_id>
 
@@ -13,12 +13,71 @@ MODEL = "vit_tiny_patch16_224"
 PATCH_SIZE = 8
 WARMUP_EPOCHS = 15
 SEEDS = (42, 1337, 2026)
-WD = (5e-2, 1e-3)
+WEIGHT_DECAY = (5e-2, 1e-3)
 LRs = (
     1.5e-4,
     1e-3,
 )
 BATCH_SIZES = (256, 512, 1024, 2048, 4096)[::-1]
+USE_SCHEDULER = (False,)
+
+
+def percentage(value: str) -> float:
+    parsed_value = float(value)
+    if not 0.0 <= parsed_value <= 100.0:
+        raise argparse.ArgumentTypeError("must be between 0 and 100")
+    return parsed_value
+
+
+def add_training_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--data", type=str, help="Dataset name", required=True)
+    parser.add_argument("--data_dir", type=str, default="./data")
+    parser.add_argument(
+        "--arch",
+        type=str,
+        help="Architecture name",
+    )
+    parser.add_argument("--epochs", type=int, default=200)
+    parser.add_argument(
+        "--val_acc_target",
+        type=percentage,
+        help="Validation-accuracy target percentage used for convergence-speed metrics (0-99).",
+    )
+    parser.add_argument(
+        "--amp_dtype",
+        choices=("bfloat16", "float32"),
+        default="bfloat16",
+        help="CUDA autocast dtype; defaults to bfloat16. float32 disables AMP.",
+    )
+    parser.add_argument(
+        "--float32_precision",
+        type=str,
+        choices=("tf32", "ieee"),
+        default="tf32",
+        help="Internal precision for residual CUDA float32 matmuls/convolutions.",
+    )
+
+
+def get_finished_run_ids(sweep_ids: list[str]) -> list[str]:
+    """
+    Retrieves the IDs of all finished runs within a specified sweep.
+    :param sweep_ids: The IDs of the prior sweep.
+    :return: A list of strings containing the IDs of all finished runs.
+    """
+    api = wandb.Api()
+    runs = api.runs(
+        path=f"{ENTITY_NAME}/{args.project_name}",
+        filters={
+            "sweep": {"$in": sweep_ids},
+            "state": {"$in": ["finished", "running"]},
+        },
+        per_page=100,
+        lazy=True,
+        include_sweeps=True,
+    )
+
+    return [run.id for run in runs]
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create a dynamic W&B Sweep configuration.")
@@ -27,12 +86,19 @@ if __name__ == "__main__":
     parser.add_argument("--sweep_name", type=str, help="Sweep name", required=True)
     parser.add_argument("--project_name", type=str, help="Project name", required=True)
     parser.add_argument(
+        "--prior_sweeps",
+        type=str,
+        nargs="+",  # creates a list of strings
+        help="Previous sweep(s) ID",
+    )
+    parser.add_argument(
         "--method",
         type=str,
         default="grid",
         choices=["grid", "random", "bayes"],
         help="Sweep search method",
     )
+    add_training_args(parser)
     args = parser.parse_args()
 
     # 1. Define the sweep configuration
@@ -45,18 +111,20 @@ if __name__ == "__main__":
             "goal": "maximize",
         },
         "parameters": {
-            "align": {
+            "optimizer": {
                 "values": (
-                    "MAL",
-                    "MAL_per",
-                    "none",
-                    "cautious",
+                    "AdamW",
+                    "CAUTIOUS_AdamW",
+                    "AdaTAMW",
+                    "MAL_AdamW",
                 )
             },
             "nesterov": {"values": (False,)},
             "batch_size": {"values": BATCH_SIZES},
             "lr": {"values": LRs},
+            "weight_decay": {"values": WEIGHT_DECAY},
             "seed": {"values": SEEDS},
+            "use_scheduler": {"values": USE_SCHEDULER},
         },
         # "command" key used to inject custom CLI args: the command agent uses to launch "program" (script)
         "command": [  # Order MATTERS: must form a valid run command
@@ -64,17 +132,38 @@ if __name__ == "__main__":
             "${interpreter}",
             "${program}",
             "--data",
-            f"{args.data}",
+            args.data,
+            "--data_dir",
+            args.data_dir,
+            "--arch",
+            args.arch,
+            "--epochs",
+            args.epochs,
+            "--val_acc_target",
+            args.val_acc_target,
+            "--amp_dtype",
+            args.amp_dtype,
+            "--float32_precision",
+            args.float32_precision,
             "${args}",  # MANDATORY at the end: expands all sweep parameters as CLI args
         ],
     }
 
-    # 2. Initialize the sweep on W&B servers
+    # Fetch successfully completed runs from previous sweep
+    prior_run_ids = None
+    if prior_sweeps := args.prior_sweeps:
+        prior_run_ids = get_finished_run_ids(prior_sweeps)
+
+        print(f"Adding {len(prior_run_ids)} finished runs from sweep ID(s): {prior_sweeps} as prior runs.")
+
+    # 2. Initialize the sweep on W&B servers, seeded with completed runs
     sweep_id = wandb.sweep(
-        sweep=sweep_configuration,
+        entity=ENTITY_NAME,
         project=args.project_name,
+        sweep=sweep_configuration,
+        prior_runs=prior_run_ids,
     )
-    print(f"To run a W&B agent against the sweep: $ uv run wandb agent --forward-signals {ENTITY_NAME}/{args.project_name}/{sweep_id}")
+    print(f"To run a W&B agent against the sweep:\n$ uv run wandb agent --forward-signals {ENTITY_NAME}/{args.project_name}/{sweep_id}")
 
     # wandb.agent(
     #         sweep_id=sweep_id,

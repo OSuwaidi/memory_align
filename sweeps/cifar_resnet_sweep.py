@@ -23,6 +23,7 @@ BATCH_SIZES = (
     4096,
 )[::-1]
 WEIGHT_DECAY = (5e-4,)
+USE_SCHEDULER = (False,)
 
 
 def percentage(value: str) -> float:
@@ -113,11 +114,12 @@ if __name__ == "__main__":
             "goal": "maximize",
         },
         "parameters": {
-            "align": {
+            "optimizer": {
                 "values": (
-                    "MAL",
-                    # "none",
-                    # "cautious",
+                    "SGDM",
+                    "CAUTIOUS_SGDM",
+                    "TAM_SGDM",
+                    "MAL_SGDM",
                 )
             },
             "MAL_config": {
@@ -129,6 +131,7 @@ if __name__ == "__main__":
             "lr": {"values": LRs},
             "weight_decay": {"values": WEIGHT_DECAY},
             "seed": {"values": SEEDS},
+            "use_scheduler": {"values": USE_SCHEDULER},
         },
         # "command" key used to inject custom CLI args: the command agent uses to launch "program" (script)
         "command": [  # Order MATTERS: must form a valid run command
