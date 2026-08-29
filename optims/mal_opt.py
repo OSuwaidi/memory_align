@@ -29,6 +29,23 @@ def _apply_gate(base_beta: float, gate: torch.Tensor, gate_mode: str) -> torch.T
     return gate  # historical MAL rule: replace the base coefficient
 
 
+def _cap_memory_for_descent(
+    coefficient: torch.Tensor,
+    fresh_descent: torch.Tensor,
+    memory_descent: torch.Tensor,
+) -> torch.Tensor:
+    r"""Cap a scalar memory coefficient so the observed-gradient inner product is nonnegative.
+
+    For an update whose relevant first-order numerator is ``fresh_descent +
+    coefficient * memory_descent``, the largest admissible coefficient is
+    ``fresh_descent / -memory_descent`` when the memory term opposes the current
+    gradient. Already-safe coefficients are left exactly unchanged.
+    """
+    opposition = (-memory_descent).clamp_min(torch.finfo(memory_descent.dtype).tiny)
+    maximum = (fresh_descent.clamp_min(0.0) / opposition).to(dtype=coefficient.dtype)
+    return torch.where(memory_descent < 0.0, torch.minimum(coefficient, maximum), coefficient)
+
+
 class MAL_SGDM(Optimizer):
     r"""Memory-ALigned heavy-ball SGD.
 
@@ -68,6 +85,13 @@ class MAL_SGDM(Optimizer):
     the corresponding fixed-beta probe. This preserves the base optimizer's
     step magnitude while retaining MAL's change in direction.
 
+    With ``descent_safeguard=True``, MAL additionally caps :math:`c_t` only when
+    needed so that :math:`g_t^T(g_t+c_tm_{t-1})\geq 0`. This is a tensor-wise,
+    first-order agreement guarantee with the observed (possibly stochastic)
+    gradient; it neither guarantees agreement with the unknown population
+    gradient nor finite-step loss decrease. The safeguard is opt-in and is not
+    implemented for the Nesterov variant.
+
     A zero buffer makes the probe self-aligned (:math:`q_t=1`). A zero gradient
     carries no alignment evidence, so :math:`c_t` falls back to the fixed ``beta``
     rather than treating an undefined direction as an artificial 0.5.
@@ -84,9 +108,10 @@ class MAL_SGDM(Optimizer):
         weight_decay: float = 0.0,
         pwr: float = 1.0,
         in_place: bool = False,
-        scale: bool = True,
+        scale: bool = False,
         nesterov: bool = False,
         gate_mode: str = "attenuate",
+        descent_safeguard: bool = False,
     ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -98,6 +123,8 @@ class MAL_SGDM(Optimizer):
             raise ValueError(f"Invalid p value: {pwr}")
         if nesterov and beta <= 0.0:
             raise ValueError("Nesterov momentum requires a positive initial beta")
+        if nesterov and descent_safeguard:
+            raise ValueError("descent_safeguard is only implemented for the heavy-ball MAL-SGDM update")
         if gate_mode not in ("replace", "attenuate", "cap"):
             raise ValueError(f"Invalid gate_mode value: {gate_mode}")
 
@@ -136,6 +163,7 @@ class MAL_SGDM(Optimizer):
             "scale": scale,
             "nesterov": nesterov,
             "gate_mode": gate_mode,
+            "descent_safeguard": descent_safeguard,
         }  # shared across all optim/param groups
         super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
 
@@ -156,6 +184,7 @@ class MAL_SGDM(Optimizer):
             scale = group["scale"]
             nesterov = group["nesterov"]
             gate_mode = group["gate_mode"]
+            descent_safeguard = group.get("descent_safeguard", False)
 
             for p, m in zip(group["params"], group["momentum"]):
                 if p.grad is None:
@@ -172,6 +201,12 @@ class MAL_SGDM(Optimizer):
                 g_norm, u_probe_norm, beta_eff = get_norms_and_eff_beta(g, u_probe, pwr)
                 beta_eff = _apply_gate(beta, beta_eff, gate_mode)
                 beta_eff = torch.where(g_norm > 0.0, beta_eff, beta)
+                if descent_safeguard:
+                    beta_eff = _cap_memory_for_descent(
+                        beta_eff,
+                        fresh_descent=g_norm.square(),
+                        memory_descent=torch.dot(g.flatten(), m.flatten()),
+                    )
                 m_eff = torch.addcmul(g, m, beta_eff)  # beta_eff * m_{t-1} + g
 
                 if in_place:
@@ -276,6 +311,13 @@ class MAL_AdamW(Optimizer):
     A zero gradient carries no alignment evidence: :math:`c_t` falls back to
     :math:`\beta_1`. The cosine's numerical floor is pinned at 1e-8 independently
     of ``eps``, matching MAL-SGDM.
+
+    With ``descent_safeguard=True``, the proposed first-moment coefficient is
+    capped only when necessary to ensure
+    :math:`g_t^T D_t^{-1}\tilde m_t\geq 0`. Positive scalar bias correction and
+    norm matching preserve this sign. The guarantee is tensor-wise and concerns
+    the observed gradient component of the update; decoupled weight decay and a
+    finite learning rate remain separate effects.
     """
 
     def __init__(
@@ -290,6 +332,7 @@ class MAL_AdamW(Optimizer):
         in_place: bool = False,
         scale: bool | str = True,
         gate_mode: str = "attenuate",
+        descent_safeguard: bool = False,
     ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -353,6 +396,7 @@ class MAL_AdamW(Optimizer):
             "in_place": in_place,
             "scale": scale,
             "gate_mode": gate_mode,
+            "descent_safeguard": descent_safeguard,
         }
         super().__init__(optim_groups, defaults)
 
@@ -373,6 +417,7 @@ class MAL_AdamW(Optimizer):
             in_place = group["in_place"]
             scale = group["scale"]
             gate_mode = group["gate_mode"]
+            descent_safeguard = group.get("descent_safeguard", False)
             eps = group["eps"]
             steps = group["step"]
 
@@ -412,6 +457,14 @@ class MAL_AdamW(Optimizer):
                 beta1_eff = _apply_gate(beta1, beta1_eff, gate_mode)
                 # a vanishes iff g vanishes, so the zero-gradient fallback can guard on a_norm
                 beta1_eff = torch.where(a_norm > 0.0, beta1_eff, beta1)
+
+                if descent_safeguard:
+                    preconditioned_gradient = g / denominator
+                    beta1_eff = _cap_memory_for_descent(
+                        beta1_eff,
+                        fresh_descent=(1.0 - beta1) * torch.dot(g.flatten(), preconditioned_gradient.flatten()),
+                        memory_descent=torch.dot(m.flatten(), preconditioned_gradient.flatten()),
+                    )
 
                 # Gradient weight pinned at (1-beta1); the gate touches memory only (out-of-place: buffer untouched)
                 m_eff = m.mul(beta1_eff).add_(g, alpha=(1.0 - beta1))

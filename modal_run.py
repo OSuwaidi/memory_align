@@ -83,9 +83,8 @@ image = (
     )
     # All image build steps must precede add_local_* runtime mounts.
     .workdir(REMOTE_PROJECT_DIR)
-    .add_local_file("main.py", f"{REMOTE_PROJECT_DIR}/main.py")
-    .add_local_file("mal_opt.py", f"{REMOTE_PROJECT_DIR}/mal_opt.py")
-    .add_local_file("cautious_opt.py", f"{REMOTE_PROJECT_DIR}/cautious_opt.py")
+    .add_local_file("tasks/cifar_train.py", f"{REMOTE_PROJECT_DIR}/cifar_train.py")
+    .add_local_dir("optims", f"{REMOTE_PROJECT_DIR}/optims")
     .add_local_dir("sweeps", f"{REMOTE_PROJECT_DIR}/sweeps")
 )
 

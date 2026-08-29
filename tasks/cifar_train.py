@@ -3,6 +3,7 @@ import random
 import signal
 import sys
 from multiprocessing import cpu_count
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -20,10 +21,17 @@ from torchvision.transforms import v2
 from tqdm.auto import tqdm, trange
 from wandb.sdk.internal.internal_api import Api as WandbInternalApi
 
-from cautious_opt import CAUTIOUS_ADAMW, CAUTIOUS_SGD
-from mal_opt import MAL_SGDM, MAL_AdamW
+# W&B executes this file by path, making ``tasks/`` (rather than the repository
+# root) Python's import root. Add the repository root before importing siblings.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
+from optims.am_opt import AM_MSGD, AM_AdamW
+from optims.cautious_opt import CAUTIOUS_ADAMW, CAUTIOUS_SGD
+from optims.mal_opt import MAL_SGDM, MAL_AdamW
+from optims.tam_opt import TAM_SGDM, AdaTAMW
 from sweeps.cifar_resnet_sweep import add_training_args
-from tam_opt import TAM_SGDM, AdaTAMW
 
 # -------------------------
 # Config
@@ -341,14 +349,35 @@ def main():
     seed = config.seed
     use_scheduler = config.use_scheduler
 
-    in_place, pwr, scale, gate_mode = config.MAL_config.split(",")
+    mal_fields = config.MAL_config.split(",")
+    if len(mal_fields) == 4:
+        in_place, pwr, scale, gate_mode = mal_fields
+        descent_safeguard = False
+    elif len(mal_fields) == 5:
+        in_place, pwr, scale, gate_mode, descent_safeguard_text = mal_fields
+        if descent_safeguard_text.lower() not in {"true", "false"}:
+            raise ValueError("MAL descent_safeguard must be True or False.")
+        descent_safeguard = descent_safeguard_text.lower() == "true"
+    else:
+        raise ValueError("MAL_config must be 'in_place,pwr,scale,gate_mode[,descent_safeguard]'.")
     in_place = in_place == "True"
     pwr = float(pwr)
     scale = scale == "True"
-    MAL_config = {"in_place": in_place, "pwr": pwr, "scale": scale, "gate_mode": gate_mode}
+    MAL_config = {
+        "in_place": in_place,
+        "pwr": pwr,
+        "scale": scale,
+        "gate_mode": gate_mode,
+        "descent_safeguard": descent_safeguard,
+    }
     run.config.update(MAL_config, allow_val_change=True)
-
-    run.name = f"{optimizer}_inp:{str(in_place)[0]}_pwr:{pwr}_scl:{str(scale)[0]}_gate:{gate_mode}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
+    if optimizer == "AM_MSGD":
+        run.config.update({"am_beta_max": BETA, "am_model_lambda": 0.1}, allow_val_change=True)
+        run.name = f"{optimizer}_bmax:{BETA}_lambda:0.1_bs:{bs}_{lr}_{seed}"
+    else:
+        run.name = (
+            f"{optimizer}_inp:{str(in_place)[0]}_pwr:{pwr}_scl:{str(scale)[0]}_gate:{gate_mode}_dsg:{str(descent_safeguard)[0]}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
+        )
     if bs >= 2 * MAX_MICRO_BATCH_SIZE:
         if bs % MAX_MICRO_BATCH_SIZE != 0:
             raise ValueError(f"Batch size {bs} must be divisible by {MAX_MICRO_BATCH_SIZE} for gradient accumulation.")
@@ -419,6 +448,16 @@ def main():
     elif optimizer == "MAL_AdamW":
         optimizer = MAL_AdamW(model.parameters(), lr=lr, weight_decay=weight_decay, **MAL_config)
 
+    elif optimizer == "AM_AdamW":
+        model_lambda = 0.1
+        optimizer = AM_AdamW(
+            model.parameters(),
+            lr=lr,
+            betas=(BETA - 0.1 * model_lambda, 0.999),
+            model_lambda=model_lambda,
+            weight_decay=weight_decay,
+        )
+
     elif optimizer == "SGDM":
         optimizer = SGD(
             model.parameters(),
@@ -427,6 +466,17 @@ def main():
             momentum=BETA,
             dampening=0.0,
             nesterov=nest,
+        )
+
+    elif optimizer == "AM_MSGD":
+        if nest:
+            raise ValueError("AM-MSGD does not define a Nesterov variant.")
+        optimizer = AM_MSGD(
+            model.parameters(),
+            lr=lr,
+            beta_max=BETA,
+            model_lambda=0.1,
+            weight_decay=weight_decay,
         )
 
     elif optimizer == "CAUTIOUS_SGDM":

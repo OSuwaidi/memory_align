@@ -44,7 +44,7 @@ import torch
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from mal_opt import MAL_SGDM
+from optims.mal_opt import MAL_SGDM
 
 
 @dataclass(frozen=True)

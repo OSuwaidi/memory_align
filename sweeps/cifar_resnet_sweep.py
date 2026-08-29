@@ -1,29 +1,34 @@
+"""Create the MAL-SGDM structural-selection sweep on ResNet-50/CIFAR-100."""
+
 import argparse
 
 import wandb
 
 # To initialize W&B sweep config:
-# $ uv run sweeps/cifar_resnet_sweep.py <main.py> --data <___> --sweep_name <___> --project_name <___> --> prints <entity/project/sweep/sweep_id>
+# $ uv run sweeps/cifar_resnet_sweep.py tasks/cifar_train.py --sweep_name <___> --project_name <___> --> prints <entity/project/sweep/sweep_id>
 # To assign/tag a run agent to a sweep:
 # $ CUDA_VISIBLE_DEVICES=0 uv run wandb agent --forward-signals <entity/project/sweep_id>
 
 ENTITY_NAME = "osuwaidi-khalifa-university"
-SEEDS = (42,)  # 1337,) #2026)
-LRs = (
-    0.025,
-    0.05,
-    # 0.1,
-    # 0.2,
-    # 0.4,
-    0.8,
-    1.0,
-)
-BATCH_SIZES = (
-    2048,
-    4096,
-)[::-1]
+SEEDS = (42, 1337, 2026)
+LRs = (0.1, 0.2)
+BATCH_SIZES = (256,)
 WEIGHT_DECAY = (5e-4,)
-USE_SCHEDULER = (False,)
+USE_SCHEDULER = (True, False)
+
+# Deliberate one-axis ablations around the theory-facing configuration. The two
+# extra safeguarded gate variants test the only interaction most likely to alter
+# the conclusion: retaining more memory while enforcing first-order agreement.
+# Fields: in_place,pwr,scale,gate_mode,descent_safeguard
+MAL_CONFIGS = (
+    "False,1.0,False,attenuate,False",  # canonical: transient, bounded memory gate
+    "False,1.0,False,attenuate,True",  # canonical + first-order descent safeguard
+    # "False,1.0,True,attenuate,False",  # preserve the fixed-beta probe norm
+    "False,1.0,False,replace,False",  # historical MAL coefficient replacement
+    "False,1.0,False,replace,True",  # historical rule + descent safeguard
+    "True,0.5,False,attenuate,False",  # recursive adaptive buffer ablation
+    "True,0.5,False,replace,False",  # recursive adaptive buffer ablation
+)
 
 
 def percentage(value: str) -> float:
@@ -34,17 +39,19 @@ def percentage(value: str) -> float:
 
 
 def add_training_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--data", type=str, help="Dataset name", required=True)
+    parser.add_argument("--data", choices=("cifar10", "cifar100"), default="cifar100", help="Dataset name")
     parser.add_argument("--data_dir", type=str, default="./data")
     parser.add_argument(
         "--arch",
-        type=str,
+        choices=("resnet18", "resnet50"),
+        default="resnet50",
         help="Architecture name",
     )
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument(
         "--val_acc_target",
         type=percentage,
+        default=70.0,
         help="Validation-accuracy target percentage used for convergence-speed metrics (0-99).",
     )
     parser.add_argument(
@@ -109,23 +116,20 @@ if __name__ == "__main__":
         "program": args.program,
         "name": args.sweep_name,
         "method": args.method,  # 'grid' tries every combination. Use 'bayes' or 'random' for large searches.
-        "metric": {
-            "name": "test_acc",
-            "goal": "maximize",
-        },
+        # Select structure only on the held-out training split; test_acc remains
+        # untouched until the winning configuration has been chosen.
+        "metric": {"name": "best_val_acc", "goal": "maximize"},
         "parameters": {
             "optimizer": {
                 "values": (
-                    "SGDM",
-                    "CAUTIOUS_SGDM",
-                    "TAM_SGDM",
+                    # "SGDM",
+                    # "AM_MSGD",
+                    # "CAUTIOUS_SGDM",
+                    # "TAM_SGDM",
                     "MAL_SGDM",
                 )
             },
-            "MAL_config": {
-                "values":  # in_place, pwr, scale, per_unit
-                ("False,1.0,True,False",)
-            },
+            "MAL_config": {"values": MAL_CONFIGS},
             "nesterov": {"values": (False,)},
             "batch_size": {"values": BATCH_SIZES},
             "lr": {"values": LRs},
@@ -145,9 +149,9 @@ if __name__ == "__main__":
             "--arch",
             args.arch,
             "--epochs",
-            args.epochs,
+            str(args.epochs),
             "--val_acc_target",
-            args.val_acc_target,
+            str(args.val_acc_target),
             "--amp_dtype",
             args.amp_dtype,
             "--float32_precision",
