@@ -206,7 +206,7 @@ run_phase \
     mal-fin-sgdm \
     SGDM_SCALE_SWEEP_PATH
 
-# 6 runs: add the missing unscaled replacement cell to scheduled MAL-AdamW.
+# 12 runs: add the missing unscaled and raw-moment replacement bundles.
 run_phase \
     adamw-scale \
     tasks/mae_pretrain.py \
@@ -214,7 +214,7 @@ run_phase \
     mal-fin-adamw-scale \
     ADAMW_SCALE_SWEEP_PATH
 
-# 9 runs: compare all three finalists with no warmup or cosine schedule.
+# 12 runs: compare all four finalists with no warmup or cosine schedule.
 run_phase \
     adamw-stress \
     tasks/mae_pretrain.py \

@@ -25,6 +25,7 @@ T_REP_N_SGDM = "False,1.0,True,replace,False"
 T_ATT_U_ADAMW = "False,1.0,none,attenuate,False,metric"
 T_REP_U_ADAMW = "False,1.0,none,replace,False,metric"
 T_REP_N_ADAMW = "False,1.0,step,replace,False,metric"
+T_REP_M_ADAMW = "False,1.0,moment,replace,False,moment"
 
 
 def _sgdm_command(args: argparse.Namespace) -> list[str]:
@@ -115,8 +116,9 @@ def build_sweep_configuration(args: argparse.Namespace) -> dict[str, Any]:
             "metric": {"name": "final_probe_val_acc", "goal": "maximize"},
             "parameters": {
                 "optimizer": {"values": ("MAL_AdamW",)},
-                # The only missing scheduled AdamW scale cell among finalists.
-                "MAL_config": {"values": (T_REP_U_ADAMW,)},
+                # Complete the two untested coherent replacement bundles:
+                # unscaled metric geometry and raw-moment geometry/scaling.
+                "MAL_config": {"values": (T_REP_U_ADAMW, T_REP_M_ADAMW)},
                 "batch_size": {"values": (1024,)},
                 "base_lr": {"values": (1.5e-4, 1e-3)},
                 "weight_decay": {"values": (0.05,)},
@@ -132,8 +134,8 @@ def build_sweep_configuration(args: argparse.Namespace) -> dict[str, Any]:
             "metric": {"name": "final_probe_val_acc", "goal": "maximize"},
             "parameters": {
                 "optimizer": {"values": ("MAL_AdamW",)},
-                # One standard-LR scheduler-free screen of all three finalists.
-                "MAL_config": {"values": (T_ATT_U_ADAMW, T_REP_U_ADAMW, T_REP_N_ADAMW)},
+                # One standard-LR scheduler-free screen of all four finalists.
+                "MAL_config": {"values": (T_ATT_U_ADAMW, T_REP_U_ADAMW, T_REP_N_ADAMW, T_REP_M_ADAMW)},
                 "batch_size": {"values": (1024,)},
                 "base_lr": {"values": (1.5e-4,)},
                 "weight_decay": {"values": (0.05,)},
