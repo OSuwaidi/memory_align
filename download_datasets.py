@@ -2,6 +2,7 @@
 
 Examples::
 
+    uv run download_datasets.py --task cifar100
     uv run download_datasets.py --task tiny-imagenet
     uv run download_datasets.py --task llm
     uv run download_datasets.py --task all
@@ -22,21 +23,13 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from huggingface_hub import snapshot_download
-from transformers import AutoTokenizer
-
-from tasks.llm_finetune import (
-    DEFAULT_DATASET,
-    DEFAULT_DATASET_CONFIG,
-    DEFAULT_DATASET_REVISION,
-    DEFAULT_MODEL,
-    DEFAULT_MODEL_REVISION,
-    load_token_blocks,
-)
-
-TINY_IMAGENET_URL = "https://zenodo.org/records/10720917/files/tiny-imagenet-200.zip?download=1"
+TINY_IMAGENET_URL = "https://huggingface.co/datasets/cnak47/cv-datasets/resolve/main/tiny-imagenet-200.zip"
 TINY_IMAGENET_MD5 = "90528d7ca1a48142e341f4ef8d21d0de"
 TINY_IMAGENET_DIRECTORY = "tiny-imagenet-200"
+CIFAR100_URL = "https://huggingface.co/datasets/nakroy/cifar100-python/resolve/main/cifar-100-python.tar.gz"
+CIFAR100_MD5 = "eb9058c3a382ffc7106e4002c42a8d85"
+CIFAR100_ARCHIVE = "cifar-100-python.tar.gz"
+CIFAR100_DIRECTORY = "cifar-100-python"
 
 
 def file_md5(path: Path) -> str:
@@ -148,6 +141,47 @@ def download_tiny_imagenet(parent_dir: Path, *, keep_archive: bool) -> Path:
     return dataset_root
 
 
+def download_cifar100(parent_dir: Path, *, keep_archive: bool) -> Path:
+    """Populate torchvision's CIFAR-100 layout using a faster verified mirror."""
+    from torchvision.datasets import CIFAR100
+
+    parent_dir = parent_dir.expanduser().resolve()
+    dataset_root = parent_dir / CIFAR100_DIRECTORY
+
+    # torchvision validates every extracted batch file, so this is stronger
+    # than checking for the directory alone and makes repeated calls cheap.
+    try:
+        CIFAR100(root=str(parent_dir), train=True, download=False)
+        CIFAR100(root=str(parent_dir), train=False, download=False)
+    except RuntimeError:
+        archive_path = parent_dir / CIFAR100_ARCHIVE
+        if archive_path.exists():
+            checksum = file_md5(archive_path)
+            if checksum != CIFAR100_MD5:
+                raise ValueError(
+                    f"Existing archive has MD5 {checksum}, expected {CIFAR100_MD5}: "
+                    f"{archive_path}. Remove or rename it before retrying."
+                )
+            print(f"Using verified existing archive {archive_path}")
+        else:
+            print(f"Downloading CIFAR-100 from {CIFAR100_URL}")
+            download_file(CIFAR100_URL, archive_path)
+            checksum = file_md5(archive_path)
+            if checksum != CIFAR100_MD5:
+                archive_path.unlink(missing_ok=True)
+                raise ValueError(f"Downloaded CIFAR-100 MD5 {checksum}; expected {CIFAR100_MD5}.")
+
+        # With the verified archive already at torchvision's expected path,
+        # download=True performs only its built-in integrity check/extraction.
+        CIFAR100(root=str(parent_dir), train=True, download=True)
+        CIFAR100(root=str(parent_dir), train=False, download=True)
+        if not keep_archive:
+            archive_path.unlink(missing_ok=True)
+
+    print(f"CIFAR-100 is ready at {dataset_root}")
+    return dataset_root
+
+
 def prefetch_llm_assets(
     cache_dir: Path,
     *,
@@ -158,6 +192,11 @@ def prefetch_llm_assets(
     dataset_revision: str,
     sequence_length: int,
 ) -> Path:
+    from huggingface_hub import snapshot_download
+    from transformers import AutoTokenizer
+
+    from tasks.llm_finetune import load_token_blocks
+
     cache_dir = cache_dir.expanduser().resolve()
     cache_dir.mkdir(parents=True, exist_ok=True)
     print(f"Downloading the pinned model/tokenizer snapshot for {model_name}")
@@ -184,15 +223,16 @@ def prefetch_llm_assets(
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--task", choices=("tiny-imagenet", "llm", "all"), default="all")
+    parser.add_argument("--task", choices=("cifar100", "tiny-imagenet", "llm", "all"), default="all")
+    parser.add_argument("--cifar100_dir", "--cifar100-dir", default="./data")
     parser.add_argument("--tiny_imagenet_dir", "--tiny-imagenet-dir", default="./data")
     parser.add_argument("--keep_archive", "--keep-archive", action="store_true")
     parser.add_argument("--llm_cache_dir", "--llm-cache-dir", default="./data/llm_cache")
-    parser.add_argument("--model_name", "--model-name", default=DEFAULT_MODEL)
-    parser.add_argument("--model_revision", "--model-revision", default=DEFAULT_MODEL_REVISION)
-    parser.add_argument("--dataset_name", "--dataset-name", default=DEFAULT_DATASET)
-    parser.add_argument("--dataset_config", "--dataset-config", default=DEFAULT_DATASET_CONFIG)
-    parser.add_argument("--dataset_revision", "--dataset-revision", default=DEFAULT_DATASET_REVISION)
+    parser.add_argument("--model_name", "--model-name")
+    parser.add_argument("--model_revision", "--model-revision")
+    parser.add_argument("--dataset_name", "--dataset-name")
+    parser.add_argument("--dataset_config", "--dataset-config")
+    parser.add_argument("--dataset_revision", "--dataset-revision")
     parser.add_argument("--sequence_length", "--sequence-length", type=int, default=512)
 
 
@@ -203,16 +243,26 @@ def main() -> int:
     if args.sequence_length <= 1:
         parser.error("--sequence_length must be greater than one.")
 
+    if args.task in ("cifar100", "all"):
+        download_cifar100(Path(args.cifar100_dir), keep_archive=args.keep_archive)
     if args.task in ("tiny-imagenet", "all"):
         download_tiny_imagenet(Path(args.tiny_imagenet_dir), keep_archive=args.keep_archive)
     if args.task in ("llm", "all"):
+        from tasks.llm_finetune import (
+            DEFAULT_DATASET,
+            DEFAULT_DATASET_CONFIG,
+            DEFAULT_DATASET_REVISION,
+            DEFAULT_MODEL,
+            DEFAULT_MODEL_REVISION,
+        )
+
         prefetch_llm_assets(
             Path(args.llm_cache_dir),
-            model_name=args.model_name,
-            model_revision=args.model_revision,
-            dataset_name=args.dataset_name,
-            dataset_config=args.dataset_config,
-            dataset_revision=args.dataset_revision,
+            model_name=args.model_name or DEFAULT_MODEL,
+            model_revision=args.model_revision or DEFAULT_MODEL_REVISION,
+            dataset_name=args.dataset_name or DEFAULT_DATASET,
+            dataset_config=args.dataset_config or DEFAULT_DATASET_CONFIG,
+            dataset_revision=args.dataset_revision or DEFAULT_DATASET_REVISION,
             sequence_length=args.sequence_length,
         )
     return 0

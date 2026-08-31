@@ -102,7 +102,7 @@ def main() -> int:
             "0.9",
             "--beta2",
             "0.999",
-            "--mal_config",
+            "--MAL_config",
             "False,1.0,True,attenuate,False",
             "--mal_align",
             "metric",

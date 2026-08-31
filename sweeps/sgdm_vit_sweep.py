@@ -61,7 +61,7 @@ def main() -> int:
         "metric": {"name": "probe/val_acc", "goal": "maximize"},
         "parameters": {
             "optimizer": {"values": ("SGDM", "AM_MSGD", "CAUTIOUS_SGDM", "TAM_SGDM", "MAL_SGDM")},
-            "mal_config": {"values": MAL_CONFIGS},
+            "MAL_config": {"values": MAL_CONFIGS},
             "nesterov": {"values": (False,)},
             "batch_size": {"values": BATCH_SIZES},
             "base_lr": {"values": BASE_LRS},

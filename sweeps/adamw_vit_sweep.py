@@ -82,7 +82,7 @@ def main() -> int:
                     "MAL_AdamW",
                 )
             },
-            "mal_config": {"values": MAL_CONFIGS},
+            "MAL_config": {"values": MAL_CONFIGS},
             "batch_size": {"values": BATCH_SIZES},
             "base_lr": {"values": BASE_LRS},
             "weight_decay": {"values": WEIGHT_DECAYS},

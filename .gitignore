@@ -173,4 +173,11 @@ __marimo__/
 
 /wandb
 /data
+/outputs
+/logs
+/.cache
+/.config
+/.local
+/.tmp
+/.cluster-venv
 slurm-*.out

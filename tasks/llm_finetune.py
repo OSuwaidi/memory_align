@@ -420,7 +420,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--beta2", type=float, default=0.999)
     parser.add_argument("--weight_decay", "--weight-decay", type=float, default=0.0)
     parser.add_argument("--max_grad_norm", "--max-grad-norm", type=float, default=1.0)
-    parser.add_argument("--mal_config", "--mal-config", default="False,1.0,True,attenuate,False")
+    parser.add_argument(
+        "--MAL_config",
+        "--mal_config",
+        "--mal-config",
+        dest="MAL_config",
+        default="False,1.0,True,attenuate,False",
+    )
     parser.add_argument("--mal_align", "--mal-align", choices=("update", "metric", "white", "moment"), default="metric")
     parser.add_argument("--gradient_checkpointing", "--gradient-checkpointing", type=parse_bool, default=False)
     parser.add_argument("--attn_implementation", "--attn-implementation", choices=("eager", "sdpa"), default="sdpa")
@@ -561,7 +567,7 @@ def main() -> int:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.to(device)  # pyright: ignore[reportArgumentType]
 
-    mal_config = parse_mal_config(args.mal_config)
+    mal_config = parse_mal_config(args.MAL_config)
     optimizer = build_optimizer(
         optimizer_name,
         model,

@@ -57,7 +57,8 @@ ADAMW_OPTIMIZERS = {"AdamW", "AM_AdamW", "CAUTIOUS_AdamW", "AdaTAMW", "MAL_AdamW
 ALL_OPTIMIZERS = SGD_OPTIMIZERS | ADAMW_OPTIMIZERS
 MAL_ALIGN = "white"  # Backward-compatible fallback for five-field sweep configs.
 MAL_ALIGN_CHOICES = frozenset(("update", "metric", "white", "moment"))
-REQUIRED_SWEEP_KEYS = frozenset(("optimizer", "mal_config", "batch_size", "base_lr", "weight_decay", "seed", "use_scheduler"))
+REQUIRED_SWEEP_KEYS = frozenset(("optimizer", "batch_size", "base_lr", "weight_decay", "seed", "use_scheduler"))
+MAL_CONFIG_KEYS = ("MAL_config", "mal_config")
 
 
 def parse_bool(value: str | bool) -> bool:
@@ -448,7 +449,7 @@ def parse_mal_config(value: str) -> dict[str, Any]:
         in_place_text, pwr_text, scale_text, gate_mode, descent_safeguard_text, align = fields
     else:
         raise ValueError(
-            "mal_config must be "
+            "MAL_config must be "
             "'in_place,pwr,scale,gate_mode[,descent_safeguard[,align]]'."
         )
 
@@ -873,6 +874,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 def validate_config(args: argparse.Namespace, config: Any, parser: argparse.ArgumentParser) -> None:
     missing_sweep_keys = REQUIRED_SWEEP_KEYS.difference(config.keys())
+    if not any(key in config for key in MAL_CONFIG_KEYS):
+        missing_sweep_keys = set(missing_sweep_keys) | {"MAL_config"}
     if missing_sweep_keys:
         parser.error(f"Missing W&B sweep parameter(s): {', '.join(sorted(missing_sweep_keys))}.")
     if args.epochs <= args.warmup_epochs:
@@ -989,7 +992,8 @@ def main() -> int:
         norm_pix_loss=args.norm_pix_loss,
     ).to(device)
     actual_lr = base_lr * batch_size / 256.0
-    mal_config = parse_mal_config(config.mal_config)
+    raw_mal_config = str(next(config[key] for key in MAL_CONFIG_KEYS if key in config))
+    mal_config = parse_mal_config(raw_mal_config)
     mal_align = str(mal_config.pop("align", config.get("mal_align", MAL_ALIGN))).lower()
     if mal_align not in MAL_ALIGN_CHOICES:
         parser.error(f"MAL align must be one of {sorted(MAL_ALIGN_CHOICES)}.")
@@ -1007,6 +1011,9 @@ def main() -> int:
 
     run.config.update(
         {
+            # Uppercase is the canonical W&B grouping field. Reading the old
+            # lowercase key above keeps prior sweep definitions reproducible.
+            "MAL_config": raw_mal_config,
             "actual_lr": actual_lr,
             "micro_batch_size": micro_batch_size,
             "accumulation_steps": accumulation_steps,

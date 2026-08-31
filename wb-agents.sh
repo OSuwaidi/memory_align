@@ -1,65 +1,62 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #SBATCH --account=acc-mialhajri
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=8G
+#SBATCH --mem=14G
 #SBATCH --time=500:00:00
-#SBATCH --job-name=wb-agents
+#SBATCH --job-name=mal-wb-agent
+#SBATCH --output=/shared/b00090279/memory_align/logs/agent-%A_%a.out
+#SBATCH --error=/shared/b00090279/memory_align/logs/agent-%A_%a.err
 
 set -euo pipefail
 
-PROJECT=/shared/b00090279/memory_align
-SWEEP=osuwaidi-khalifa-university/FINAL_MAL_CIFAR100/ug55xo6y
+MEMORY_ALIGN_PROJECT=/shared/b00090279/memory_align
+EXPECTED_SWEEP_PREFIX=osuwaidi-khalifa-university/MAL_benchmark/
+SWEEP_PATH=${1:?"usage: sbatch --array=1-15 wb-agents.sh <entity/project/sweep-id>"}
 
-cd "$PROJECT"
+case "$SWEEP_PATH" in
+    "$EXPECTED_SWEEP_PREFIX"*) ;;
+    *)
+        echo "Refusing unexpected sweep path: $SWEEP_PATH" >&2
+        echo "Expected prefix: $EXPECTED_SWEEP_PREFIX" >&2
+        exit 2
+        ;;
+esac
 
-# sbatch does not source ~/.bashrc; pull in the /shared path redirects
-# (uv python dir, wandb caches, etc.) explicitly.
-. /shared/b00090279/shared-paths.sh
+# Every path capable of receiving job-created files is redirected beneath the
+# user's explicitly authorized /shared directory.
+. "$MEMORY_ALIGN_PROJECT/cluster-env.sh"
+cd "$MEMORY_ALIGN_PROJECT"
 
-# ---------------------------------------------------------------------------
-# Immutable versioned venv on shared NFS -> no per-job copy.
-#
-# .venv is a symlink to .venv-<uvlock-hash>/, and venvs are never mutated in
-# place: `./sync-venv.sh` builds a NEW versioned dir and flips the symlink,
-# so a running job's venv is never unlinked out from under it. That means all
-# nodes can run straight off the shared venv with zero copying and zero risk
-# of the "libcudnn.so.9: cannot open shared object file" NFS corruption.
-#
-# To update packages:  ./sync-venv.sh   (safe to run even while jobs run),
-# then resubmit; new jobs pick up the new .venv target, old jobs keep theirs.
-# ---------------------------------------------------------------------------
-VENV="$PROJECT/.venv"
-
-# Resolve the symlink ONCE at job start and pin to that concrete version for
-# the whole run, so a mid-run sync (which flips the .venv symlink) can't
-# switch this job to a different venv underneath it.
-VENV_REAL=$(readlink -f "$VENV")
-export VIRTUAL_ENV="$VENV_REAL"
-export PATH="$VENV_REAL/bin:$PATH"
-unset PYTHONHOME
-
-# Preflight: run a REAL cuDNN convolution, not just an import check — a
-# poisoned venv can import torch and report cuda.is_available()=True while
-# every conv fails with CUDNN_STATUS_NOT_INITIALIZED, burning sweep runs.
-"$VENV_REAL/bin/python" -c "
-import torch, torch.nn as nn
-assert torch.cuda.is_available(), 'CUDA not available'
-nn.Conv2d(3, 16, 3, padding=1).cuda()(torch.randn(2, 3, 32, 32, device='cuda'))
-torch.cuda.synchronize()
-" || {
-    echo "[FATAL] venv broken or no GPU on $(hostname). On the login node: ./sync-venv.sh --rebuild" >&2
+CLUSTER_PYTHON="$MEMORY_ALIGN_PROJECT/.cluster-venv/bin/python"
+if [[ ! -x "$CLUSTER_PYTHON" ]]; then
+    echo "Cluster environment is missing: $CLUSTER_PYTHON" >&2
     exit 1
-}
+fi
 
-# Run the agent from the pinned venv. Invoke via `python -m wandb` (by the
-# resolved versioned path, not the .venv symlink) so that even if a sync
-# flips the .venv symlink mid-run, THIS job stays on its own venv. No uv
-# here: uv would try to re-resolve against $PROJECT and could flip the venv.
-# Do NOT set CUDA_VISIBLE_DEVICES; SLURM sets it from --gres=gpu:1.
-echo "[$(hostname)] using venv $VENV_REAL"
-echo "[$(hostname)] starting agent for $SWEEP"
-exec "$VENV_REAL/bin/python" -m wandb agent --forward-signals "$SWEEP"
+RESOLVED_PYTHON=$(command -v python)
+if [[ "$(readlink -f "$RESOLVED_PYTHON")" != "$(readlink -f "$CLUSTER_PYTHON")" ]]; then
+    echo "Sweep child interpreter mismatch: python resolves to $RESOLVED_PYTHON, expected $CLUSTER_PYTHON" >&2
+    exit 1
+fi
+
+# Fail before claiming a sweep run if the allocated GPU or CUDA runtime is bad.
+"$CLUSTER_PYTHON" - <<'PY'
+import torch
+from torch import nn
+
+assert torch.cuda.is_available(), "CUDA is unavailable in the SLURM allocation"
+device = torch.device("cuda")
+nn.Conv2d(3, 16, 3, padding=1).to(device)(torch.randn(2, 3, 32, 32, device=device))
+torch.cuda.synchronize()
+print(
+    f"CUDA preflight passed: torch={torch.__version__}, "
+    f"device={torch.cuda.get_device_name(0)}, cudnn={torch.backends.cudnn.version()}"
+)
+PY
+
+echo "[$(hostname)] array task ${SLURM_ARRAY_TASK_ID:-single} starting W&B agent for $SWEEP_PATH"
+exec "$CLUSTER_PYTHON" -m wandb agent --forward-signals "$SWEEP_PATH"
