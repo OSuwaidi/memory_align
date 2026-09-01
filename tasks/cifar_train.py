@@ -43,6 +43,7 @@ NUM_GPUS = torch.cuda.device_count()
 NUM_WORKERS = min(cpu_count() // (2 * max(NUM_GPUS, 1)), 16)
 EVAL_NUM_WORKERS = min(cpu_count() // (4 * max(NUM_GPUS, 1)), 6)
 MAX_MICRO_BATCH_SIZE = 512
+DEFAULT_MAL_SGDM_CONFIG = "False,1.0,False,replace,False"
 
 
 def configure_cuda_precision(
@@ -107,6 +108,8 @@ def train_val_model(
     best_val_epoch = 0
     epochs_to_target = epochs + 1
     target_reached = False
+    diverged = False
+    divergence_epoch = None
 
     print(f"Starting training on {next(model.parameters()).device} with {'AMP ' + str(amp_dtype) if amp_enabled else 'float32'}")
     optimizer_step = 0
@@ -134,6 +137,12 @@ def train_val_model(
                     label_smoothing=label_smoothing,
                 )
 
+            if not torch.isfinite(loss):
+                diverged = True
+                divergence_epoch = epoch
+                print(f"Non-finite loss at epoch {epoch}, micro-batch {micro_batch_index}; marking the run diverged.")
+                break
+
             (loss / grad_accumulation_steps).backward()
 
             if micro_batch_index % grad_accumulation_steps == 0:
@@ -148,6 +157,9 @@ def train_val_model(
             n_batch = y.size(0)
             n_samples += n_batch
             epoch_loss += loss.item() * n_batch
+
+        if diverged:
+            break
 
         val_acc = eval_model(
             model,
@@ -176,6 +188,7 @@ def train_val_model(
                 "epoch": epoch,
                 "AUC": AUC / epochs,
                 "rise": rise,
+                "lr": opt.param_groups[0]["lr"],
             },
         )
 
@@ -184,7 +197,50 @@ def train_val_model(
     run.summary["best_val_acc"] = round(best_val_acc, 2)
     run.summary["best_train_loss"] = round(best_train_loss, 2)
     run.summary["best_val_epoch"] = best_val_epoch
-    return best_model
+    run.summary["val_auc"] = AUC / epochs
+    run.summary["diverged"] = int(diverged)
+    if divergence_epoch is not None:
+        run.summary["divergence_epoch"] = divergence_epoch
+    return best_model, diverged
+
+
+def resolve_optimizer_case(config) -> tuple[str, str, str]:
+    """Resolve a non-Cartesian optimizer case used by the heatmap sweeps.
+
+    A combined case prevents irrelevant MAL configurations from multiplying
+    every non-MAL optimizer in a W&B grid.  Legacy sweeps that provide separate
+    ``optimizer`` and ``MAL_config`` keys remain supported.
+    """
+    raw_mal_config = str(config.get("MAL_config", DEFAULT_MAL_SGDM_CONFIG))
+    optimizer_case = str(config.get("optimizer_case", "")).strip()
+    if not optimizer_case:
+        return str(config.optimizer), raw_mal_config, str(config.optimizer)
+
+    fields = optimizer_case.split("::", maxsplit=2)
+    if len(fields) == 1:
+        return fields[0], raw_mal_config, fields[0]
+    if len(fields) != 3 or fields[0] != "MAL_SGDM":
+        raise ValueError(
+            "optimizer_case must be an optimizer name or "
+            "'MAL_SGDM::<variant-label>::<MAL_config>'."
+        )
+    return fields[0], fields[2], fields[1]
+
+
+def split_weight_decay_params(model: nn.Module, weight_decay: float) -> list[dict[str, Any]]:
+    """Match the repository optimizers' bias/norm weight-decay exemption."""
+    decay: list[nn.Parameter] = []
+    no_decay: list[nn.Parameter] = []
+    for parameter in model.parameters():
+        if not parameter.requires_grad:
+            continue
+        (no_decay if parameter.ndim <= 1 else decay).append(parameter)
+    groups: list[dict[str, Any]] = []
+    if no_decay:
+        groups.append({"params": no_decay, "weight_decay": 0.0})
+    if decay:
+        groups.append({"params": decay, "weight_decay": weight_decay})
+    return groups
 
 
 @torch.inference_mode()
@@ -341,15 +397,15 @@ def main():
 
     config = run.config
 
-    optimizer = config.optimizer
-    nest = config.nesterov
+    optimizer, raw_mal_config, optimizer_variant = resolve_optimizer_case(config)
+    nest = bool(config.get("nesterov", False))
     bs = config.batch_size
     lr = config.lr
     weight_decay = config.weight_decay
     seed = config.seed
     use_scheduler = config.use_scheduler
 
-    mal_fields = config.MAL_config.split(",")
+    mal_fields = raw_mal_config.split(",")
     if len(mal_fields) == 4:
         in_place, pwr, scale, gate_mode = mal_fields
         descent_safeguard = False
@@ -370,14 +426,24 @@ def main():
         "gate_mode": gate_mode,
         "descent_safeguard": descent_safeguard,
     }
-    run.config.update(MAL_config, allow_val_change=True)
+    run.config.update(
+        {
+            "optimizer": optimizer,
+            "optimizer_variant": optimizer_variant,
+            "MAL_config": raw_mal_config,
+            **MAL_config,
+        },
+        allow_val_change=True,
+    )
     if optimizer == "AM_MSGD":
         run.config.update({"am_beta_max": BETA, "am_model_lambda": 0.1}, allow_val_change=True)
         run.name = f"{optimizer}_bmax:{BETA}_lambda:0.1_bs:{bs}_{lr}_{seed}"
-    else:
+    elif optimizer == "MAL_SGDM":
         run.name = (
-            f"{optimizer}_inp:{str(in_place)[0]}_pwr:{pwr}_scl:{str(scale)[0]}_gate:{gate_mode}_dsg:{str(descent_safeguard)[0]}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
+            f"{optimizer}_{optimizer_variant}_inp:{str(in_place)[0]}_pwr:{pwr}_scl:{str(scale)[0]}_gate:{gate_mode}_dsg:{str(descent_safeguard)[0]}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
         )
+    else:
+        run.name = f"{optimizer}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
     if bs >= 2 * MAX_MICRO_BATCH_SIZE:
         if bs % MAX_MICRO_BATCH_SIZE != 0:
             raise ValueError(f"Batch size {bs} must be divisible by {MAX_MICRO_BATCH_SIZE} for gradient accumulation.")
@@ -460,9 +526,9 @@ def main():
 
     elif optimizer == "SGDM":
         optimizer = SGD(
-            model.parameters(),
+            split_weight_decay_params(model, weight_decay),
             lr=lr,
-            weight_decay=weight_decay,
+            weight_decay=0.0,
             momentum=BETA,
             dampening=0.0,
             nesterov=nest,
@@ -528,7 +594,7 @@ def main():
         milestones=[warmup_steps],
     )
 
-    best_model = train_val_model(
+    best_model, diverged = train_val_model(
         model,
         optimizer,
         args.epochs,
@@ -543,13 +609,21 @@ def main():
         grad_accumulation_steps=grad_accumulation_steps,
     )
 
-    model.load_state_dict(best_model)
-    test_acc = eval_model(
-        model,
-        test_loader,
-        amp_dtype=amp_dtype,
-        amp_enabled=amp_enabled,
-    )
+    if diverged:
+        # Keep numerically unstable cells in the completed heatmap with an
+        # explicit zero score, rather than crashing the W&B grid or evaluating
+        # an arbitrary pre-divergence checkpoint.
+        test_acc = 0.0
+    else:
+        if not best_model:
+            raise RuntimeError("Training completed without producing a validation checkpoint.")
+        model.load_state_dict(best_model)
+        test_acc = eval_model(
+            model,
+            test_loader,
+            amp_dtype=amp_dtype,
+            amp_enabled=amp_enabled,
+        )
     run.summary["test_acc"] = round(test_acc, 2)
 
     run.finish(exit_code=0)

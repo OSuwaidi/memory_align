@@ -2,6 +2,7 @@
 
 Examples::
 
+    uv run download_datasets.py --task cifar10
     uv run download_datasets.py --task cifar100
     uv run download_datasets.py --task tiny-imagenet
     uv run download_datasets.py --task llm
@@ -30,6 +31,10 @@ CIFAR100_URL = "https://huggingface.co/datasets/nakroy/cifar100-python/resolve/m
 CIFAR100_MD5 = "eb9058c3a382ffc7106e4002c42a8d85"
 CIFAR100_ARCHIVE = "cifar-100-python.tar.gz"
 CIFAR100_DIRECTORY = "cifar-100-python"
+CIFAR10_URL = "https://huggingface.co/datasets/VerisimilitudeX/cifar10/resolve/main/cifar-10-python.tar.gz"
+CIFAR10_MD5 = "c58f30108f718f92721af3b95e74349a"
+CIFAR10_ARCHIVE = "cifar-10-python.tar.gz"
+CIFAR10_DIRECTORY = "cifar-10-batches-py"
 
 
 def file_md5(path: Path) -> str:
@@ -182,6 +187,42 @@ def download_cifar100(parent_dir: Path, *, keep_archive: bool) -> Path:
     return dataset_root
 
 
+def download_cifar10(parent_dir: Path, *, keep_archive: bool) -> Path:
+    """Populate torchvision's CIFAR-10 layout using a verified HF mirror."""
+    from torchvision.datasets import CIFAR10
+
+    parent_dir = parent_dir.expanduser().resolve()
+    dataset_root = parent_dir / CIFAR10_DIRECTORY
+    try:
+        CIFAR10(root=str(parent_dir), train=True, download=False)
+        CIFAR10(root=str(parent_dir), train=False, download=False)
+    except RuntimeError:
+        archive_path = parent_dir / CIFAR10_ARCHIVE
+        if archive_path.exists():
+            checksum = file_md5(archive_path)
+            if checksum != CIFAR10_MD5:
+                raise ValueError(
+                    f"Existing archive has MD5 {checksum}, expected {CIFAR10_MD5}: "
+                    f"{archive_path}. Remove or rename it before retrying."
+                )
+            print(f"Using verified existing archive {archive_path}")
+        else:
+            print(f"Downloading CIFAR-10 from {CIFAR10_URL}")
+            download_file(CIFAR10_URL, archive_path)
+            checksum = file_md5(archive_path)
+            if checksum != CIFAR10_MD5:
+                archive_path.unlink(missing_ok=True)
+                raise ValueError(f"Downloaded CIFAR-10 MD5 {checksum}; expected {CIFAR10_MD5}.")
+
+        CIFAR10(root=str(parent_dir), train=True, download=True)
+        CIFAR10(root=str(parent_dir), train=False, download=True)
+        if not keep_archive:
+            archive_path.unlink(missing_ok=True)
+
+    print(f"CIFAR-10 is ready at {dataset_root}")
+    return dataset_root
+
+
 def prefetch_llm_assets(
     cache_dir: Path,
     *,
@@ -223,7 +264,8 @@ def prefetch_llm_assets(
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--task", choices=("cifar100", "tiny-imagenet", "llm", "all"), default="all")
+    parser.add_argument("--task", choices=("cifar10", "cifar100", "tiny-imagenet", "llm", "all"), default="all")
+    parser.add_argument("--cifar10_dir", "--cifar10-dir", default="./data")
     parser.add_argument("--cifar100_dir", "--cifar100-dir", default="./data")
     parser.add_argument("--tiny_imagenet_dir", "--tiny-imagenet-dir", default="./data")
     parser.add_argument("--keep_archive", "--keep-archive", action="store_true")
@@ -243,6 +285,8 @@ def main() -> int:
     if args.sequence_length <= 1:
         parser.error("--sequence_length must be greater than one.")
 
+    if args.task in ("cifar10", "all"):
+        download_cifar10(Path(args.cifar10_dir), keep_archive=args.keep_archive)
     if args.task in ("cifar100", "all"):
         download_cifar100(Path(args.cifar100_dir), keep_archive=args.keep_archive)
     if args.task in ("tiny-imagenet", "all"):

@@ -21,9 +21,9 @@ PROBE_EVERY = 50
 SEEDS = (42, 1337, 2026)
 BASE_LRS = (0.1, 0.3)
 WEIGHT_DECAYS = (1e-4, 5e-4)
-BATCH_SIZES = (4096, 256)
+BATCH_SIZES = (256, 1024)
 USE_SCHEDULER = (True,)
-MAL_CONFIGS = ("False,1.0,True,attenuate,False",)
+DEFAULT_MAL_CONFIG = "False,1.0,False,replace,False"
 
 
 def get_finished_run_ids(project_name: str, sweep_ids: list[str]) -> list[str]:
@@ -52,6 +52,12 @@ def main() -> int:
     parser.add_argument("--amp_dtype", "--amp-dtype", choices=("bfloat16", "float32"), default="bfloat16")
     parser.add_argument("--float32_precision", "--float32-precision", choices=("tf32", "ieee"), default="tf32")
     parser.add_argument("--output_dir", "--output-dir", default="./outputs/mae")
+    parser.add_argument(
+        "--mal_config",
+        "--mal-config",
+        default=DEFAULT_MAL_CONFIG,
+        help="Single MAL-SGDM configuration selected by the preceding heatmap.",
+    )
     args = parser.parse_args()
 
     sweep_configuration = {
@@ -61,7 +67,7 @@ def main() -> int:
         "metric": {"name": "probe/val_acc", "goal": "maximize"},
         "parameters": {
             "optimizer": {"values": ("SGDM", "AM_MSGD", "CAUTIOUS_SGDM", "TAM_SGDM", "MAL_SGDM")},
-            "MAL_config": {"values": MAL_CONFIGS},
+            "MAL_config": {"values": (args.mal_config,)},
             "nesterov": {"values": (False,)},
             "batch_size": {"values": BATCH_SIZES},
             "base_lr": {"values": BASE_LRS},
@@ -108,6 +114,8 @@ def main() -> int:
         sweep=sweep_configuration,
         prior_runs=prior_run_ids,
     )
+    expected_runs = 5 * len(BATCH_SIZES) * len(BASE_LRS) * len(WEIGHT_DECAYS) * len(SEEDS)
+    print(f"EXPECTED_RUNS={expected_runs}")
     print(f"Run with:\n$ uv run wandb agent --forward-signals {ENTITY_NAME}/{args.project_name}/{sweep_id}")
     return 0
 

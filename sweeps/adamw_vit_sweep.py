@@ -1,4 +1,4 @@
-"""Create the MAL-AdamW structural-selection sweep on MAE ViT-Tiny/Tiny-ImageNet."""
+"""Create the AdamW-family benchmark sweep on MAE ViT-Tiny/Tiny-ImageNet."""
 
 from __future__ import annotations
 
@@ -20,23 +20,10 @@ WARMUP_EPOCHS = 15
 PROBE_EVERY = 50
 SEEDS = (42, 1337, 2026)
 BASE_LRS = (1.5e-4, 1e-3)
-WEIGHT_DECAYS = (0.05,)  # (5e-2, 1e-3)
-BATCH_SIZES = (1024,)
+WEIGHT_DECAYS = (5e-2, 1e-3)
+BATCH_SIZES = (256, 1024)
 USE_SCHEDULER = (True,)
-
-# Deliberate structural ablations, not a full Cartesian product. ``metric`` is
-# the theory-facing AdamW geometry; the final three entries compare the other
-# coherent geometries without combining them with every gate/state choice.
-# Fields: in_place,pwr,scale,gate_mode,descent_safeguard,align
-MAL_CONFIGS = (
-    "False,1.0,step,attenuate,False,metric",  # canonical: pure direction correction
-    "False,1.0,step,attenuate,False,white",  # historical whitened geometry
-    "False,1.0,step,attenuate,True,metric",  # canonical + first-order safeguard
-    "False,1.0,none,attenuate,False,metric",  # allow alignment to alter step norm
-    "False,1.0,step,replace,False,metric",  # historical MAL coefficient rule
-    "True,0.5,step,replace,False,metric",  # recursive adaptive state ablation
-    "False,1.0,moment,attenuate,False,moment",  # coherent raw-moment geometry
-)
+DEFAULT_MAL_CONFIG = "False,1.0,moment,replace,False,moment"
 
 
 def get_finished_run_ids(project_name: str, sweep_ids: list[str]) -> list[str]:
@@ -65,6 +52,12 @@ def main() -> int:
     parser.add_argument("--amp_dtype", "--amp-dtype", choices=("bfloat16", "float32"), default="bfloat16")
     parser.add_argument("--float32_precision", "--float32-precision", choices=("tf32", "ieee"), default="tf32")
     parser.add_argument("--output_dir", "--output-dir", default="./outputs/mae")
+    parser.add_argument(
+        "--mal_config",
+        "--mal-config",
+        default=DEFAULT_MAL_CONFIG,
+        help="Single shipped MAL-AdamW configuration.",
+    )
     args = parser.parse_args()
 
     sweep_configuration = {
@@ -75,14 +68,14 @@ def main() -> int:
         "parameters": {
             "optimizer": {
                 "values": (
-                    # "AdamW",
-                    # "AM_AdamW",
-                    # "CAUTIOUS_AdamW",
-                    # "AdaTAMW",
+                    "AdamW",
+                    "AM_AdamW",
+                    "CAUTIOUS_AdamW",
+                    "AdaTAMW",
                     "MAL_AdamW",
                 )
             },
-            "MAL_config": {"values": MAL_CONFIGS},
+            "MAL_config": {"values": (args.mal_config,)},
             "batch_size": {"values": BATCH_SIZES},
             "base_lr": {"values": BASE_LRS},
             "weight_decay": {"values": WEIGHT_DECAYS},
@@ -132,6 +125,8 @@ def main() -> int:
         sweep=sweep_configuration,
         prior_runs=prior_run_ids,
     )
+    expected_runs = 5 * len(BATCH_SIZES) * len(BASE_LRS) * len(WEIGHT_DECAYS) * len(SEEDS)
+    print(f"EXPECTED_RUNS={expected_runs}")
     print(f"Run with:\n$ uv run wandb agent --forward-signals {ENTITY_NAME}/{args.project_name}/{sweep_id}")
     return 0
 
