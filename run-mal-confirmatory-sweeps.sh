@@ -214,13 +214,15 @@ prepare_inputs
 SWEEP_RECORD="$MEMORY_ALIGN_PROJECT/logs/adamw-structure-sweep-${SLURM_JOB_ID}.env"
 : >"$SWEEP_RECORD"
 
-# 60 runs: three matched MAL-AdamW structures x two base LRs x two
-# scheduler conditions x five seeds. No MAE/LLM benchmark is launched here.
+# 120 runs: three alignment geometries x two fresh-gradient weighting rules x
+# two base LRs x two scheduler conditions x five seeds. Every configuration is
+# transient, unscaled, and attenuation-only. No MAE/LLM benchmark is launched
+# here; the winning structure is frozen before those benchmark tasks.
 run_phase \
     adamw-gradient-weight \
     "mal-adamw-gradient-weight-${SLURM_JOB_ID}" \
     mal-adamw-structure \
     ADAMW_STRUCTURE_SWEEP_PATH \
-    60
+    120
 
 echo "MAL-AdamW structural sweep completed successfully. Sweep path: $SWEEP_RECORD"

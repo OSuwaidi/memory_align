@@ -1,3 +1,4 @@
+import copy
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -9,13 +10,15 @@ def get_norms_and_eff_beta(
     g: torch.Tensor,
     probe: torch.Tensor,
     pwr: float,
-    eps: float = 1e-7,
+    eps: float = 1e-8,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     g_norm = torch.linalg.vector_norm(g)
     probe_norm = torch.linalg.vector_norm(probe)
     dot = torch.dot(g.flatten(), probe.flatten())
 
-    denominator = (g_norm * probe_norm) + eps
+    # Preserve the true cosine whenever both vectors are numerically non-zero;
+    # adding eps unconditionally makes the gate depend on their absolute scale.
+    denominator = g_norm.clamp_min(eps) * probe_norm.clamp_min(eps)
     cosine_sim = (dot / denominator).clamp(-1.0, 1.0)
 
     return g_norm, probe_norm, ((1.0 + cosine_sim) * 0.5) ** pwr
@@ -28,6 +31,17 @@ def _apply_gate(base_beta: float, gate: torch.Tensor, gate_mode: str) -> torch.T
     if gate_mode == "replace":
         return gate
     raise ValueError(f"Invalid gate_mode value: {gate_mode}")
+
+
+def _copy_state_dict_for_migration(state_dict: dict[str, Any]) -> dict[str, Any]:
+    """Copy checkpoint containers without duplicating potentially large tensors."""
+    migrated = state_dict.copy()
+    migrated["param_groups"] = copy.deepcopy(state_dict["param_groups"])
+    migrated["state"] = {
+        parameter_id: parameter_state.copy() if isinstance(parameter_state, dict) else parameter_state
+        for parameter_id, parameter_state in state_dict.get("state", {}).items()
+    }
+    return migrated
 
 
 class MAL_SGDM(Optimizer):
@@ -136,6 +150,28 @@ class MAL_SGDM(Optimizer):
             "gate_mode": gate_mode,
         }  # shared across all optim/param groups
         super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        """Load current checkpoints and migrate the former group-list layout."""
+        migrated = _copy_state_dict_for_migration(state_dict)
+        state = migrated.setdefault("state", {})
+        for group in migrated["param_groups"]:
+            removed_safeguard = group.pop("descent_safeguard", False)
+            if removed_safeguard:
+                raise ValueError("Cannot load a checkpoint with the removed descent safeguard enabled.")
+            if group.get("gate_mode", self.defaults["gate_mode"]) not in ("replace", "attenuate"):
+                raise ValueError(f"Unsupported MAL-SGDM gate_mode in checkpoint: {group.get('gate_mode')}")
+
+            legacy_momentum = group.pop("momentum", None)
+            if legacy_momentum is not None:
+                if len(legacy_momentum) != len(group["params"]):
+                    raise ValueError("Legacy MAL-SGDM checkpoint has inconsistent momentum state.")
+                for parameter_id, momentum_buffer in zip(group["params"], legacy_momentum, strict=True):
+                    state.setdefault(parameter_id, {})["momentum_buffer"] = momentum_buffer
+
+            for key, default in self.defaults.items():
+                group.setdefault(key, default)
+        super().load_state_dict(migrated)
 
     @torch.no_grad()
     def step(self, closure: Callable[[], float | torch.Tensor] | None = None) -> Any:
@@ -374,6 +410,55 @@ class MAL_AdamW(Optimizer):
             "gradient_weight_mode": gradient_weight_mode,
         }
         super().__init__(optim_groups, defaults)
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        """Load current checkpoints and migrate the former group-list layout."""
+        migrated = _copy_state_dict_for_migration(state_dict)
+        state = migrated.setdefault("state", {})
+        legacy_state_keys = {
+            "m": "exp_avg",
+            "v": "exp_avg_sq",
+            "r": "first_moment_weight",
+            "step": "step",
+        }
+        for group in migrated["param_groups"]:
+            removed_safeguard = group.pop("descent_safeguard", False)
+            if removed_safeguard:
+                raise ValueError("Cannot load a checkpoint with the removed descent safeguard enabled.")
+
+            legacy_values = {key: group.pop(key, None) for key in legacy_state_keys}
+            present_legacy_keys = {key for key, values in legacy_values.items() if values is not None}
+            if present_legacy_keys and present_legacy_keys != set(legacy_state_keys):
+                raise ValueError("Legacy MAL-AdamW checkpoint has incomplete optimizer state.")
+            if present_legacy_keys:
+                if any(len(values) != len(group["params"]) for values in legacy_values.values()):
+                    raise ValueError("Legacy MAL-AdamW checkpoint has inconsistent optimizer state.")
+                for index, parameter_id in enumerate(group["params"]):
+                    parameter_state = state.setdefault(parameter_id, {})
+                    for legacy_key, state_key in legacy_state_keys.items():
+                        parameter_state[state_key] = legacy_values[legacy_key][index]
+
+            group.setdefault("gradient_weight_mode", "fixed")
+            gradient_weight_mode = group["gradient_weight_mode"]
+            if gradient_weight_mode not in ("fixed", "complement"):
+                raise ValueError(f"Checkpoint has unsupported gradient_weight_mode: {gradient_weight_mode}")
+            gate_mode = group.get("gate_mode", self.defaults["gate_mode"])
+            if gate_mode not in ("replace", "attenuate"):
+                raise ValueError(f"Unsupported MAL-AdamW gate_mode in checkpoint: {gate_mode}")
+            if gradient_weight_mode == "complement" and gate_mode != "attenuate":
+                raise ValueError('gradient_weight_mode="complement" requires gate_mode="attenuate"')
+
+            scale = group.get("scale", self.defaults["scale"])
+            if isinstance(scale, bool):
+                group["scale"] = "step" if scale else "none"
+            elif scale not in ("step", "moment", "none"):
+                raise ValueError(f"Unsupported MAL-AdamW scale in checkpoint: {scale}")
+            if group.get("align", self.defaults["align"]) not in ("update", "metric", "white", "moment"):
+                raise ValueError(f"Unsupported MAL-AdamW align in checkpoint: {group.get('align')}")
+
+            for key, default in self.defaults.items():
+                group.setdefault(key, default)
+        super().load_state_dict(migrated)
 
     @torch.no_grad()
     def step(self, closure: Callable[[], float | torch.Tensor] | None = None) -> Any:

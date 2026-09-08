@@ -3,8 +3,9 @@
 These are not broader hyperparameter searches.  They carry forward only the
 structures that remained competitive after CIFAR-100/ResNet-50 and
 Tiny-ImageNet/MAE selection, and evaluate them on supervised Tiny-ImageNet with
-new seeds and held-out test accuracy. The AdamW gradient-weight experiment also
-isolates the adaptive-complement recurrence before the full MAE/LLM benchmarks.
+new seeds and held-out test accuracy. The AdamW structure experiment isolates
+alignment geometry and fresh-gradient weighting before the full MAE/LLM
+benchmarks.
 """
 
 from __future__ import annotations
@@ -21,11 +22,13 @@ SEEDS = (17, 73, 211, 997, 4099)
 T_REP_U_SGDM = "False,1.0,False,replace"
 T_REP_N_SGDM = "False,1.0,True,replace"
 
-T_REP_U_ADAMW = "False,1.0,none,replace,metric,fixed"
-T_REP_N_ADAMW = "False,1.0,step,replace,metric,fixed"
-T_REP_M_ADAMW = "False,1.0,moment,replace,moment,fixed"
-T_ATT_M_ADAMW = "False,1.0,moment,attenuate,moment,fixed"
-T_ATT_M_COMPLEMENT_ADAMW = "False,1.0,moment,attenuate,moment,complement"
+ADAMW_ALIGNMENTS = ("metric", "update", "moment")
+ADAMW_GRADIENT_WEIGHT_MODES = ("fixed", "complement")
+ADAMW_STRUCTURE_CONFIGS = tuple(
+    f"False,1.0,none,attenuate,{align},{gradient_weight_mode}"
+    for align in ADAMW_ALIGNMENTS
+    for gradient_weight_mode in ADAMW_GRADIENT_WEIGHT_MODES
+)
 
 
 def _common_command(args: argparse.Namespace) -> list[str]:
@@ -92,11 +95,14 @@ def build_sweep_configuration(args: argparse.Namespace) -> dict[str, Any]:
     if args.experiment == "adamw-vit":
         return {
             **common,
+            # Select structure on the held-out training split; test accuracy is
+            # logged once from the validation-selected checkpoint.
+            "metric": {"name": "selection_val_acc", "goal": "maximize"},
             "parameters": {
                 "optimizer": {"values": ("MAL_AdamW",)},
-                "MAL_config": {"values": (T_REP_U_ADAMW, T_REP_N_ADAMW, T_REP_M_ADAMW)},
-                "batch_size": {"values": (128,)},
-                "base_lr": {"values": (5e-4,)},
+                "MAL_config": {"values": ADAMW_STRUCTURE_CONFIGS},
+                "batch_size": {"values": (256,)},
+                "base_lr": {"values": (5e-4, 1e-3)},
                 "weight_decay": {"values": (0.05,)},
                 "seed": {"values": SEEDS},
                 "use_scheduler": {"values": (True, False)},
@@ -131,17 +137,11 @@ def build_sweep_configuration(args: argparse.Namespace) -> dict[str, Any]:
             "metric": {"name": "selection_val_acc", "goal": "maximize"},
             "parameters": {
                 "optimizer": {"values": ("MAL_AdamW",)},
-                # A matched comparison around the surviving raw-moment bundle:
-                # replacement anchor, attenuation with the historical fresh-
-                # gradient weight, and attenuation with the adaptive complement.
-                "MAL_config": {
-                    "values": (
-                        T_REP_M_ADAMW,
-                        T_ATT_M_ADAMW,
-                        T_ATT_M_COMPLEMENT_ADAMW,
-                    )
-                },
-                "batch_size": {"values": (128,)},
+                # Factorial matched comparison: three defensible alignment
+                # geometries x historical/adaptive fresh-gradient weighting.
+                # Scaling and replacement are intentionally excluded.
+                "MAL_config": {"values": ADAMW_STRUCTURE_CONFIGS},
+                "batch_size": {"values": (256,)},
                 "base_lr": {"values": (5e-4, 1e-3)},
                 "weight_decay": {"values": (0.05,)},
                 "seed": {"values": SEEDS},
