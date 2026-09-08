@@ -19,13 +19,13 @@ SEEDS = (42, 1337, 2026)
 # T-Att/U = transient attenuation without norm preservation
 # T-Rep/U = transient replacement without norm preservation
 # T-Rep/N = transient replacement with norm preservation
-T_ATT_U_SGDM = "False,1.0,False,attenuate,False"
-T_REP_U_SGDM = "False,1.0,False,replace,False"
-T_REP_N_SGDM = "False,1.0,True,replace,False"
-T_ATT_U_ADAMW = "False,1.0,none,attenuate,False,metric"
-T_REP_U_ADAMW = "False,1.0,none,replace,False,metric"
-T_REP_N_ADAMW = "False,1.0,step,replace,False,metric"
-T_REP_M_ADAMW = "False,1.0,moment,replace,False,moment"
+T_ATT_U_SGDM = "False,1.0,False,attenuate"
+T_REP_U_SGDM = "False,1.0,False,replace"
+T_REP_N_SGDM = "False,1.0,True,replace"
+T_ATT_U_ADAMW = "False,1.0,none,attenuate,metric,fixed"
+T_REP_U_ADAMW = "False,1.0,none,replace,metric,fixed"
+T_REP_N_ADAMW = "False,1.0,step,replace,metric,fixed"
+T_REP_M_ADAMW = "False,1.0,moment,replace,moment,fixed"
 
 
 def _sgdm_command(args: argparse.Namespace) -> list[str]:

@@ -1,9 +1,10 @@
-"""Create the final, external-validation MAL structure sweeps.
+"""Create compact, external-validation MAL structure sweeps.
 
 These are not broader hyperparameter searches.  They carry forward only the
 structures that remained competitive after CIFAR-100/ResNet-50 and
 Tiny-ImageNet/MAE selection, and evaluate them on supervised Tiny-ImageNet with
-new seeds and held-out test accuracy.
+new seeds and held-out test accuracy. The AdamW gradient-weight experiment also
+isolates the adaptive-complement recurrence before the full MAE/LLM benchmarks.
 """
 
 from __future__ import annotations
@@ -17,12 +18,14 @@ ENTITY_NAME = "osuwaidi-khalifa-university"
 PROJECT_NAME = "MAL_benchmark"
 SEEDS = (17, 73, 211, 997, 4099)
 
-T_REP_U_SGDM = "False,1.0,False,replace,False"
-T_REP_N_SGDM = "False,1.0,True,replace,False"
+T_REP_U_SGDM = "False,1.0,False,replace"
+T_REP_N_SGDM = "False,1.0,True,replace"
 
-T_REP_U_ADAMW = "False,1.0,none,replace,False,metric"
-T_REP_N_ADAMW = "False,1.0,step,replace,False,metric"
-T_REP_M_ADAMW = "False,1.0,moment,replace,False,moment"
+T_REP_U_ADAMW = "False,1.0,none,replace,metric,fixed"
+T_REP_N_ADAMW = "False,1.0,step,replace,metric,fixed"
+T_REP_M_ADAMW = "False,1.0,moment,replace,moment,fixed"
+T_ATT_M_ADAMW = "False,1.0,moment,attenuate,moment,fixed"
+T_ATT_M_COMPLEMENT_ADAMW = "False,1.0,moment,attenuate,moment,complement"
 
 
 def _common_command(args: argparse.Namespace) -> list[str]:
@@ -120,13 +123,63 @@ def build_sweep_configuration(args: argparse.Namespace) -> dict[str, Any]:
             ],
         }
 
+    if args.experiment == "adamw-gradient-weight":
+        return {
+            **common,
+            # Select structure on the held-out training split; test accuracy is
+            # still logged once from the validation-selected checkpoint.
+            "metric": {"name": "selection_val_acc", "goal": "maximize"},
+            "parameters": {
+                "optimizer": {"values": ("MAL_AdamW",)},
+                # A matched comparison around the surviving raw-moment bundle:
+                # replacement anchor, attenuation with the historical fresh-
+                # gradient weight, and attenuation with the adaptive complement.
+                "MAL_config": {
+                    "values": (
+                        T_REP_M_ADAMW,
+                        T_ATT_M_ADAMW,
+                        T_ATT_M_COMPLEMENT_ADAMW,
+                    )
+                },
+                "batch_size": {"values": (128,)},
+                "base_lr": {"values": (5e-4, 1e-3)},
+                "weight_decay": {"values": (0.05,)},
+                "seed": {"values": SEEDS},
+                "use_scheduler": {"values": (True, False)},
+            },
+            "command": [
+                *_common_command(args),
+                "--arch",
+                "vit_tiny_patch16_224",
+                "--pretrained",
+                "True",
+                "--image_size",
+                "224",
+                "--epochs",
+                "30",
+                "--val_acc_target",
+                "65",
+                "--max_micro_batch_size",
+                "64",
+                "--eval_batch_size",
+                "256",
+                "--beta2",
+                "0.999",
+                "${args}",
+            ],
+        }
+
     raise ValueError(f"Unknown experiment: {args.experiment}")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("program")
-    parser.add_argument("--experiment", choices=("sgdm-resnet50", "adamw-vit"), required=True)
+    parser.add_argument(
+        "--experiment",
+        choices=("sgdm-resnet50", "adamw-vit", "adamw-gradient-weight"),
+        required=True,
+    )
     parser.add_argument("--sweep_name", "--sweep-name", required=True)
     parser.add_argument("--project_name", "--project-name", default=PROJECT_NAME)
     parser.add_argument("--tiny_imagenet_dir", "--tiny-imagenet-dir", default="./data/tiny-imagenet-200")

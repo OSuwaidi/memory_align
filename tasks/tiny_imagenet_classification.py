@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import random
 import sys
 from multiprocessing import cpu_count
@@ -90,7 +91,7 @@ def configure_precision(
 
 
 def build_transforms(image_size: int) -> tuple[Any, Any]:
-    resize_size = int(round(image_size * 256 / 224))
+    resize_size = round(image_size * 256 / 224)
     train_transform = v2.Compose(
         (
             v2.RandomResizedCrop(
@@ -147,8 +148,11 @@ def build_datasets(
 
     official_validation = TinyImageNetAnnotatedVal(root / "val", raw_train.class_to_idx)
     train_transform, eval_transform = build_transforms(image_size)
-    train_dataset = TransformView(Subset(raw_train, train_indices.tolist()), train_transform)
-    validation_dataset = TransformView(Subset(raw_train, validation_indices.tolist()), eval_transform)
+    train_dataset = TransformView(Subset(raw_train, [int(index) for index in train_indices]), train_transform)
+    validation_dataset = TransformView(
+        Subset(raw_train, [int(index) for index in validation_indices]),
+        eval_transform,
+    )
     test_dataset = TransformView(official_validation, eval_transform)
     return train_dataset, validation_dataset, test_dataset, len(raw_train.classes), root
 
@@ -217,8 +221,12 @@ def validate_config(args: argparse.Namespace, config: Any, parser: argparse.Argu
         parser.error("MAL_SGDM requires the sweep parameter lr.")
     if str(config.optimizer) == "MAL_AdamW" and "base_lr" not in config:
         parser.error("MAL_AdamW requires the sweep parameter base_lr.")
-    if args.epochs <= 0 or args.warmup_epochs < 0 or args.epochs <= args.warmup_epochs:
-        parser.error("epochs must be positive and greater than warmup_epochs.")
+    if args.epochs <= 0:
+        parser.error("epochs must be positive.")
+    if args.warmup_epochs < 0:
+        parser.error("warmup_epochs must be non-negative.")
+    if parse_bool(config.use_scheduler) and args.epochs <= args.warmup_epochs:
+        parser.error("epochs must be greater than warmup_epochs when scheduling is enabled.")
     if int(config.batch_size) <= 0 or args.max_micro_batch_size <= 0:
         parser.error("batch sizes must be positive.")
     micro_batch_size = min(int(config.batch_size), args.max_micro_batch_size)
@@ -309,7 +317,8 @@ def main() -> int:
 
     micro_batch_size = min(batch_size, args.max_micro_batch_size)
     accumulation_steps = batch_size // micro_batch_size
-    num_workers = min(cpu_count(), 16) if args.num_workers < 0 else args.num_workers
+    allocated_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", cpu_count()))
+    num_workers = min(allocated_cpus, 16) if args.num_workers < 0 else args.num_workers
     eval_workers = min(num_workers, 6)
     train_loader = DataLoader(
         train_dataset,
@@ -369,6 +378,7 @@ def main() -> int:
     run.name = (
         f"{optimizer_name}_{args.arch}_inp{int(mal_config['in_place'])}_p{mal_config['pwr']:g}"
         f"_scl{str(mal_config['scale']).lower()}_g{mal_config['gate_mode']}_a{mal_align}"
+        f"_gw{mal_config['gradient_weight_mode']}"
         f"_sched{int(use_scheduler)}_lr{nominal_lr:g}_s{seed}"
     )
     run.define_metric("epoch")
@@ -393,7 +403,10 @@ def main() -> int:
     validation_accuracies: list[float] = []
     epoch_to_target = args.epochs + 1
     optimizer_step = 0
+    diverged = False
+    divergence_epoch: int | None = None
     exit_code = 0
+    run.summary["diverged"] = 0
     try:
         for epoch in trange(1, args.epochs + 1, desc="Supervised confirmation", unit="epoch"):
             model.train()
@@ -409,6 +422,12 @@ def main() -> int:
                 targets = targets.to(device, non_blocking=True)
                 with torch.amp.autocast(device.type, dtype=amp_dtype, enabled=amp_enabled):
                     loss = F.cross_entropy(model(images), targets, label_smoothing=args.label_smoothing)
+                if not torch.isfinite(loss):
+                    diverged = True
+                    divergence_epoch = epoch
+                    print(f"Non-finite loss at epoch {epoch}, micro-batch {micro_batch_index}; marking the run diverged.")
+                    optimizer.zero_grad(set_to_none=True)
+                    break
                 (loss / accumulation_steps).backward()
 
                 if micro_batch_index % accumulation_steps == 0:
@@ -428,6 +447,9 @@ def main() -> int:
                 examples += targets.size(0)
                 loss_sum += loss.item() * targets.size(0)
 
+            if diverged:
+                break
+
             train_loss = loss_sum / examples
             val_loss, val_acc = evaluate(
                 model,
@@ -436,6 +458,11 @@ def main() -> int:
                 amp_dtype=amp_dtype,
                 amp_enabled=amp_enabled,
             )
+            if not math.isfinite(val_loss) or not math.isfinite(val_acc):
+                diverged = True
+                divergence_epoch = epoch
+                print(f"Non-finite validation metrics at epoch {epoch}; marking the run diverged.")
+                break
             validation_accuracies.append(val_acc)
             if epoch_to_target == args.epochs + 1 and val_acc >= args.val_acc_target:
                 epoch_to_target = epoch
@@ -460,29 +487,47 @@ def main() -> int:
                     "best_val_acc": best_val_acc,
                     "best_val_loss": best_val_loss,
                     "best_val_epoch": best_val_epoch,
+                    "selection_val_acc": best_val_acc,
                     "epoch_to_target": epoch_to_target,
                     "target_reached": int(epoch_to_target <= args.epochs),
                 }
             )
 
-        if not best_state:
-            raise RuntimeError("Training completed without a validation checkpoint.")
-        model.load_state_dict(best_state)
-        test_loss, test_acc = evaluate(
-            model,
-            test_loader,
-            device=device,
-            amp_dtype=amp_dtype,
-            amp_enabled=amp_enabled,
-        )
-        run.summary.update(
-            {
-                "final_val_acc": validation_accuracies[-1],
-                "val_auc": float(np.mean(validation_accuracies)),
-                "test_loss": test_loss,
-                "test_acc": test_acc,
-            }
-        )
+        if diverged:
+            run.summary.update(
+                {
+                    "diverged": 1,
+                    "divergence_epoch": divergence_epoch,
+                    # Keep any pre-divergence best_val_acc for diagnosis, but
+                    # make numerical instability ineligible for selection.
+                    "selection_val_acc": 0.0,
+                    "final_val_acc": validation_accuracies[-1] if validation_accuracies else 0.0,
+                    "val_auc": float(np.mean(validation_accuracies)) if validation_accuracies else 0.0,
+                    "test_acc": 0.0,
+                }
+            )
+            if not best_state:
+                run.summary.update({"best_val_acc": 0.0, "best_val_epoch": 0})
+        else:
+            if not best_state:
+                raise RuntimeError("Training completed without a validation checkpoint.")
+            model.load_state_dict(best_state)
+            test_loss, test_acc = evaluate(
+                model,
+                test_loader,
+                device=device,
+                amp_dtype=amp_dtype,
+                amp_enabled=amp_enabled,
+            )
+            run.summary.update(
+                {
+                    "selection_val_acc": best_val_acc,
+                    "final_val_acc": validation_accuracies[-1],
+                    "val_auc": float(np.mean(validation_accuracies)),
+                    "test_loss": test_loss,
+                    "test_acc": test_acc,
+                }
+            )
     except BaseException:
         exit_code = 1
         raise

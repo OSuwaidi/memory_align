@@ -16,18 +16,14 @@ BATCH_SIZES = (256,)
 WEIGHT_DECAY = (5e-4,)
 USE_SCHEDULER = (True, False)
 
-# Deliberate one-axis ablations around the theory-facing configuration. The two
-# extra safeguarded gate variants test the only interaction most likely to alter
-# the conclusion: retaining more memory while enforcing first-order agreement.
-# Fields: in_place,pwr,scale,gate_mode,descent_safeguard
+# Deliberate one-axis ablations around the theory-facing configuration.
+# Fields: in_place,pwr,scale,gate_mode
 MAL_CONFIGS = (
-    "False,1.0,False,attenuate,False",  # canonical: transient, bounded memory gate
-    "False,1.0,False,attenuate,True",  # canonical + first-order descent safeguard
-    # "False,1.0,True,attenuate,False",  # preserve the fixed-beta probe norm
-    "False,1.0,False,replace,False",  # historical MAL coefficient replacement
-    "False,1.0,False,replace,True",  # historical rule + descent safeguard
-    "True,0.5,False,attenuate,False",  # recursive adaptive buffer ablation
-    "True,0.5,False,replace,False",  # recursive adaptive buffer ablation
+    "False,1.0,False,attenuate",  # canonical: transient, bounded memory gate
+    # "False,1.0,True,attenuate",  # preserve the fixed-beta probe norm
+    "False,1.0,False,replace",  # historical MAL coefficient replacement
+    "True,0.5,False,attenuate",  # recursive adaptive buffer ablation
+    "True,0.5,False,replace",  # recursive adaptive buffer ablation
 )
 
 
@@ -48,6 +44,13 @@ def add_training_args(parser: argparse.ArgumentParser) -> None:
         help="Architecture name",
     )
     parser.add_argument("--epochs", type=int, default=200)
+    parser.add_argument(
+        "--split_seed",
+        "--split-seed",
+        type=int,
+        default=20260901,
+        help="Fixed train/validation split seed, independent of the training seed.",
+    )
     parser.add_argument(
         "--val_acc_target",
         type=percentage,
@@ -80,7 +83,7 @@ def get_finished_run_ids(sweep_ids: list[str]) -> list[str]:
         path=f"{ENTITY_NAME}/{args.project_name}",
         filters={
             "sweep": {"$in": sweep_ids},
-            "state": {"$in": ["finished", "running"]},
+            "state": "finished",
         },
         per_page=100,
         lazy=True,
@@ -105,7 +108,7 @@ if __name__ == "__main__":
         "--method",
         type=str,
         default="grid",
-        choices=["grid", "random", "bayes"],
+        choices=["grid"],
         help="Sweep search method",
     )
     add_training_args(parser)
@@ -115,9 +118,10 @@ if __name__ == "__main__":
     sweep_configuration = {
         "program": args.program,
         "name": args.sweep_name,
-        "method": args.method,  # 'grid' tries every combination. Use 'bayes' or 'random' for large searches.
-        # Select structure only on the held-out training split; test_acc remains
-        # untouched until the winning configuration has been chosen.
+        "method": args.method,
+        # Drive the sweep from the validation split. The training task also
+        # reports held-out test accuracy for final analysis, never per-epoch
+        # checkpoint selection.
         "metric": {"name": "best_val_acc", "goal": "maximize"},
         "parameters": {
             "optimizer": {
@@ -150,6 +154,8 @@ if __name__ == "__main__":
             args.arch,
             "--epochs",
             str(args.epochs),
+            "--split_seed",
+            str(args.split_seed),
             "--val_acc_target",
             str(args.val_acc_target),
             "--amp_dtype",

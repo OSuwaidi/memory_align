@@ -18,13 +18,14 @@ ADAMW_OPTIMIZERS = ("AdamW", "AM_AdamW", "CAUTIOUS_AdamW", "AdaTAMW", "MAL_AdamW
 SEEDS = (42, 1337, 2026)
 BATCH_SIZES = (32,)
 LR_MULTIPLIERS = (0.3, 1.0, 3.0)
+DEFAULT_MAL_CONFIG = "False,1.0,step,attenuate,metric,fixed"
 
 
 def get_finished_run_ids(project_name: str, sweep_ids: list[str]) -> list[str]:
     api = wandb.Api()
     runs = api.runs(
         path=f"{ENTITY_NAME}/{project_name}",
-        filters={"sweep": {"$in": sweep_ids}, "state": {"$in": ["finished", "running"]}},
+        filters={"sweep": {"$in": sweep_ids}, "state": "finished"},
         per_page=100,
         lazy=True,
         include_sweeps=True,
@@ -39,11 +40,17 @@ def main() -> int:
     parser.add_argument("--project_name", "--project-name", required=True)
     parser.add_argument("--family", choices=("sgdm", "adamw", "all"), default="all")
     parser.add_argument("--prior_sweeps", "--prior-sweeps", nargs="+")
-    parser.add_argument("--method", choices=("grid", "random", "bayes"), default="grid")
+    parser.add_argument("--method", choices=("grid",), default="grid")
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--cache_dir", "--cache-dir", default="./data/llm_cache")
     parser.add_argument("--amp_dtype", "--amp-dtype", choices=("bfloat16", "float32"), default="bfloat16")
     parser.add_argument("--float32_precision", "--float32-precision", choices=("tf32", "ieee"), default="tf32")
+    parser.add_argument(
+        "--mal_config",
+        "--mal-config",
+        default=DEFAULT_MAL_CONFIG,
+        help="Single MAL configuration selected before the full LLM benchmark.",
+    )
     args = parser.parse_args()
 
     optimizers = {
@@ -95,7 +102,7 @@ def main() -> int:
             "--reference_batch_size",
             "32",
             "--weight_decay",
-            "0.0",
+            "0.01",
             "--max_grad_norm",
             "1.0",
             "--momentum",
@@ -103,9 +110,7 @@ def main() -> int:
             "--beta2",
             "0.999",
             "--MAL_config",
-            "False,1.0,True,attenuate,False",
-            "--mal_align",
-            "metric",
+            args.mal_config,
             "--amp_dtype",
             args.amp_dtype,
             "--float32_precision",
@@ -117,7 +122,7 @@ def main() -> int:
     prior_run_ids = None
     if args.prior_sweeps:
         prior_run_ids = get_finished_run_ids(args.project_name, args.prior_sweeps)
-        print(f"Adding {len(prior_run_ids)} finished/running runs from prior sweep(s): {args.prior_sweeps}")
+        print(f"Adding {len(prior_run_ids)} finished runs from prior sweep(s): {args.prior_sweeps}")
 
     sweep_id = wandb.sweep(
         entity=ENTITY_NAME,

@@ -29,7 +29,7 @@ from matplotlib.lines import Line2D
 from torch.optim import Optimizer
 
 from optims.am_opt import AM_MSGD
-from optims.cautious_opt import CAUTIOUS_SGD
+from optims.cautious_opt import C_SGDM
 from optims.mal_opt import MAL_SGDM
 from optims.tam_opt import TAM_SGDM
 
@@ -245,7 +245,7 @@ def optimizer_specs() -> tuple[OptimizerSpec, ...]:
         )
 
     def cautious_gdm(params: Iterable[torch.nn.Parameter], lr: float) -> Optimizer:
-        return CAUTIOUS_SGD(params, lr=lr, beta=MOMENTUM, weight_decay=0.0, nesterov=False)
+        return C_SGDM(params, lr=lr, beta=MOMENTUM, weight_decay=0.0, nesterov=False)
 
     def tam_gdm(params: Iterable[torch.nn.Parameter], lr: float) -> Optimizer:
         return TAM_SGDM(params, lr=lr, beta=MOMENTUM, gamma=0.9, torque_eps=1e-8, weight_decay=0.0)

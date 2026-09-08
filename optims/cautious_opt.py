@@ -1,11 +1,23 @@
 import warnings
-from typing import Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
 import torch
 from torch.optim import Optimizer
 
 
-class CAUTIOUS_SGD(Optimizer):
+def _step_as_int(value: Any) -> int:
+    if isinstance(value, torch.Tensor):
+        if value.numel() != 1:
+            raise ValueError("Optimizer step state must be scalar.")
+        value = value.item()
+    numeric_value = float(value)
+    if not numeric_value.is_integer() or numeric_value < 0.0:
+        raise ValueError(f"Optimizer step state must be a non-negative integer, got {value!r}.")
+    return int(numeric_value)
+
+
+class C_SGDM(Optimizer):
     def __init__(
         self,
         params: Iterable[torch.nn.Parameter],
@@ -45,7 +57,6 @@ class CAUTIOUS_SGD(Optimizer):
                 optim_groups.append(
                     {
                         "params": group_params,
-                        "momentum": [torch.zeros_like(p) for p in group_params],
                         "weight_decay": group_wd,
                     }
                 )
@@ -58,27 +69,36 @@ class CAUTIOUS_SGD(Optimizer):
         super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
 
     @torch.no_grad()
-    def step(self):
+    def step(self, closure: Callable[[], float | torch.Tensor] | None = None) -> Any:
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
         for group in self.param_groups:
             lr = group["lr"]
             wd = group["weight_decay"]
             beta = group["beta"]
             nesterov = group["nesterov"]
 
-            for p, m in zip(group["params"], group["momentum"]):
+            for p in group["params"]:
                 if p.grad is None:
                     continue
 
                 g = p.grad
+                state = self.state[p]
+                if "momentum_buffer" not in state:
+                    state["momentum_buffer"] = torch.zeros_like(p)
+                momentum = state["momentum_buffer"]
                 if wd > 0.0:
                     g = g.add(p, alpha=wd)
 
                 # Absorb current gradient into momentum:
-                m.mul_(beta).add_(g)
+                momentum.mul_(beta).add_(g)
 
                 # The cautious mask applies to the APPLIED update (the NAG look-ahead
                 # u = g + beta*m under Nesterov); the momentum buffer is never masked
-                u = torch.add(g, m, alpha=beta) if nesterov else m
+                u = torch.add(g, momentum, alpha=beta) if nesterov else momentum
 
                 mask = (u * g) > 0.0
                 scale = mask.numel() / (mask.sum() + 1.0)
@@ -86,15 +106,18 @@ class CAUTIOUS_SGD(Optimizer):
 
                 p.addcmul_(u, scaled_mask, value=-lr)
 
+        return loss
 
-class CAUTIOUS_ADAMW(Optimizer):
-    """C-AdamW (Cautious Optimizers, arXiv:2411.16085) for transformer training.
 
-    Faithful to the official implementation: the per-coordinate mask (m * g > 0) is
-    applied to the UPDATE only (the momentum/variance state is never masked), and the
-    surviving update is rescaled by ~1/mean(mask). Since the preconditioner is
-    positive, sign(m/denom) == sign(m), so masking m against g is exactly the paper's
-    update-vs-gradient criterion. Decoupled weight decay is applied unmasked (AdamW).
+class C_AdamW(Optimizer):
+    """C-AdamW using the original Cautious Optimizers paper recurrence.
+
+    The per-coordinate mask ``m * g > 0`` is applied only to the update; moment
+    state is never masked. This preserves the paper-original normalization
+    ``numel(mask) / (mask.sum() + 1)``. Later official-code variants use a
+    clamped inverse mask mean instead, so this class intentionally claims
+    fidelity to the published formula rather than exact parity with those
+    later variants. Decoupled weight decay remains unmasked, as in AdamW.
     """
 
     def __init__(
@@ -116,18 +139,12 @@ class CAUTIOUS_ADAMW(Optimizer):
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
 
-        self.beta1 = betas[0]
-        self.beta2 = betas[1]
-        self.eps = eps
-        self.t = 0  # global step count; assumes every param receives a grad each step
-
         decay_params: list[torch.nn.Parameter] = []
         no_decay_params: list[torch.nn.Parameter] = []
 
         for p in params:
             if not p.requires_grad:
                 continue
-            device = p.device
             # Exclude biases and 1D normalization parameters from weight decay
             if weight_decay == 0 or p.ndim <= 1:
                 no_decay_params.append(p)
@@ -144,39 +161,54 @@ class CAUTIOUS_ADAMW(Optimizer):
                 optim_groups.append(
                     {
                         "params": group_params,
-                        "m": [torch.zeros_like(p) for p in group_params],
-                        "v": [torch.zeros_like(p) for p in group_params],
                         "weight_decay": group_wd,
                     }
                 )
 
-        defaults = dict(lr=lr)  # shared across all optim/param groups
+        defaults = {"lr": lr, "betas": betas, "eps": eps}
         super().__init__(optim_groups, defaults)
 
     @torch.no_grad()
-    def step(self):
-        self.t += 1
-        bc1 = 1.0 - self.beta1**self.t
-        bc2_sqrt = (1.0 - self.beta2**self.t) ** 0.5
+    def step(self, closure: Callable[[], float | torch.Tensor] | None = None) -> Any:
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
 
         for group in self.param_groups:
             lr = group["lr"]
             wd = group["weight_decay"]
+            beta1, beta2 = group["betas"]
+            eps = group["eps"]
 
-            for p, m, v in zip(group["params"], group["m"], group["v"]):
+            for p in group["params"]:
                 if p.grad is None:
                     continue
 
                 g = p.grad
+                state = self.state[p]
+                if "exp_avg" not in state:
+                    state["exp_avg"] = torch.zeros_like(p)
+                if "exp_avg_sq" not in state:
+                    state["exp_avg_sq"] = torch.zeros_like(p)
+                state["step"] = _step_as_int(state.get("step", 0)) + 1
+                step = state["step"]
+                exp_avg = state["exp_avg"]
+                exp_avg_sq = state["exp_avg_sq"]
+
                 if wd > 0.0:
                     p.mul_(1.0 - lr * wd)  # decoupled decay; applied regardless of the mask
 
-                m.lerp_(g, 1.0 - self.beta1)
-                v.mul_(self.beta2).addcmul_(g, g, value=1.0 - self.beta2)
+                exp_avg.lerp_(g, 1.0 - beta1)
+                exp_avg_sq.mul_(beta2).addcmul_(g, g, value=1.0 - beta2)
 
-                mask = (m * g) > 0.0
+                mask = (exp_avg * g) > 0.0
                 scale = mask.numel() / (mask.sum() + 1.0)
-                scaled_mask = mask.to(m.dtype).mul_(scale)
+                scaled_mask = mask.to(exp_avg.dtype).mul_(scale)
 
-                u = m.div(v.sqrt().div_(bc2_sqrt).add_(self.eps)).mul_(scaled_mask)
-                p.add_(u, alpha=-lr / bc1)
+                bc1 = 1.0 - beta1**step
+                bc2_sqrt = (1.0 - beta2**step) ** 0.5
+                update = exp_avg.div(exp_avg_sq.sqrt().div_(bc2_sqrt).add_(eps)).mul_(scaled_mask)
+                p.add_(update, alpha=-lr / bc1)
+
+        return loss

@@ -209,8 +209,9 @@ class AM_AdamW(Optimizer):
     The first step has no previous iterate from which to estimate that function
     gap, so it uses ``beta1_max``.  This is also the limiting initialization
     that recovers AdamW's usual bias-corrected first step when ``lambda=0``.
-    A separate coefficient is computed per parameter tensor, matching the
-    efficient per-layer variant used for the paper's main experiments.
+    A separate coefficient is computed per parameter tensor. This is a
+    practical tensor-level approximation of the paper's per-layer variant;
+    parameters are not aggregated into explicit model-layer groups here.
 
     Weight decay is decoupled and, consistently with the other optimizers in
     this repository, is omitted for biases and one-dimensional normalization

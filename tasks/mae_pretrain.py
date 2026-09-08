@@ -6,13 +6,14 @@ optimizer family.  The encoder itself is assembled from timm's
 ``vit_tiny_patch16_224`` implementation with ``patch_size=8``.
 
 Populate the default data path first with
-``uv run tasks/download_datasets.py --task tiny-imagenet``.
+``uv run download_datasets.py --task tiny-imagenet``.
 """
 
 from __future__ import annotations
 
 import argparse
 import math
+import os
 import random
 import sys
 from collections.abc import Iterable
@@ -45,7 +46,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from optims.am_opt import AM_MSGD, AM_AdamW
-from optims.cautious_opt import CAUTIOUS_ADAMW, CAUTIOUS_SGD
+from optims.cautious_opt import C_SGDM, C_AdamW
 from optims.mal_opt import MAL_SGDM, MAL_AdamW
 from optims.tam_opt import TAM_SGDM, AdaTAMW
 
@@ -437,21 +438,30 @@ def split_weight_decay_params(model: nn.Module, weight_decay: float) -> list[dic
 
 
 def parse_mal_config(value: str) -> dict[str, Any]:
-    fields = value.split(",")
-    if len(fields) == 4:
-        in_place_text, pwr_text, scale_text, gate_mode = fields
-        descent_safeguard_text = "False"
-        align = None
-    elif len(fields) == 5:
-        in_place_text, pwr_text, scale_text, gate_mode, descent_safeguard_text = fields
-        align = None
-    elif len(fields) == 6:
-        in_place_text, pwr_text, scale_text, gate_mode, descent_safeguard_text, align = fields
-    else:
-        raise ValueError(
-            "MAL_config must be "
-            "'in_place,pwr,scale,gate_mode[,descent_safeguard[,align]]'."
-        )
+    """Parse the compact MAL sweep representation.
+
+    The current format is ``in_place,pwr,scale,gate_mode[,align[,gradient_weight_mode]]``.
+    Historical strings containing a fifth, false ``descent_safeguard`` field
+    remain readable so completed sweeps can be reproduced, but the removed
+    option cannot be enabled.
+    """
+    fields = [field.strip() for field in value.split(",")]
+    if not 4 <= len(fields) <= 7:
+        raise ValueError("MAL_config must be 'in_place,pwr,scale,gate_mode[,align[,gradient_weight_mode]]'.")
+
+    in_place_text, pwr_text, scale_text, gate_mode, *tail = fields
+    align = None
+    gradient_weight_mode = "fixed"
+
+    # Backward compatibility for old ...,[descent_safeguard[,align]] strings.
+    if tail and tail[0].lower() in {"true", "false"} and parse_bool(tail.pop(0)):
+        raise ValueError("MAL descent_safeguard was removed and can no longer be enabled.")
+    if tail:
+        align = tail.pop(0).lower()
+    if tail:
+        gradient_weight_mode = tail.pop(0).lower()
+    if tail:
+        raise ValueError("MAL_config contains too many fields.")
 
     scale_key = scale_text.strip().lower()
     if scale_key in {"true", "false"}:
@@ -466,12 +476,16 @@ def parse_mal_config(value: str) -> dict[str, Any]:
         "pwr": float(pwr_text),
         "scale": scale,
         "gate_mode": gate_mode,
-        "descent_safeguard": parse_bool(descent_safeguard_text),
+        "gradient_weight_mode": gradient_weight_mode,
     }
     if config["pwr"] not in (0.5, 1.0):
         raise ValueError("MAL pwr must be 0.5 or 1.0.")
-    if gate_mode not in ("replace", "attenuate", "cap"):
-        raise ValueError("MAL gate_mode must be replace, attenuate, or cap.")
+    if gate_mode not in ("replace", "attenuate"):
+        raise ValueError("MAL gate_mode must be replace or attenuate.")
+    if gradient_weight_mode not in ("fixed", "complement"):
+        raise ValueError("MAL gradient_weight_mode must be fixed or complement.")
+    if gradient_weight_mode == "complement" and gate_mode != "attenuate":
+        raise ValueError('MAL gradient_weight_mode="complement" requires gate_mode="attenuate".')
     if align is not None:
         align = align.strip().lower()
         if align not in MAL_ALIGN_CHOICES:
@@ -509,11 +523,14 @@ def build_optimizer(
     if name == "AM_MSGD":
         return AM_MSGD(parameters, lr=lr, beta_max=momentum, model_lambda=0.1, weight_decay=weight_decay)
     if name == "CAUTIOUS_SGDM":
-        return CAUTIOUS_SGD(parameters, lr=lr, beta=momentum, weight_decay=weight_decay, nesterov=nesterov)
+        return C_SGDM(parameters, lr=lr, beta=momentum, weight_decay=weight_decay, nesterov=nesterov)
     if name == "TAM_SGDM":
         return TAM_SGDM(parameters, lr=lr, beta=momentum, weight_decay=weight_decay)
     if name == "MAL_SGDM":
         sgdm_mal_config = dict(mal_config)
+        gradient_weight_mode = sgdm_mal_config.pop("gradient_weight_mode", "fixed")
+        if gradient_weight_mode != "fixed":
+            raise ValueError("MAL-SGDM does not implement gradient_weight_mode; use fixed.")
         if isinstance(sgdm_mal_config["scale"], str):
             if sgdm_mal_config["scale"] == "moment":
                 raise ValueError('MAL-SGDM does not support scale="moment".')
@@ -539,7 +556,7 @@ def build_optimizer(
             model_lambda=model_lambda,
         )
     if name == "CAUTIOUS_AdamW":
-        return CAUTIOUS_ADAMW(parameters, lr=lr, betas=(momentum, beta2), weight_decay=weight_decay)
+        return C_AdamW(parameters, lr=lr, betas=(momentum, beta2), weight_decay=weight_decay)
     if name == "AdaTAMW":
         return AdaTAMW(parameters, lr=lr, betas=(momentum, beta2), weight_decay=weight_decay)
     return MAL_AdamW(
@@ -878,8 +895,12 @@ def validate_config(args: argparse.Namespace, config: Any, parser: argparse.Argu
         missing_sweep_keys = set(missing_sweep_keys) | {"MAL_config"}
     if missing_sweep_keys:
         parser.error(f"Missing W&B sweep parameter(s): {', '.join(sorted(missing_sweep_keys))}.")
-    if args.epochs <= args.warmup_epochs:
-        parser.error("--epochs must be greater than --warmup_epochs.")
+    if args.epochs <= 0:
+        parser.error("--epochs must be positive.")
+    if args.warmup_epochs < 0:
+        parser.error("--warmup_epochs must be non-negative.")
+    if parse_bool(config.use_scheduler) and args.epochs <= args.warmup_epochs:
+        parser.error("--epochs must be greater than --warmup_epochs when scheduling is enabled.")
     if not 0.0 < args.mask_ratio < 1.0:
         parser.error("--mask_ratio must be strictly between 0 and 1.")
     for name in ("max_micro_batch_size", "eval_batch_size", "probe_batch_size", "probe_epochs"):
@@ -891,9 +912,11 @@ def validate_config(args: argparse.Namespace, config: Any, parser: argparse.Argu
         parser.error("--batch_size must be divisible by the selected micro-batch size.")
     if args.probe_every < 0:
         parser.error("--probe_every must be non-negative (zero disables the periodic probe).")
+    if args.probe_warmup_epochs < 0:
+        parser.error("--probe_warmup_epochs must be non-negative.")
     if args.save_every < 0:
         parser.error("--save_every must be non-negative (zero saves only the final checkpoint).")
-    if config.base_lr < 0.0 or args.min_lr < 0.0 or config.weight_decay < 0.0:
+    if config.base_lr < 0.0 or args.min_lr < 0.0 or args.probe_base_lr < 0.0 or config.weight_decay < 0.0:
         parser.error("Learning rates and weight decay must be non-negative.")
 
 
@@ -928,7 +951,8 @@ def main() -> int:
     set_seed(seed)
 
     pretrain_dataset, probe_train_dataset, val_dataset, num_classes, data_root = build_datasets(args.data_dir, args.image_size)
-    num_workers = min(cpu_count(), 16) if args.num_workers < 0 else args.num_workers
+    allocated_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", cpu_count()))
+    num_workers = min(allocated_cpus, 16) if args.num_workers < 0 else args.num_workers
     micro_batch_size = min(batch_size, args.max_micro_batch_size)
     accumulation_steps = batch_size // micro_batch_size
     train_loader_kwargs = {
@@ -1023,11 +1047,7 @@ def main() -> int:
             "mal_align": mal_align,
             **{f"mal_{key}": value for key, value in mal_config.items()},
             **({"am_beta_max": args.momentum, "am_model_lambda": 0.1} if optimizer_name == "AM_MSGD" else {}),
-            **(
-                {"am_beta1_max": args.momentum - 0.1 * 0.1, "am_model_lambda": 0.1}
-                if optimizer_name == "AM_AdamW"
-                else {}
-            ),
+            **({"am_beta1_max": args.momentum - 0.1 * 0.1, "am_model_lambda": 0.1} if optimizer_name == "AM_AdamW" else {}),
         },
         allow_val_change=True,
     )
@@ -1036,7 +1056,7 @@ def main() -> int:
         mal_suffix = (
             f"_inp{int(mal_config['in_place'])}_p{mal_config['pwr']:g}"
             f"_scl{str(mal_config['scale']).lower()}_g{mal_config['gate_mode']}"
-            f"_dsg{int(mal_config['descent_safeguard'])}_a{mal_align}"
+            f"_a{mal_align}_gw{mal_config['gradient_weight_mode']}"
         )
     run.name = f"{optimizer_name}{mal_suffix}_bs{batch_size}_blr{base_lr:g}_wd{weight_decay:g}_s{seed}"
     run.define_metric("epoch")
@@ -1111,7 +1131,9 @@ def main() -> int:
                     batch_size=args.probe_batch_size,
                     base_lr=args.probe_base_lr,
                     warmup_epochs=args.probe_warmup_epochs,
-                    seed=seed + epoch,
+                    # Hold the probe initialization and minibatch order fixed
+                    # across checkpoints so changes reflect the encoder only.
+                    seed=seed + 20_000,
                     amp_dtype=amp_dtype,
                     amp_enabled=amp_enabled,
                 )

@@ -12,6 +12,16 @@
 
 set -euo pipefail
 
+# This four-phase launcher records the completed heatmap plan and would recreate
+# the deliberately canceled SGDM-MAE sweep. Keep it available for reproducibility,
+# but require an explicit override so it cannot be submitted accidentally while
+# MAL-AdamW structure is still being selected.
+if [[ "${ALLOW_ARCHIVED_FULL_PIPELINE:-0}" != "1" ]]; then
+    echo "Archived pipeline: use run-mal-confirmatory-sweeps.sh for the next MAL-AdamW structural screen." >&2
+    echo "Set ALLOW_ARCHIVED_FULL_PIPELINE=1 only to reproduce all four historical phases." >&2
+    exit 2
+fi
+
 MEMORY_ALIGN_PROJECT=/shared/b00090279/memory_align
 ENTITY_NAME=osuwaidi-khalifa-university
 PROJECT_NAME=MAL_benchmark
@@ -23,7 +33,7 @@ UV_BIN=/shared/b00090279/.local/bin/uv
 LOCK_HASH=$(sha256sum "$MEMORY_ALIGN_PROJECT/uv.lock" | cut -c1-16)
 ENVIRONMENT_MARKER="$CLUSTER_VENV/.mal-uv-lock-$LOCK_HASH"
 ACTIVE_AGENT_JOB_ID=""
-DEFAULT_MAL_ADAMW_CONFIG="False,1.0,moment,replace,False,moment"
+DEFAULT_MAL_ADAMW_CONFIG="False,1.0,moment,replace,moment,fixed"
 
 . "$MEMORY_ALIGN_PROJECT/cluster-env.sh"
 cd "$MEMORY_ALIGN_PROJECT"

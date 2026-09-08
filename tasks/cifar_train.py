@@ -1,4 +1,5 @@
 import argparse
+import os
 import random
 import signal
 import sys
@@ -12,7 +13,7 @@ import torch.nn.functional as F
 import wandb
 from sklearn.model_selection import train_test_split
 from torch import nn
-from torch.optim import SGD
+from torch.optim import SGD, Optimizer
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import datasets
@@ -28,7 +29,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from optims.am_opt import AM_MSGD, AM_AdamW
-from optims.cautious_opt import CAUTIOUS_ADAMW, CAUTIOUS_SGD
+from optims.cautious_opt import C_SGDM, C_AdamW
 from optims.mal_opt import MAL_SGDM, MAL_AdamW
 from optims.tam_opt import TAM_SGDM, AdaTAMW
 from sweeps.cifar_resnet_sweep import add_training_args
@@ -40,10 +41,22 @@ DEVICE = torch.device("cuda")
 WARMUP_EPOCHS = 5
 BETA = 0.9
 NUM_GPUS = torch.cuda.device_count()
-NUM_WORKERS = min(cpu_count() // (2 * max(NUM_GPUS, 1)), 16)
-EVAL_NUM_WORKERS = min(cpu_count() // (4 * max(NUM_GPUS, 1)), 6)
+ALLOCATED_CPUS = int(os.environ.get("SLURM_CPUS_PER_TASK", cpu_count()))
+NUM_WORKERS = min(max(ALLOCATED_CPUS // max(NUM_GPUS, 1), 1), 16)
+EVAL_NUM_WORKERS = min(NUM_WORKERS, 6)
 MAX_MICRO_BATCH_SIZE = 512
-DEFAULT_MAL_SGDM_CONFIG = "False,1.0,False,replace,False"
+DEFAULT_MAL_SGDM_CONFIG = "False,1.0,False,replace"
+
+
+def parse_bool(value: str | bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise ValueError(f'Expected a boolean value, got "{value}".')
 
 
 def configure_cuda_precision(
@@ -64,7 +77,7 @@ def configure_cuda_precision(
     # These are the post-PyTorch-2.9 replacements for the deprecated
     # cuda.matmul.allow_tf32 and cudnn.allow_tf32 flags.
     torch.backends.cuda.matmul.fp32_precision = float32_precision
-    torch.backends.cudnn.conv.fp32_precision = float32_precision
+    torch.backends.cudnn.conv.fp32_precision = float32_precision  # pyright: ignore[reportAttributeAccessIssue]
 
     return amp_dtype, amp_enabled
 
@@ -100,7 +113,9 @@ def train_val_model(
     amp_enabled=True,
     grad_accumulation_steps=1,
 ):
-    best_val_acc = 0.0
+    # Make the first finite epoch selectable even in intentionally hostile
+    # heatmap cells whose validation accuracy is exactly zero.
+    best_val_acc = -1.0
     best_train_loss = 0.0
     AUC = 0.0
     rise = 0.0
@@ -183,7 +198,7 @@ def train_val_model(
 
         run.log(
             {
-                "train_loss": round(epoch_loss / n_samples, 2),
+                "train_loss": epoch_loss / n_samples,
                 "val_acc": val_acc,
                 "epoch": epoch,
                 "AUC": AUC / epochs,
@@ -194,8 +209,8 @@ def train_val_model(
 
     run.summary["target_reached"] = int(target_reached)
     run.summary["epochs_2_target"] = epochs_to_target
-    run.summary["best_val_acc"] = round(best_val_acc, 2)
-    run.summary["best_train_loss"] = round(best_train_loss, 2)
+    run.summary["best_val_acc"] = best_val_acc
+    run.summary["best_train_loss"] = best_train_loss
     run.summary["best_val_epoch"] = best_val_epoch
     run.summary["val_auc"] = AUC / epochs
     run.summary["diverged"] = int(diverged)
@@ -220,11 +235,58 @@ def resolve_optimizer_case(config) -> tuple[str, str, str]:
     if len(fields) == 1:
         return fields[0], raw_mal_config, fields[0]
     if len(fields) != 3 or fields[0] != "MAL_SGDM":
-        raise ValueError(
-            "optimizer_case must be an optimizer name or "
-            "'MAL_SGDM::<variant-label>::<MAL_config>'."
-        )
+        raise ValueError("optimizer_case must be an optimizer name or 'MAL_SGDM::<variant-label>::<MAL_config>'.")
     return fields[0], fields[2], fields[1]
+
+
+def parse_mal_config(value: str) -> dict[str, Any]:
+    """Parse current MAL configs while retaining false legacy safeguard fields."""
+    fields = [field.strip() for field in value.split(",")]
+    if not 4 <= len(fields) <= 7:
+        raise ValueError("MAL_config must be 'in_place,pwr,scale,gate_mode[,align[,gradient_weight_mode]]'.")
+
+    in_place_text, pwr_text, scale_text, gate_mode, *tail = fields
+    align = None
+    gradient_weight_mode = "fixed"
+    if tail and tail[0].lower() in {"true", "false"}:
+        legacy_safeguard = parse_bool(tail.pop(0))
+        if legacy_safeguard:
+            raise ValueError("MAL descent_safeguard was removed and can no longer be enabled.")
+    if tail:
+        align = tail.pop(0).lower()
+    if tail:
+        gradient_weight_mode = tail.pop(0).lower()
+    if tail:
+        raise ValueError("MAL_config contains too many fields.")
+
+    scale_key = scale_text.lower()
+    if scale_key in {"true", "false"}:
+        scale: bool | str = parse_bool(scale_text)
+    elif scale_key in {"none", "step", "moment"}:
+        scale = scale_key
+    else:
+        raise ValueError("MAL scale must be True, False, none, step, or moment.")
+
+    parsed: dict[str, Any] = {
+        "in_place": parse_bool(in_place_text),
+        "pwr": float(pwr_text),
+        "scale": scale,
+        "gate_mode": gate_mode,
+        "gradient_weight_mode": gradient_weight_mode,
+    }
+    if parsed["pwr"] not in (0.5, 1.0):
+        raise ValueError("MAL pwr must be 0.5 or 1.0.")
+    if gate_mode not in ("attenuate", "replace"):
+        raise ValueError("MAL gate_mode must be attenuate or replace.")
+    if gradient_weight_mode not in ("fixed", "complement"):
+        raise ValueError("MAL gradient_weight_mode must be fixed or complement.")
+    if gradient_weight_mode == "complement" and gate_mode != "attenuate":
+        raise ValueError('MAL gradient_weight_mode="complement" requires gate_mode="attenuate".')
+    if align is not None:
+        if align not in ("update", "metric", "white", "moment"):
+            raise ValueError("MAL align must be update, metric, white, or moment.")
+        parsed["align"] = align
+    return parsed
 
 
 def split_weight_decay_params(model: nn.Module, weight_decay: float) -> list[dict[str, Any]]:
@@ -241,6 +303,37 @@ def split_weight_decay_params(model: nn.Module, weight_decay: float) -> list[dic
     if decay:
         groups.append({"params": decay, "weight_decay": weight_decay})
     return groups
+
+
+def build_lr_scheduler(
+    optimizer: Optimizer,
+    *,
+    use_scheduler: bool,
+    total_steps: int,
+    warmup_steps: int,
+) -> SequentialLR | None:
+    """Build the step-wise warmup/cosine schedule without touching constant-LR runs."""
+    if not use_scheduler:
+        return None
+    if warmup_steps <= 0 or total_steps <= warmup_steps:
+        raise ValueError("Scheduled training requires 0 < warmup_steps < total_steps.")
+
+    warmup_scheduler = LinearLR(
+        optimizer,
+        start_factor=0.01,
+        end_factor=1.0,
+        total_iters=warmup_steps,
+    )
+    cosine_scheduler = CosineAnnealingLR(
+        optimizer,
+        T_max=total_steps - warmup_steps,
+        eta_min=1e-5,
+    )
+    return SequentialLR(
+        optimizer,
+        schedulers=[warmup_scheduler, cosine_scheduler],
+        milestones=[warmup_steps],
+    )
 
 
 @torch.inference_mode()
@@ -267,8 +360,7 @@ def eval_model(
         correct += (preds.eq_(y)).sum().item()
         total += y.size(0)
 
-    acc = 100.0 * correct / total
-    return round(acc, 2)
+    return 100.0 * correct / total
 
 
 class TransformDataset(Dataset):
@@ -292,8 +384,8 @@ def main():
 
     if not torch.cuda.is_available():
         raise RuntimeError("This training entry point requires a CUDA-capable PyTorch environment.")
-    if args.epochs <= WARMUP_EPOCHS:
-        parser.error(f"--epochs must be greater than {WARMUP_EPOCHS} warmup epochs")
+    if args.epochs <= 0:
+        parser.error("--epochs must be positive")
 
     if args.data == "cifar10":
         DatasetCls = datasets.CIFAR10
@@ -353,12 +445,12 @@ def main():
 
     indices = list(range(len(raw_ds)))
 
-    train_size = int(0.85 * len(raw_ds))  # 42,500 (~64 val images per class held out)
+    train_size = int(0.85 * len(raw_ds))  # 42,500 train; 7,500 validation (75/class for CIFAR-100).
 
     # Start W&B Sweeps (W&B Sweep injects its parameters as configs automatically):
     run = wandb.init(  # the "entity" is known from the `wandb` run command, and "project" is inherited from the sweep config
         job_type="train",
-        tags=("MAL per vs tensor",),
+        tags=("optimizer-benchmark", "cifar"),
         config={
             "data": args.data,
             "model": args.arch,
@@ -368,6 +460,7 @@ def main():
             "label_smoothing": label_smoothing,
             "amp_dtype": args.amp_dtype,
             "float32_precision": args.float32_precision,
+            "split_seed": args.split_seed,
         },
     )
 
@@ -376,8 +469,11 @@ def main():
         if signum == signal.SIGTERM:
             try:
                 manual_stop = WandbInternalApi().check_stop_requested(run.project, run.entity, run.id)
-            except Exception:
-                pass  # If W&B is unreachable, preserve the config by requeueing it.
+            except Exception as error:  # noqa: BLE001 - W&B internals expose heterogeneous errors.
+                print(
+                    f"Could not check W&B's stop flag ({error!r}); preserving the config by requeueing it.",
+                    file=sys.stderr,
+                )
 
         action = "skipping config" if manual_stop else "re-queueing config"
         print(f"Received signal {signum}; {action}...")
@@ -398,40 +494,36 @@ def main():
     config = run.config
 
     optimizer, raw_mal_config, optimizer_variant = resolve_optimizer_case(config)
-    nest = bool(config.get("nesterov", False))
+    nest = parse_bool(config.get("nesterov", False))
     bs = config.batch_size
     lr = config.lr
     weight_decay = config.weight_decay
     seed = config.seed
-    use_scheduler = config.use_scheduler
+    use_scheduler = parse_bool(config.use_scheduler)
+    if use_scheduler and args.epochs <= WARMUP_EPOCHS:
+        parser.error(f"--epochs must be greater than {WARMUP_EPOCHS} warmup epochs when scheduling is enabled")
 
-    mal_fields = raw_mal_config.split(",")
-    if len(mal_fields) == 4:
-        in_place, pwr, scale, gate_mode = mal_fields
-        descent_safeguard = False
-    elif len(mal_fields) == 5:
-        in_place, pwr, scale, gate_mode, descent_safeguard_text = mal_fields
-        if descent_safeguard_text.lower() not in {"true", "false"}:
-            raise ValueError("MAL descent_safeguard must be True or False.")
-        descent_safeguard = descent_safeguard_text.lower() == "true"
-    else:
-        raise ValueError("MAL_config must be 'in_place,pwr,scale,gate_mode[,descent_safeguard]'.")
-    in_place = in_place == "True"
-    pwr = float(pwr)
-    scale = scale == "True"
-    MAL_config = {
-        "in_place": in_place,
-        "pwr": pwr,
-        "scale": scale,
-        "gate_mode": gate_mode,
-        "descent_safeguard": descent_safeguard,
-    }
+    mal_config = parse_mal_config(raw_mal_config)
+    mal_align = str(mal_config.pop("align", "metric"))
+    optimizer_mal_config = dict(mal_config)
+    if optimizer == "MAL_SGDM":
+        gradient_weight_mode = optimizer_mal_config.pop("gradient_weight_mode")
+        if gradient_weight_mode != "fixed":
+            raise ValueError("MAL-SGDM does not implement gradient_weight_mode; use fixed.")
+        if isinstance(optimizer_mal_config["scale"], str):
+            if optimizer_mal_config["scale"] == "moment":
+                raise ValueError('MAL-SGDM does not support scale="moment".')
+            optimizer_mal_config["scale"] = optimizer_mal_config["scale"] == "step"
     run.config.update(
         {
             "optimizer": optimizer,
             "optimizer_variant": optimizer_variant,
             "MAL_config": raw_mal_config,
-            **MAL_config,
+            "mal_align": mal_align,
+            **{f"mal_{key}": value for key, value in mal_config.items()},
+            # Preserve these historical top-level fields for existing W&B
+            # analyses while the mal_* names remain unambiguous across families.
+            **{key: mal_config[key] for key in ("in_place", "pwr", "scale", "gate_mode")},
         },
         allow_val_change=True,
     )
@@ -440,7 +532,15 @@ def main():
         run.name = f"{optimizer}_bmax:{BETA}_lambda:0.1_bs:{bs}_{lr}_{seed}"
     elif optimizer == "MAL_SGDM":
         run.name = (
-            f"{optimizer}_{optimizer_variant}_inp:{str(in_place)[0]}_pwr:{pwr}_scl:{str(scale)[0]}_gate:{gate_mode}_dsg:{str(descent_safeguard)[0]}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
+            f"{optimizer}_{optimizer_variant}_inp:{int(mal_config['in_place'])}"
+            f"_pwr:{mal_config['pwr']}_scl:{str(mal_config['scale']).lower()}"
+            f"_gate:{mal_config['gate_mode']}_nest:{int(nest)}_bs:{bs}_{lr}_{seed}"
+        )
+    elif optimizer == "MAL_AdamW":
+        run.name = (
+            f"{optimizer}_inp:{int(mal_config['in_place'])}_pwr:{mal_config['pwr']}"
+            f"_scl:{str(mal_config['scale']).lower()}_gate:{mal_config['gate_mode']}"
+            f"_a:{mal_align}_gw:{mal_config['gradient_weight_mode']}_bs:{bs}_{lr}_{seed}"
         )
     else:
         run.name = f"{optimizer}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
@@ -474,14 +574,20 @@ def main():
         mode="fan_out",
         nonlinearity="relu",
     )
-    model.maxpool = nn.Identity()
+    model.maxpool = nn.Identity()  # pyright: ignore[reportAttributeAccessIssue]
     model.fc = nn.Linear(model.fc.in_features, len(raw_ds.classes), bias=True)
 
     model.to(DEVICE)
 
-    train_indices, val_indices = train_test_split(indices, train_size=train_size, stratify=raw_ds.targets, random_state=seed)
+    train_indices, val_indices = train_test_split(
+        indices,
+        train_size=train_size,
+        stratify=raw_ds.targets,
+        random_state=args.split_seed,
+    )
 
-    train_ds, val_ds = Subset(raw_ds, train_indices), Subset(raw_ds, val_indices)
+    train_ds = Subset(raw_ds, [int(index) for index in train_indices])
+    val_ds = Subset(raw_ds, [int(index) for index in val_indices])
     train_ds, val_ds = (
         TransformDataset(train_ds, train_transform),
         TransformDataset(val_ds, eval_transform),
@@ -509,10 +615,23 @@ def main():
     )
 
     if optimizer == "MAL_SGDM":
-        optimizer = MAL_SGDM(model.parameters(), lr=lr, beta=BETA, weight_decay=weight_decay, nesterov=nest, **MAL_config)
+        optimizer = MAL_SGDM(
+            model.parameters(),
+            lr=lr,
+            beta=BETA,
+            weight_decay=weight_decay,
+            nesterov=nest,
+            **optimizer_mal_config,
+        )
 
     elif optimizer == "MAL_AdamW":
-        optimizer = MAL_AdamW(model.parameters(), lr=lr, weight_decay=weight_decay, **MAL_config)
+        optimizer = MAL_AdamW(
+            model.parameters(),
+            lr=lr,
+            weight_decay=weight_decay,
+            align=mal_align,
+            **mal_config,
+        )
 
     elif optimizer == "AM_AdamW":
         model_lambda = 0.1
@@ -546,7 +665,7 @@ def main():
         )
 
     elif optimizer == "CAUTIOUS_SGDM":
-        optimizer = CAUTIOUS_SGD(
+        optimizer = C_SGDM(
             model.parameters(),
             lr=lr,
             beta=BETA,
@@ -555,7 +674,7 @@ def main():
         )
 
     elif optimizer == "CAUTIOUS_AdamW":
-        optimizer = CAUTIOUS_ADAMW(
+        optimizer = C_AdamW(
             model.parameters(),
             lr=lr,
             weight_decay=weight_decay,
@@ -580,18 +699,16 @@ def main():
         raise ValueError(f'The given optimizerment method "{optimizer}" is not valid')
 
     steps_per_epoch = len(train_loader) // grad_accumulation_steps
+    if steps_per_epoch <= 0:
+        parser.error("The effective batch size exceeds the available training split.")
     total_steps = steps_per_epoch * args.epochs
     warmup_steps = steps_per_epoch * WARMUP_EPOCHS
 
-    warmup_scheduler = LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_steps)
-
-    cosine_scheduler = CosineAnnealingLR(optimizer, T_max=(total_steps - warmup_steps), eta_min=1e-5)
-
-    # Combine schedulers sequentially at the iteration level
-    scheduler = SequentialLR(
+    scheduler = build_lr_scheduler(
         optimizer,
-        schedulers=[warmup_scheduler, cosine_scheduler],
-        milestones=[warmup_steps],
+        use_scheduler=use_scheduler,
+        total_steps=total_steps,
+        warmup_steps=warmup_steps,
     )
 
     best_model, diverged = train_val_model(
@@ -602,7 +719,7 @@ def main():
         train_loader,
         val_loader,
         run,
-        lr_scheduler=scheduler if use_scheduler else None,
+        lr_scheduler=scheduler,
         label_smoothing=label_smoothing,
         amp_dtype=amp_dtype,
         amp_enabled=amp_enabled,
@@ -624,7 +741,7 @@ def main():
             amp_dtype=amp_dtype,
             amp_enabled=amp_enabled,
         )
-    run.summary["test_acc"] = round(test_acc, 2)
+    run.summary["test_acc"] = test_acc
 
     run.finish(exit_code=0)
     return 0

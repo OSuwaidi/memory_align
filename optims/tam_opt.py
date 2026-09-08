@@ -1,4 +1,5 @@
 from collections.abc import Callable, Iterable
+from typing import Any, ClassVar
 
 import torch
 from torch.optim import Optimizer
@@ -13,7 +14,25 @@ class _TorqueAwareOptimizer(Optimizer):
             raise ValueError("Optimizer received no trainable parameters.")
 
         self._torque_anchor = params[0]
-        self.state[self._torque_anchor]["s_hat"] = torch.zeros((), device=self._torque_anchor.device, dtype=torch.float32)
+        anchor_state = self.state[self._torque_anchor]
+        if "s_hat" not in anchor_state:
+            anchor_state["s_hat"] = torch.zeros(
+                (),
+                device=self._torque_anchor.device,
+                dtype=torch.float32,
+            )
+        else:
+            # Keep this model-wide accumulation in FP32 by design, while
+            # parameter-owned moment tensors follow their parameter dtype.
+            s_hat = anchor_state["s_hat"]
+            if not isinstance(s_hat, torch.Tensor) or s_hat.numel() != 1:
+                raise ValueError("TAM checkpoint state s_hat must be a scalar tensor.")
+            if not torch.isfinite(s_hat).all():
+                raise ValueError("TAM checkpoint state s_hat must be finite.")
+            anchor_state["s_hat"] = s_hat.reshape(()).to(
+                device=self._torque_anchor.device,
+                dtype=torch.float32,
+            )
 
     def _torque_scale(
         self,
@@ -101,7 +120,6 @@ class TAM_SGDM(_TorqueAwareOptimizer):
                 optim_groups.append(
                     {
                         "params": group_params,
-                        "momentum": [torch.zeros_like(p) for p in group_params],
                         "weight_decay": group_wd,
                     }
                 )
@@ -111,7 +129,7 @@ class TAM_SGDM(_TorqueAwareOptimizer):
         self._init_torque_state()
 
     @torch.no_grad()
-    def step(self, closure: Callable[[], float] | None = None):
+    def step(self, closure: Callable[[], float | torch.Tensor] | None = None) -> Any:
         loss = None
         if closure is not None:
             with torch.enable_grad():
@@ -120,9 +138,13 @@ class TAM_SGDM(_TorqueAwareOptimizer):
         entries: list[tuple[dict, torch.nn.Parameter, torch.Tensor, torch.Tensor]] = []
         for group in self.param_groups:
             wd = group["weight_decay"]
-            for p, momentum in zip(group["params"], group["momentum"]):
+            for p in group["params"]:
                 if p.grad is None:
                     continue
+                state = self.state[p]
+                if "momentum_buffer" not in state:
+                    state["momentum_buffer"] = torch.zeros_like(p)
+                momentum = state["momentum_buffer"]
                 grad = p.grad if wd == 0.0 else p.grad.add(p, alpha=wd)
                 entries.append((group, p, momentum, grad))
 
@@ -194,8 +216,6 @@ class AdaTAMW(_TorqueAwareOptimizer):
                 optim_groups.append(
                     {
                         "params": group_params,
-                        "m": [torch.zeros_like(p) for p in group_params],
-                        "v": [torch.zeros_like(p) for p in group_params],
                         "weight_decay": group_wd,
                     }
                 )
@@ -211,7 +231,7 @@ class AdaTAMW(_TorqueAwareOptimizer):
         self._init_torque_state()
 
     @torch.no_grad()
-    def step(self, closure: Callable[[], float] | None = None):
+    def step(self, closure: Callable[[], float | torch.Tensor] | None = None) -> Any:
         loss = None
         if closure is not None:
             with torch.enable_grad():
@@ -219,10 +239,15 @@ class AdaTAMW(_TorqueAwareOptimizer):
 
         entries: list[tuple[dict, torch.nn.Parameter, torch.Tensor, torch.Tensor, torch.Tensor]] = []
         for group in self.param_groups:
-            for p, momentum, variance in zip(group["params"], group["m"], group["v"]):
+            for p in group["params"]:
                 if p.grad is None:
                     continue
-                entries.append((group, p, momentum, variance, p.grad))
+                state = self.state[p]
+                if "exp_avg" not in state:
+                    state["exp_avg"] = torch.zeros_like(p)
+                if "exp_avg_sq" not in state:
+                    state["exp_avg_sq"] = torch.zeros_like(p)
+                entries.append((group, p, state["exp_avg"], state["exp_avg_sq"], p.grad))
 
         if not entries:
             return loss

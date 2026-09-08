@@ -29,9 +29,9 @@ import json
 import math
 import os
 import tempfile
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable
 
 os.environ.setdefault(
     "MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "mal-matplotlib")
@@ -155,7 +155,10 @@ def _mal_effective_coefficient(
 ) -> float:
     """Read the pre-update MAL state and reproduce its static gate."""
 
-    momentum_buffer = optimizer.param_groups[0]["momentum"][0]
+    parameter = optimizer.param_groups[0]["params"][0]
+    momentum_buffer = optimizer.state[parameter].get("momentum_buffer")
+    if momentum_buffer is None:
+        momentum_buffer = torch.zeros_like(parameter)
     candidate = gradient + config.momentum * momentum_buffer
     gradient_norm = torch.linalg.vector_norm(gradient)
     candidate_norm = torch.linalg.vector_norm(candidate)

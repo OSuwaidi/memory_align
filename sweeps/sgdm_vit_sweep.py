@@ -23,14 +23,14 @@ BASE_LRS = (0.1, 0.3)
 WEIGHT_DECAYS = (1e-4, 5e-4)
 BATCH_SIZES = (256, 1024)
 USE_SCHEDULER = (True,)
-DEFAULT_MAL_CONFIG = "False,1.0,False,replace,False"
+DEFAULT_MAL_CONFIG = "False,1.0,False,replace"
 
 
 def get_finished_run_ids(project_name: str, sweep_ids: list[str]) -> list[str]:
     api = wandb.Api()
     runs = api.runs(
         path=f"{ENTITY_NAME}/{project_name}",
-        filters={"sweep": {"$in": sweep_ids}, "state": {"$in": ["finished", "running"]}},
+        filters={"sweep": {"$in": sweep_ids}, "state": "finished"},
         per_page=100,
         lazy=True,
         include_sweeps=True,
@@ -45,7 +45,7 @@ def main() -> int:
     parser.add_argument("--sweep_name", "--sweep-name", required=True)
     parser.add_argument("--project_name", "--project-name", required=True)
     parser.add_argument("--prior_sweeps", "--prior-sweeps", nargs="+")
-    parser.add_argument("--method", choices=("grid", "random", "bayes"), default="grid")
+    parser.add_argument("--method", choices=("grid",), default="grid")
     parser.add_argument("--epochs", type=int, default=EPOCHS)
     parser.add_argument("--warmup_epochs", "--warmup-epochs", type=int, default=WARMUP_EPOCHS)
     parser.add_argument("--probe_every", "--probe-every", type=int, default=PROBE_EVERY)
@@ -64,7 +64,7 @@ def main() -> int:
         "program": args.program,
         "name": args.sweep_name,
         "method": args.method,
-        "metric": {"name": "probe/val_acc", "goal": "maximize"},
+        "metric": {"name": "final_probe_val_acc", "goal": "maximize"},
         "parameters": {
             "optimizer": {"values": ("SGDM", "AM_MSGD", "CAUTIOUS_SGDM", "TAM_SGDM", "MAL_SGDM")},
             "MAL_config": {"values": (args.mal_config,)},

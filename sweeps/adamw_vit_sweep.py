@@ -23,14 +23,14 @@ BASE_LRS = (1.5e-4, 1e-3)
 WEIGHT_DECAYS = (5e-2, 1e-3)
 BATCH_SIZES = (256, 1024)
 USE_SCHEDULER = (True,)
-DEFAULT_MAL_CONFIG = "False,1.0,moment,replace,False,moment"
+DEFAULT_MAL_CONFIG = "False,1.0,moment,replace,moment,fixed"
 
 
 def get_finished_run_ids(project_name: str, sweep_ids: list[str]) -> list[str]:
     api = wandb.Api()
     runs = api.runs(
         path=f"{ENTITY_NAME}/{project_name}",
-        filters={"sweep": {"$in": sweep_ids}, "state": {"$in": ["finished", "running"]}},
+        filters={"sweep": {"$in": sweep_ids}, "state": "finished"},
         per_page=100,
         lazy=True,
         include_sweeps=True,
@@ -45,7 +45,7 @@ def main() -> int:
     parser.add_argument("--sweep_name", "--sweep-name", required=True)
     parser.add_argument("--project_name", "--project-name", required=True)
     parser.add_argument("--prior_sweeps", "--prior-sweeps", nargs="+")
-    parser.add_argument("--method", choices=("grid", "random", "bayes"), default="grid")
+    parser.add_argument("--method", choices=("grid",), default="grid")
     parser.add_argument("--epochs", type=int, default=EPOCHS)
     parser.add_argument("--warmup_epochs", "--warmup-epochs", type=int, default=WARMUP_EPOCHS)
     parser.add_argument("--probe_every", "--probe-every", type=int, default=PROBE_EVERY)

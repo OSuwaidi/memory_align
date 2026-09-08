@@ -17,9 +17,9 @@ PROJECT_NAME = "MAL_benchmark"
 SEEDS = (42, 1337, 2026)
 WEIGHT_DECAY = 5e-4
 
-T_ATT_U = "False,1.0,False,attenuate,False"
-T_REP_U = "False,1.0,False,replace,False"
-T_REP_N = "False,1.0,True,replace,False"
+T_ATT_U = "False,1.0,False,attenuate"
+T_REP_U = "False,1.0,False,replace"
+T_REP_N = "False,1.0,True,replace"
 
 CIFAR10_BATCH_SIZES = (64, 128, 256, 512, 1024, 2048, 4096)
 CIFAR10_LRS = (0.025, 0.05, 0.1, 0.2, 0.4, 0.8, 1.6)
@@ -33,18 +33,14 @@ def mal_case(label: str, config: str) -> str:
 
 def validate_sgdm_mal_config(value: str) -> str:
     fields = value.split(",")
-    if len(fields) != 5:
-        raise argparse.ArgumentTypeError(
-            "must be 'in_place,pwr,scale,gate_mode,descent_safeguard'"
-        )
+    if len(fields) != 4:
+        raise argparse.ArgumentTypeError("must be 'in_place,pwr,scale,gate_mode'")
     if fields[0] not in {"True", "False"} or fields[2] not in {"True", "False"}:
         raise argparse.ArgumentTypeError("in_place and scale must be True or False")
     if fields[1] not in {"0.5", "1.0"}:
         raise argparse.ArgumentTypeError("pwr must be 0.5 or 1.0")
-    if fields[3] not in {"attenuate", "replace", "cap"}:
-        raise argparse.ArgumentTypeError("gate_mode must be attenuate, replace, or cap")
-    if fields[4] not in {"True", "False"}:
-        raise argparse.ArgumentTypeError("descent_safeguard must be True or False")
+    if fields[3] not in {"attenuate", "replace"}:
+        raise argparse.ArgumentTypeError("gate_mode must be attenuate or replace")
     return value
 
 
@@ -105,6 +101,8 @@ def build_configuration(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             arch,
             "--epochs",
             str(args.epochs),
+            "--split_seed",
+            str(args.split_seed),
             "--val_acc_target",
             str(target),
             "--amp_dtype",
@@ -125,6 +123,7 @@ def main() -> int:
     parser.add_argument("--project_name", "--project-name", default=PROJECT_NAME)
     parser.add_argument("--data_dir", "--data-dir", default="./data")
     parser.add_argument("--epochs", type=int, default=200)
+    parser.add_argument("--split_seed", "--split-seed", type=int, default=20260901)
     parser.add_argument("--amp_dtype", "--amp-dtype", choices=("bfloat16", "float32"), default="bfloat16")
     parser.add_argument("--float32_precision", "--float32-precision", choices=("tf32", "ieee"), default="tf32")
     parser.add_argument("--mal_sgdm_config", "--mal-sgdm-config", type=validate_sgdm_mal_config)

@@ -37,8 +37,14 @@ from tqdm.auto import tqdm, trange
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 from wandb.sdk.internal.internal_api import Api as WandbInternalApi
 
+# W&B executes this file by path, making ``tasks/`` (rather than the repository
+# root) Python's import root. Add the repository root before importing siblings.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
 from optims.am_opt import AM_MSGD, AM_AdamW
-from optims.cautious_opt import CAUTIOUS_ADAMW, CAUTIOUS_SGD
+from optims.cautious_opt import C_SGDM, C_AdamW
 from optims.mal_opt import MAL_SGDM, MAL_AdamW
 from optims.tam_opt import TAM_SGDM, AdaTAMW
 
@@ -222,25 +228,49 @@ def split_weight_decay_params(model: nn.Module, weight_decay: float) -> list[dic
 
 
 def parse_mal_config(value: str) -> dict[str, Any]:
-    fields = value.split(",")
-    if len(fields) == 4:
-        in_place_text, pwr_text, scale_text, gate_mode = fields
-        descent_safeguard_text = "False"
-    elif len(fields) == 5:
-        in_place_text, pwr_text, scale_text, gate_mode, descent_safeguard_text = fields
+    fields = [field.strip() for field in value.split(",")]
+    if not 4 <= len(fields) <= 7:
+        raise ValueError("MAL_config must be 'in_place,pwr,scale,gate_mode[,align[,gradient_weight_mode]]'.")
+
+    in_place_text, pwr_text, scale_text, gate_mode, *tail = fields
+    align = None
+    gradient_weight_mode = "fixed"
+    if tail and tail[0].lower() in {"true", "false"} and parse_bool(tail.pop(0)):
+        raise ValueError("MAL descent_safeguard was removed and can no longer be enabled.")
+    if tail:
+        align = tail.pop(0).lower()
+    if tail:
+        gradient_weight_mode = tail.pop(0).lower()
+    if tail:
+        raise ValueError("MAL_config contains too many fields.")
+
+    scale_key = scale_text.lower()
+    if scale_key in {"true", "false"}:
+        scale: bool | str = parse_bool(scale_text)
+    elif scale_key in {"none", "step", "moment"}:
+        scale = scale_key
     else:
-        raise ValueError("mal_config must be 'in_place,pwr,scale,gate_mode[,descent_safeguard]'.")
+        raise ValueError("MAL scale must be True, False, none, step, or moment.")
+
     config = {
         "in_place": parse_bool(in_place_text),
         "pwr": float(pwr_text),
-        "scale": parse_bool(scale_text),
+        "scale": scale,
         "gate_mode": gate_mode,
-        "descent_safeguard": parse_bool(descent_safeguard_text),
+        "gradient_weight_mode": gradient_weight_mode,
     }
     if config["pwr"] not in (0.5, 1.0):
         raise ValueError("MAL pwr must be 0.5 or 1.0.")
-    if gate_mode not in ("replace", "attenuate", "cap"):
-        raise ValueError("MAL gate_mode must be replace, attenuate, or cap.")
+    if gate_mode not in ("replace", "attenuate"):
+        raise ValueError("MAL gate_mode must be replace or attenuate.")
+    if gradient_weight_mode not in ("fixed", "complement"):
+        raise ValueError("MAL gradient_weight_mode must be fixed or complement.")
+    if gradient_weight_mode == "complement" and gate_mode != "attenuate":
+        raise ValueError('MAL gradient_weight_mode="complement" requires gate_mode="attenuate".')
+    if align is not None:
+        if align not in {"update", "metric", "white", "moment"}:
+            raise ValueError("MAL align must be update, metric, white, or moment.")
+        config["align"] = align
     return config
 
 
@@ -263,11 +293,26 @@ def build_optimizer(
     if name == "AM_MSGD":
         return AM_MSGD(parameters, lr=lr, beta_max=momentum, model_lambda=0.1, weight_decay=weight_decay)
     if name == "CAUTIOUS_SGDM":
-        return CAUTIOUS_SGD(parameters, lr=lr, beta=momentum, weight_decay=weight_decay, nesterov=False)
+        return C_SGDM(parameters, lr=lr, beta=momentum, weight_decay=weight_decay, nesterov=False)
     if name == "TAM_SGDM":
         return TAM_SGDM(parameters, lr=lr, beta=momentum, weight_decay=weight_decay)
     if name == "MAL_SGDM":
-        return MAL_SGDM(parameters, lr=lr, beta=momentum, weight_decay=weight_decay, nesterov=False, **mal_config)
+        sgdm_mal_config = dict(mal_config)
+        gradient_weight_mode = sgdm_mal_config.pop("gradient_weight_mode", "fixed")
+        if gradient_weight_mode != "fixed":
+            raise ValueError("MAL-SGDM does not implement gradient_weight_mode; use fixed.")
+        if isinstance(sgdm_mal_config["scale"], str):
+            if sgdm_mal_config["scale"] == "moment":
+                raise ValueError('MAL-SGDM does not support scale="moment".')
+            sgdm_mal_config["scale"] = sgdm_mal_config["scale"] == "step"
+        return MAL_SGDM(
+            parameters,
+            lr=lr,
+            beta=momentum,
+            weight_decay=weight_decay,
+            nesterov=False,
+            **sgdm_mal_config,
+        )
     if name == "AdamW":
         return AdamW(split_weight_decay_params(model, weight_decay), lr=lr, betas=(momentum, beta2), foreach=False, fused=False)
     if name == "AM_AdamW":
@@ -281,7 +326,7 @@ def build_optimizer(
             model_lambda=model_lambda,
         )
     if name == "CAUTIOUS_AdamW":
-        return CAUTIOUS_ADAMW(parameters, lr=lr, betas=(momentum, beta2), weight_decay=weight_decay)
+        return C_AdamW(parameters, lr=lr, betas=(momentum, beta2), weight_decay=weight_decay)
     if name == "AdaTAMW":
         return AdaTAMW(parameters, lr=lr, betas=(momentum, beta2), weight_decay=weight_decay)
     return MAL_AdamW(parameters, lr=lr, betas=(momentum, beta2), weight_decay=weight_decay, align=mal_align, **mal_config)
@@ -425,7 +470,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--mal_config",
         "--mal-config",
         dest="MAL_config",
-        default="False,1.0,True,attenuate,False",
+        default="False,1.0,step,attenuate,metric,fixed",
     )
     parser.add_argument("--mal_align", "--mal-align", choices=("update", "metric", "white", "moment"), default="metric")
     parser.add_argument("--gradient_checkpointing", "--gradient-checkpointing", type=parse_bool, default=False)
@@ -568,6 +613,7 @@ def main() -> int:
     model.to(device)  # pyright: ignore[reportArgumentType]
 
     mal_config = parse_mal_config(args.MAL_config)
+    mal_align = str(mal_config.pop("align", args.mal_align)).lower()
     optimizer = build_optimizer(
         optimizer_name,
         model,
@@ -576,7 +622,7 @@ def main() -> int:
         momentum=args.momentum,
         beta2=args.beta2,
         mal_config=mal_config,
-        mal_align=args.mal_align,
+        mal_align=mal_align,
     )
 
     parameter_count = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
@@ -594,13 +640,21 @@ def main() -> int:
             "train_blocks": len(datasets["train"]),
             "validation_blocks": len(datasets["validation"]),
             "test_blocks": len(datasets["test"]),
+            "mal_align": mal_align,
             **{f"mal_{key}": value for key, value in mal_config.items()},
             **({"am_beta_max": args.momentum, "am_model_lambda": 0.1} if optimizer_name == "AM_MSGD" else {}),
             **({"am_beta1_max": args.momentum - 0.1 * 0.1, "am_model_lambda": 0.1} if optimizer_name == "AM_AdamW" else {}),
         },
         allow_val_change=True,
     )
-    run.name = f"{optimizer_name}_bs{batch_size}_lrx{lr_multiplier:g}_lr{peak_lr:g}_s{seed}"
+    mal_suffix = ""
+    if optimizer_name.startswith("MAL_"):
+        mal_suffix = (
+            f"_inp{int(mal_config['in_place'])}_p{mal_config['pwr']:g}"
+            f"_scl{str(mal_config['scale']).lower()}_g{mal_config['gate_mode']}"
+            f"_a{mal_align}_gw{mal_config['gradient_weight_mode']}"
+        )
+    run.name = f"{optimizer_name}{mal_suffix}_bs{batch_size}_lrx{lr_multiplier:g}_lr{peak_lr:g}_s{seed}"
     run.define_metric("epoch")
     for namespace in ("train/*", "val/*", "test/*", "grad/*", "throughput/*", "diagnostic/*"):
         run.define_metric(namespace, step_metric="epoch")

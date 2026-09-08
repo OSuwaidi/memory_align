@@ -6,9 +6,9 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=14G
 #SBATCH --time=250:00:00
-#SBATCH --job-name=mal-confirm-master
-#SBATCH --output=/shared/b00090279/memory_align/logs/confirm-master-%j.out
-#SBATCH --error=/shared/b00090279/memory_align/logs/confirm-master-%j.err
+#SBATCH --job-name=mal-adamw-structure
+#SBATCH --output=/shared/b00090279/memory_align/logs/adamw-structure-master-%j.out
+#SBATCH --error=/shared/b00090279/memory_align/logs/adamw-structure-master-%j.err
 
 set -euo pipefail
 
@@ -16,6 +16,7 @@ MEMORY_ALIGN_PROJECT=/shared/b00090279/memory_align
 ENTITY_NAME=osuwaidi-khalifa-university
 PROJECT_NAME=MAL_benchmark
 AGENT_COUNT=15
+MAX_AGENT_ROUNDS=3
 CLUSTER_VENV="$MEMORY_ALIGN_PROJECT/.cluster-venv"
 CLUSTER_PYTHON="$CLUSTER_VENV/bin/python"
 UV_BIN=/shared/b00090279/.local/bin/uv
@@ -148,39 +149,78 @@ wait_for_agents() {
     fi
 }
 
+sweep_state() {
+    "$CLUSTER_PYTHON" - "$1" <<'PY'
+import sys
+import wandb
+
+print(wandb.Api(timeout=180).sweep(sys.argv[1]).state)
+PY
+}
+
+run_agents_until_complete() {
+    local sweep_path=$1
+    local expected_runs=$2
+    local job_name=$3
+    local round
+    local state
+
+    for ((round = 1; round <= MAX_AGENT_ROUNDS; round++)); do
+        ACTIVE_AGENT_JOB_ID=$(submit_agents "$sweep_path" "$job_name")
+        echo "Submitted $sweep_path as a ${AGENT_COUNT}-GPU array $ACTIVE_AGENT_JOB_ID (round $round)"
+        if ! wait_for_agents "$ACTIVE_AGENT_JOB_ID" "$sweep_path"; then
+            echo "Agent array $ACTIVE_AGENT_JOB_ID was incomplete; validating W&B before recovery." >&2
+        fi
+        ACTIVE_AGENT_JOB_ID=""
+
+        for _attempt in {1..12}; do
+            if "$CLUSTER_PYTHON" sweeps/validate_sweep.py \
+                "$sweep_path" \
+                --expected_runs "$expected_runs"; then
+                return 0
+            fi
+            sleep 10
+        done
+
+        state=$(sweep_state "$sweep_path")
+        if [[ "$state" == "FINISHED" || "$state" == "CANCELED" ]]; then
+            echo "Sweep reached $state without $expected_runs finished runs." >&2
+            return 1
+        fi
+        echo "Sweep remains $state; submitting a recovery agent array."
+    done
+
+    echo "Sweep did not complete after $MAX_AGENT_ROUNDS agent rounds: $sweep_path" >&2
+    return 1
+}
+
 run_phase() {
     local experiment=$1
     local sweep_name=$2
     local agent_job_name=$3
     local record_key=$4
+    local expected_runs=$5
     local sweep_path
 
     sweep_path=$(create_sweep "$experiment" "$sweep_name")
     printf '%s=%q\n' "$record_key" "$sweep_path" >>"$SWEEP_RECORD"
-    ACTIVE_AGENT_JOB_ID=$(submit_agents "$sweep_path" "$agent_job_name")
-    echo "Submitted $sweep_path as a ${AGENT_COUNT}-GPU array $ACTIVE_AGENT_JOB_ID"
-    wait_for_agents "$ACTIVE_AGENT_JOB_ID" "$sweep_path"
-    ACTIVE_AGENT_JOB_ID=""
+    printf '%s_EXPECTED_RUNS=%q\n' "$record_key" "$expected_runs" >>"$SWEEP_RECORD"
+    run_agents_until_complete "$sweep_path" "$expected_runs" "$agent_job_name"
 }
 
 prepare_python_environment
 prepare_inputs
 
-SWEEP_RECORD="$MEMORY_ALIGN_PROJECT/logs/confirmatory-sweep-paths-${SLURM_JOB_ID}.env"
+SWEEP_RECORD="$MEMORY_ALIGN_PROJECT/logs/adamw-structure-sweep-${SLURM_JOB_ID}.env"
 : >"$SWEEP_RECORD"
 
-# 20 runs: unscaled versus norm-preserving replacement for MAL-SGDM.
+# 60 runs: three matched MAL-AdamW structures x two base LRs x two
+# scheduler conditions x five seeds. No MAE/LLM benchmark is launched here.
 run_phase \
-    sgdm-resnet50 \
-    "mal-confirmatory-sgdm-resnet50-${SLURM_JOB_ID}" \
-    mal-conf-sgdm \
-    SGDM_CONFIRMATORY_SWEEP_PATH
+    adamw-gradient-weight \
+    "mal-adamw-gradient-weight-${SLURM_JOB_ID}" \
+    mal-adamw-structure \
+    ADAMW_STRUCTURE_SWEEP_PATH \
+    60
 
-# 30 runs: unscaled, step-norm, and raw-moment replacement for MAL-AdamW.
-run_phase \
-    adamw-vit \
-    "mal-confirmatory-adamw-vit-${SLURM_JOB_ID}" \
-    mal-conf-adamw \
-    ADAMW_CONFIRMATORY_SWEEP_PATH
-
-echo "Both final confirmatory sweeps completed successfully. Sweep paths: $SWEEP_RECORD"
+echo "MAL-AdamW structural sweep completed successfully. Sweep path: $SWEEP_RECORD"

@@ -1,9 +1,11 @@
 """Validate the CIFAR-10 heatmap and select the MAL-SGDM shipping variant.
 
-Selection is predeclared and cell-balanced.  Test accuracy is primary, with a
-0.25 percentage-point practical-equivalence band.  A close result is resolved
-by typical-cell accuracy, lower-tail robustness, validation AUC, target reach,
-then convergence speed.  Only a complete 7 x 7 x 3 grid is eligible.
+Selection is predeclared and cell-balanced. Held-out validation accuracy is
+primary, with a 0.25 percentage-point practical-equivalence band. A close
+result is resolved by typical-cell validation accuracy, lower-tail robustness,
+validation AUC, target reach, then convergence speed. Test accuracy remains in
+the report but never selects the structure. Only a complete 7 x 7 x 3 grid is
+eligible.
 """
 
 from __future__ import annotations
@@ -25,9 +27,9 @@ LEARNING_RATES = (0.025, 0.05, 0.1, 0.2, 0.4, 0.8, 1.6)
 SEEDS = (42, 1337, 2026)
 PRACTICAL_MARGIN = 0.25
 MAL_CASES = {
-    "T-Att/U": "False,1.0,False,attenuate,False",
-    "T-Rep/U": "False,1.0,False,replace,False",
-    "T-Rep/N": "False,1.0,True,replace,False",
+    "T-Att/U": "False,1.0,False,attenuate",
+    "T-Rep/U": "False,1.0,False,replace",
+    "T-Rep/N": "False,1.0,True,replace",
 }
 SIMPLICITY_ORDER = {"T-Rep/U": 0, "T-Att/U": 1, "T-Rep/N": 2}
 
@@ -124,11 +126,16 @@ def validate_grid(frame: pd.DataFrame, metadata: dict[str, Any]) -> pd.DataFrame
 
 
 def select(mal: pd.DataFrame) -> tuple[pd.DataFrame, list[dict[str, Any]], str, str]:
+    mal = mal.copy()
+    # Preserve the raw pre-divergence validation maximum for diagnosis while
+    # making every numerically unstable run ineligible for structure selection.
+    mal["selection_val_acc"] = np.where(mal["diverged"].eq(0), mal["best_val_acc"], 0.0)
     cells = (
         mal.groupby(["variant", "batch_size", "lr"], observed=True)
         .agg(
             test_acc=("test_acc", "mean"),
             best_val_acc=("best_val_acc", "mean"),
+            selection_val_acc=("selection_val_acc", "mean"),
             val_auc=("val_auc", "mean"),
             target_reach_rate=("target_reached", "mean"),
             epochs_to_target=("epochs_to_target", "mean"),
@@ -139,12 +146,16 @@ def select(mal: pd.DataFrame) -> tuple[pd.DataFrame, list[dict[str, Any]], str, 
     summary = (
         cells.groupby("variant", observed=True)
         .agg(
-            cells=("test_acc", "size"),
+            cells=("selection_val_acc", "size"),
+            mean_cell_val_acc=("selection_val_acc", "mean"),
+            median_cell_val_acc=("selection_val_acc", "median"),
+            q25_cell_val_acc=("selection_val_acc", lambda values: values.quantile(0.25)),
+            peak_cell_val_acc=("selection_val_acc", "max"),
+            mean_raw_best_val_acc=("best_val_acc", "mean"),
             mean_cell_test_acc=("test_acc", "mean"),
             median_cell_test_acc=("test_acc", "median"),
             q25_cell_test_acc=("test_acc", lambda values: values.quantile(0.25)),
             peak_cell_test_acc=("test_acc", "max"),
-            mean_best_val_acc=("best_val_acc", "mean"),
             mean_val_auc=("val_auc", "mean"),
             target_reach_rate=("target_reach_rate", "mean"),
             mean_epochs_to_target=("epochs_to_target", "mean"),
@@ -156,43 +167,48 @@ def select(mal: pd.DataFrame) -> tuple[pd.DataFrame, list[dict[str, Any]], str, 
         raise RuntimeError(f"Each MAL variant must have 49 cell means: {summary[['variant', 'cells']].to_dict('records')}")
 
     comparisons: list[dict[str, Any]] = []
-    wide = cells.pivot(index=["batch_size", "lr"], columns="variant", values="test_acc")
+    wide_val = cells.pivot(index=["batch_size", "lr"], columns="variant", values="selection_val_acc")
+    wide_test = cells.pivot(index=["batch_size", "lr"], columns="variant", values="test_acc")
     for left, right in combinations(sorted(MAL_CASES), 2):
-        differences = (wide[left] - wide[right]).to_numpy()
-        low, high = bootstrap_interval(differences)
+        val_differences = (wide_val[left] - wide_val[right]).to_numpy()
+        test_differences = (wide_test[left] - wide_test[right]).to_numpy()
+        low, high = bootstrap_interval(val_differences)
         comparisons.append(
             {
                 "left": left,
                 "right": right,
-                "mean_test_difference": float(differences.mean()),
+                "mean_validation_difference": float(val_differences.mean()),
+                "mean_test_difference_report_only": float(test_differences.mean()),
                 "bootstrap_95_low": low,
                 "bootstrap_95_high": high,
-                "cell_wins": int((differences > 0).sum()),
-                "cell_losses": int((differences < 0).sum()),
-                "cell_ties": int((differences == 0).sum()),
+                "validation_cell_wins": int((val_differences > 0).sum()),
+                "validation_cell_losses": int((val_differences < 0).sum()),
+                "validation_cell_ties": int((val_differences == 0).sum()),
             }
         )
 
-    best_mean = float(summary["mean_cell_test_acc"].max())
-    contenders = summary.loc[summary["mean_cell_test_acc"] >= best_mean - PRACTICAL_MARGIN].copy()
+    best_mean = float(summary["mean_cell_val_acc"].max())
+    contenders = summary.loc[summary["mean_cell_val_acc"] >= best_mean - PRACTICAL_MARGIN].copy()
     if len(contenders) == 1:
         winner = str(contenders.iloc[0]["variant"])
-        reason = "highest equal-cell mean test accuracy by more than the 0.25 pp equivalence margin"
+        reason = "highest equal-cell mean validation accuracy by more than the 0.25 pp equivalence margin"
     else:
         contenders = contenders.sort_values(
             [
-                "median_cell_test_acc",
-                "q25_cell_test_acc",
+                "divergence_rate",
+                "median_cell_val_acc",
+                "q25_cell_val_acc",
                 "mean_val_auc",
                 "target_reach_rate",
                 "mean_epochs_to_target",
             ],
-            ascending=[False, False, False, False, True],
+            ascending=[True, False, False, False, False, True],
         )
         tied = contenders.iloc[0]
         exact = contenders.loc[
-            (contenders["median_cell_test_acc"] == tied["median_cell_test_acc"])
-            & (contenders["q25_cell_test_acc"] == tied["q25_cell_test_acc"])
+            (contenders["divergence_rate"] == tied["divergence_rate"])
+            & (contenders["median_cell_val_acc"] == tied["median_cell_val_acc"])
+            & (contenders["q25_cell_val_acc"] == tied["q25_cell_val_acc"])
             & (contenders["mean_val_auc"] == tied["mean_val_auc"])
             & (contenders["target_reach_rate"] == tied["target_reach_rate"])
             & (contenders["mean_epochs_to_target"] == tied["mean_epochs_to_target"])
@@ -203,13 +219,14 @@ def select(mal: pd.DataFrame) -> tuple[pd.DataFrame, list[dict[str, Any]], str, 
         else:
             winner = str(tied["variant"])
         reason = (
-            "inside the 0.25 pp mean-test equivalence band; selected by median-cell accuracy, "
-            "lower-quartile accuracy, validation AUC, target reach, and convergence speed"
+            "inside the 0.25 pp mean-validation equivalence band; selected by divergence "
+            "rate, median-cell validation accuracy, lower-quartile validation accuracy, "
+            "validation AUC, target reach, and convergence speed"
         )
 
     summary["selected"] = summary["variant"].eq(winner)
     summary["MAL_config"] = summary["variant"].map(MAL_CASES)
-    return summary.sort_values("mean_cell_test_acc", ascending=False), comparisons, winner, reason
+    return summary.sort_values("mean_cell_val_acc", ascending=False), comparisons, winner, reason
 
 
 def main() -> int:
@@ -233,16 +250,18 @@ def main() -> int:
         **metadata,
         "selection_protocol": {
             "unit": "7x7 LR/batch-size cell mean over three seeds",
-            "primary": "equal-cell mean test accuracy",
+            "primary": "equal-cell mean best validation accuracy",
             "practical_equivalence_pp": PRACTICAL_MARGIN,
             "tie_breakers": [
-                "median cell test accuracy",
-                "25th-percentile cell test accuracy",
+                "divergence rate",
+                "median cell validation accuracy",
+                "25th-percentile cell validation accuracy",
                 "mean validation AUC",
                 "target-reach rate",
                 "mean epochs to target",
                 "predeclared simplicity order",
             ],
+            "test_policy": "reported descriptively after selection; never used to choose the structure",
         },
         "winner": winner,
         "winner_config": MAL_CASES[winner],
