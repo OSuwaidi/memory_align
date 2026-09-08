@@ -49,6 +49,7 @@ from optims.am_opt import AM_MSGD, AM_AdamW
 from optims.cautious_opt import C_SGDM, C_AdamW
 from optims.mal_opt import MAL_SGDM, MAL_AdamW
 from optims.tam_opt import TAM_SGDM, AdaTAMW
+from tasks.wandb_metadata import task_metadata
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
@@ -933,7 +934,19 @@ def main() -> int:
         entity=args.wandb_entity,
         mode=args.wandb_mode,
         job_type="mae-pretrain",
-        config=vars(args),
+        config={
+            **vars(args),
+            **task_metadata(
+                task="tiny_imagenet_mae_pretraining",
+                task_type="self_supervised_image_pretraining",
+                model_name=f"{args.arch}_mae_patch{args.patch_size}",
+                model_source="timm_mae",
+                dataset_name="tiny-imagenet-200",
+                dataset_config="official_train_pretraining_official_validation_evaluation",
+                dataset_source="official_tiny_imagenet",
+                training_regime="self_supervised_from_scratch",
+            ),
+        },
         tags=("mae", "tiny-imagenet", "vit-tiny", "patch8"),
     )
     config = run.config
@@ -1033,6 +1046,12 @@ def main() -> int:
         mal_align=mal_align,
     )
 
+    parameter_count = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+    encoder_parameter_count = (
+        sum(parameter.numel() for module in (model.patch_embed, model.blocks, model.norm) for parameter in module.parameters() if parameter.requires_grad)
+        + model.cls_token.numel()
+    )
+
     run.config.update(
         {
             # Uppercase is the canonical W&B grouping field. Reading the old
@@ -1043,6 +1062,16 @@ def main() -> int:
             "accumulation_steps": accumulation_steps,
             "steps_per_epoch": steps_per_epoch,
             "num_classes": num_classes,
+            "train_examples": len(pretrain_dataset),
+            "validation_examples": len(val_dataset),
+            "test_examples": 0,
+            "trainable_parameters": parameter_count,
+            "encoder_trainable_parameters": encoder_parameter_count,
+            "optimizer_family": "sgdm" if optimizer_name in SGD_OPTIMIZERS else "adamw",
+            "effective_batch_size": batch_size,
+            "gradient_accumulation_steps": accumulation_steps,
+            "base_learning_rate": base_lr,
+            "learning_rate": actual_lr,
             "resolved_data_dir": str(data_root),
             "mal_align": mal_align,
             **{f"mal_{key}": value for key, value in mal_config.items()},
@@ -1066,11 +1095,6 @@ def main() -> int:
     run.define_metric("diagnostic/*", step_metric="epoch")
     run.define_metric("lr", step_metric="epoch")
 
-    parameter_count = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
-    encoder_parameter_count = (
-        sum(parameter.numel() for module in (model.patch_embed, model.blocks, model.norm) for parameter in module.parameters() if parameter.requires_grad)
-        + model.cls_token.numel()
-    )
     print(
         f"Training {args.arch} MAE on {data_root} ({len(pretrain_dataset):,} train / {len(val_dataset):,} val, "
         f"{num_classes} classes).\n"
@@ -1120,6 +1144,7 @@ def main() -> int:
             }
 
             should_probe = args.probe_every and (epoch % args.probe_every == 0 or epoch == args.epochs)
+            probe_accuracy: float | None = None
             if should_probe:
                 probe_train_loss, probe_accuracy = periodic_linear_probe(
                     model,
@@ -1155,6 +1180,10 @@ def main() -> int:
             run.log(metrics)
             run.summary["best_val_loss"] = best_val_loss
             run.summary["best_probe_val_acc"] = best_probe_accuracy
+            run.summary["best/val_loss"] = best_val_loss
+            run.summary["best/probe_val_acc"] = best_probe_accuracy
+            if epoch == args.epochs and probe_accuracy is not None:
+                run.summary["final/probe_val_acc"] = probe_accuracy
 
             should_save = epoch == args.epochs or (args.save_every and epoch % args.save_every == 0)
             if checkpoint_path is not None and should_save:

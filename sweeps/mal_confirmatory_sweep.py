@@ -11,6 +11,7 @@ benchmarks.
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 from typing import Any
 
 import wandb
@@ -25,10 +26,24 @@ T_REP_N_SGDM = "False,1.0,True,replace"
 ADAMW_ALIGNMENTS = ("metric", "update", "moment")
 ADAMW_GRADIENT_WEIGHT_MODES = ("fixed", "complement")
 ADAMW_STRUCTURE_CONFIGS = tuple(
-    f"False,1.0,none,attenuate,{align},{gradient_weight_mode}"
-    for align in ADAMW_ALIGNMENTS
-    for gradient_weight_mode in ADAMW_GRADIENT_WEIGHT_MODES
+    f"False,1.0,none,attenuate,{align},{gradient_weight_mode}" for align in ADAMW_ALIGNMENTS for gradient_weight_mode in ADAMW_GRADIENT_WEIGHT_MODES
 )
+
+
+def build_recursive_configs(selection_file: Path) -> tuple[str, ...]:
+    source_configs = tuple(line.strip() for line in selection_file.read_text(encoding="utf-8").splitlines() if line.strip())
+    if len(source_configs) != 2 or len(set(source_configs)) != 2:
+        raise ValueError("The recursive follow-up requires exactly two distinct selected source configurations.")
+    recursive_configs: list[str] = []
+    for raw_config in source_configs:
+        fields = raw_config.split(",")
+        if len(fields) != 6 or tuple(fields[:4]) != ("False", "1.0", "none", "attenuate"):
+            raise ValueError(f"Unexpected selected source MAL_config: {raw_config}")
+        align, gradient_weight_mode = fields[4:]
+        if align not in ADAMW_ALIGNMENTS or gradient_weight_mode not in ADAMW_GRADIENT_WEIGHT_MODES:
+            raise ValueError(f"Unsupported selected source MAL_config: {raw_config}")
+        recursive_configs.extend(f"True,{pwr},none,attenuate,{align},{gradient_weight_mode}" for pwr in ("0.5", "1.0"))
+    return tuple(recursive_configs)
 
 
 def _common_command(args: argparse.Namespace) -> list[str]:
@@ -169,6 +184,44 @@ def build_sweep_configuration(args: argparse.Namespace) -> dict[str, Any]:
             ],
         }
 
+    if args.experiment == "adamw-in-place":
+        if args.selection_file is None or args.source_sweep is None:
+            raise ValueError("adamw-in-place requires --selection_file and --source_sweep.")
+        return {
+            **common,
+            "metric": {"name": "selection_val_acc", "goal": "maximize"},
+            "parameters": {
+                "optimizer": {"values": ("MAL_AdamW",)},
+                "MAL_config": {"values": build_recursive_configs(args.selection_file)},
+                "batch_size": {"values": (256,)},
+                "base_lr": {"values": (5e-4, 1e-3)},
+                "weight_decay": {"values": (0.05,)},
+                "seed": {"values": SEEDS},
+                "use_scheduler": {"values": (True, False)},
+                "selection_source_sweep": {"values": (args.source_sweep,)},
+            },
+            "command": [
+                *_common_command(args),
+                "--arch",
+                "vit_tiny_patch16_224",
+                "--pretrained",
+                "True",
+                "--image_size",
+                "224",
+                "--epochs",
+                "30",
+                "--val_acc_target",
+                "65",
+                "--max_micro_batch_size",
+                "64",
+                "--eval_batch_size",
+                "256",
+                "--beta2",
+                "0.999",
+                "${args}",
+            ],
+        }
+
     raise ValueError(f"Unknown experiment: {args.experiment}")
 
 
@@ -177,7 +230,7 @@ def main() -> int:
     parser.add_argument("program")
     parser.add_argument(
         "--experiment",
-        choices=("sgdm-resnet50", "adamw-vit", "adamw-gradient-weight"),
+        choices=("sgdm-resnet50", "adamw-vit", "adamw-gradient-weight", "adamw-in-place"),
         required=True,
     )
     parser.add_argument("--sweep_name", "--sweep-name", required=True)
@@ -185,6 +238,8 @@ def main() -> int:
     parser.add_argument("--tiny_imagenet_dir", "--tiny-imagenet-dir", default="./data/tiny-imagenet-200")
     parser.add_argument("--amp_dtype", "--amp-dtype", choices=("bfloat16", "float32"), default="bfloat16")
     parser.add_argument("--float32_precision", "--float32-precision", choices=("tf32", "ieee"), default="tf32")
+    parser.add_argument("--selection_file", "--selection-file", type=Path)
+    parser.add_argument("--source_sweep", "--source-sweep")
     args = parser.parse_args()
 
     sweep_id = wandb.sweep(

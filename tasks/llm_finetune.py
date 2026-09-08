@@ -47,6 +47,7 @@ from optims.am_opt import AM_MSGD, AM_AdamW
 from optims.cautious_opt import C_SGDM, C_AdamW
 from optims.mal_opt import MAL_SGDM, MAL_AdamW
 from optims.tam_opt import TAM_SGDM, AdaTAMW
+from tasks.wandb_metadata import task_metadata
 
 DEFAULT_MODEL = "HuggingFaceTB/SmolLM2-135M"
 DEFAULT_MODEL_REVISION = "93efa2f097d58c2a74874c7e644dbc9b0cee75a2"
@@ -536,7 +537,19 @@ def main() -> int:
         entity=args.wandb_entity,
         mode=args.wandb_mode,
         job_type="llm-full-finetune",
-        config=vars(args),
+        config={
+            **vars(args),
+            **task_metadata(
+                task="wikitext_causal_lm_finetuning",
+                task_type="causal_language_modeling",
+                model_name=args.model_name,
+                model_source="huggingface",
+                dataset_name=args.dataset_name,
+                dataset_config=args.dataset_config,
+                dataset_source="huggingface",
+                training_regime="full_parameter_finetuning",
+            ),
+        },
         tags=("llm", "full-finetune", "causal-lm", "near-saturation", "wikitext-2"),
     )
     process_state = {"exit_code": 0}
@@ -637,6 +650,14 @@ def main() -> int:
             "total_steps": total_steps,
             "warmup_steps": warmup_steps,
             "trainable_parameters": parameter_count,
+            "effective_batch_size": batch_size,
+            "gradient_accumulation_steps": accumulation_steps,
+            "base_learning_rate": optimizer_base_lr,
+            "learning_rate": peak_lr,
+            "train_examples": len(datasets["train"]),
+            "validation_examples": len(datasets["validation"]),
+            "test_examples": len(datasets["test"]),
+            "example_unit": "token_blocks",
             "train_blocks": len(datasets["train"]),
             "validation_blocks": len(datasets["validation"]),
             "test_blocks": len(datasets["test"]),
@@ -754,6 +775,9 @@ def main() -> int:
             run.summary["best_val_loss"] = best_val_loss
             run.summary["best_val_perplexity"] = perplexity(best_val_loss)
             run.summary["best_val_epoch"] = best_epoch
+            run.summary["best/val_loss"] = best_val_loss
+            run.summary["best/val_perplexity"] = perplexity(best_val_loss)
+            run.summary["best/epoch"] = best_epoch
 
         test_loss = evaluate(
             model,
@@ -769,6 +793,9 @@ def main() -> int:
         run.summary["final_relative_val_improvement_pct"] = 100.0 * (initial_val_loss - final_val_loss) / initial_val_loss
         run.summary["test_loss"] = test_loss
         run.summary["test_perplexity"] = perplexity(test_loss)
+        run.summary["final/val_loss"] = final_val_loss
+        run.summary["test/loss"] = test_loss
+        run.summary["test/perplexity"] = perplexity(test_loss)
     except Exception:
         process_state["exit_code"] = 1
         raise

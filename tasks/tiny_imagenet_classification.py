@@ -52,6 +52,7 @@ from tasks.mae_pretrain import (
     parse_mal_config,
     resolve_tiny_imagenet_root,
 )
+from tasks.wandb_metadata import task_metadata
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
@@ -268,7 +269,19 @@ def main() -> int:
         entity=args.wandb_entity,
         mode=args.wandb_mode,
         job_type="tiny-imagenet-confirmation",
-        config=vars(args),
+        config={
+            **vars(args),
+            **task_metadata(
+                task="tiny_imagenet_image_classification",
+                task_type="supervised_image_classification",
+                model_name=args.arch,
+                model_source="timm",
+                dataset_name="tiny-imagenet-200",
+                dataset_config="train_90k_validation_10k_official_validation_test",
+                dataset_source="official_tiny_imagenet",
+                training_regime="pretrained_finetuning" if args.pretrained else "supervised_from_scratch",
+            ),
+        },
         tags=("mal-confirmatory", "tiny-imagenet", "supervised", args.arch),
     )
     config = run.config
@@ -369,6 +382,12 @@ def main() -> int:
             "train_examples": len(train_dataset),
             "validation_examples": len(validation_dataset),
             "test_examples": len(test_dataset),
+            "trainable_parameters": sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad),
+            "optimizer_family": "sgdm" if optimizer_name == "MAL_SGDM" else "adamw",
+            "effective_batch_size": batch_size,
+            "gradient_accumulation_steps": accumulation_steps,
+            "base_learning_rate": nominal_lr,
+            "learning_rate": actual_lr,
             "resolved_data_dir": str(data_root),
             "mal_align": mal_align,
             **{f"mal_{key}": value for key, value in mal_config.items()},
@@ -490,6 +509,9 @@ def main() -> int:
                     "selection_val_acc": best_val_acc,
                     "epoch_to_target": epoch_to_target,
                     "target_reached": int(epoch_to_target <= args.epochs),
+                    "best/val_acc": best_val_acc,
+                    "best/val_loss": best_val_loss,
+                    "best/epoch": best_val_epoch,
                 }
             )
 
@@ -504,6 +526,7 @@ def main() -> int:
                     "final_val_acc": validation_accuracies[-1] if validation_accuracies else 0.0,
                     "val_auc": float(np.mean(validation_accuracies)) if validation_accuracies else 0.0,
                     "test_acc": 0.0,
+                    "test/acc": 0.0,
                 }
             )
             if not best_state:
@@ -526,6 +549,9 @@ def main() -> int:
                     "val_auc": float(np.mean(validation_accuracies)),
                     "test_loss": test_loss,
                     "test_acc": test_acc,
+                    "test/loss": test_loss,
+                    "test/acc": test_acc,
+                    "final/val_acc": validation_accuracies[-1],
                 }
             )
     except BaseException:

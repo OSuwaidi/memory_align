@@ -33,6 +33,7 @@ from optims.cautious_opt import C_SGDM, C_AdamW
 from optims.mal_opt import MAL_SGDM, MAL_AdamW
 from optims.tam_opt import TAM_SGDM, AdaTAMW
 from sweeps.cifar_resnet_sweep import add_training_args
+from tasks.wandb_metadata import task_metadata
 
 # -------------------------
 # Config
@@ -200,6 +201,9 @@ def train_val_model(
             {
                 "train_loss": epoch_loss / n_samples,
                 "val_acc": val_acc,
+                "train/loss": epoch_loss / n_samples,
+                "val/acc": val_acc,
+                "val/auc_so_far": AUC / epoch,
                 "epoch": epoch,
                 "AUC": AUC / epochs,
                 "rise": rise,
@@ -214,6 +218,11 @@ def train_val_model(
     run.summary["best_val_epoch"] = best_val_epoch
     run.summary["val_auc"] = AUC / epochs
     run.summary["diverged"] = int(diverged)
+    run.summary["selection_val_acc"] = 0.0 if diverged else best_val_acc
+    run.summary["best/val_acc"] = best_val_acc
+    run.summary["best/train_loss"] = best_train_loss
+    run.summary["best/epoch"] = best_val_epoch
+    run.summary["val/auc"] = AUC / epochs
     if divergence_epoch is not None:
         run.summary["divergence_epoch"] = divergence_epoch
     return best_model, diverged
@@ -452,6 +461,16 @@ def main():
         job_type="train",
         tags=("optimizer-benchmark", "cifar"),
         config={
+            **task_metadata(
+                task="cifar_image_classification",
+                task_type="supervised_image_classification",
+                model_name=args.arch,
+                model_source="torchvision",
+                dataset_name=args.data,
+                dataset_config="official_train_85_15_validation_official_test",
+                dataset_source="torchvision",
+                training_regime="supervised_from_scratch",
+            ),
             "data": args.data,
             "model": args.arch,
             "epochs": args.epochs,
@@ -578,6 +597,24 @@ def main():
     model.fc = nn.Linear(model.fc.in_features, len(raw_ds.classes), bias=True)
 
     model.to(DEVICE)
+
+    sgd_optimizer_names = {"SGDM", "AM_MSGD", "CAUTIOUS_SGDM", "TAM_SGDM", "MAL_SGDM"}
+    run.config.update(
+        {
+            "optimizer_family": "sgdm" if optimizer in sgd_optimizer_names else "adamw",
+            "effective_batch_size": int(bs),
+            "micro_batch_size": int(micro_batch_size),
+            "gradient_accumulation_steps": int(grad_accumulation_steps),
+            "base_learning_rate": float(lr),
+            "learning_rate": float(lr),
+            "train_examples": int(train_size),
+            "validation_examples": int(len(raw_ds) - train_size),
+            "test_examples": len(test_ds),
+            "num_classes": len(raw_ds.classes),
+            "trainable_parameters": sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad),
+        },
+        allow_val_change=True,
+    )
 
     train_indices, val_indices = train_test_split(
         indices,
@@ -742,6 +779,7 @@ def main():
             amp_enabled=amp_enabled,
         )
     run.summary["test_acc"] = test_acc
+    run.summary["test/acc"] = test_acc
 
     run.finish(exit_code=0)
     return 0
