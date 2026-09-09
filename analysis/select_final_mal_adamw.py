@@ -78,13 +78,17 @@ def collect_sweep(
     *,
     allowed_configs: tuple[str, ...],
     scheduler_values: tuple[bool, ...],
+    allow_extra_configs: bool = False,
 ) -> list[dict[str, Any]]:
     sweep = wandb.Api(timeout=180).sweep(sweep_path)
-    runs = list(sweep.runs)
+    all_runs = list(sweep.runs)
+    runs = [run for run in all_runs if str(dict(run.config).get("MAL_config", "")) in allowed_configs]
     expected = len(allowed_configs) * len(BASE_LRS) * len(scheduler_values) * len(SEEDS)
     states = Counter(run.state for run in runs)
     if len(runs) != expected or states != Counter({"finished": expected}):
         raise RuntimeError(f"{sweep_path} must have {expected} finished runs; found {len(runs)} with {dict(states)}.")
+    if not allow_extra_configs and len(all_runs) != len(runs):
+        raise RuntimeError(f"{sweep_path} contains {len(all_runs) - len(runs)} runs outside the expected configurations.")
 
     rows: list[dict[str, Any]] = []
     for run in runs:
@@ -223,7 +227,12 @@ def main() -> int:
 
     source_configs = read_source_configs(args.source_selection_file)
     recursive = recursive_configs(source_configs)
-    source_rows = collect_sweep(args.source_sweep_path, allowed_configs=source_configs, scheduler_values=(False, True))
+    source_rows = collect_sweep(
+        args.source_sweep_path,
+        allowed_configs=source_configs,
+        scheduler_values=(False, True),
+        allow_extra_configs=True,
+    )
     scheduled_rows = [row for row in source_rows if row["use_scheduler"]]
     scheduled_rows.extend(collect_sweep(args.scheduled_sweep_path, allowed_configs=recursive, scheduler_values=(True,)))
     add_fitness(scheduled_rows)

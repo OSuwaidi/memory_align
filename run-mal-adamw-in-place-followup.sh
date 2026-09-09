@@ -15,7 +15,8 @@ set -euo pipefail
 MEMORY_ALIGN_PROJECT=/shared/b00090279/memory_align
 ENTITY_NAME=osuwaidi-khalifa-university
 PROJECT_NAME=MAL_benchmark
-SOURCE_SWEEP_PATH=${1:?"usage: run-mal-adamw-in-place-followup.sh <entity/project/source-sweep-id>"}
+SOURCE_SWEEP_PATH=${1:?"usage: run-mal-adamw-in-place-followup.sh <source-sweep-path> [completed-scheduled-sweep-path]"}
+COMPLETED_SCHEDULED_SWEEP_PATH=${2:-}
 AGENT_COUNT=15
 EXPECTED_SOURCE_RUNS=120
 MAX_AGENT_ROUNDS=3
@@ -33,6 +34,15 @@ case "$SOURCE_SWEEP_PATH" in
         exit 2
         ;;
 esac
+if [[ -n "$COMPLETED_SCHEDULED_SWEEP_PATH" ]]; then
+    case "$COMPLETED_SCHEDULED_SWEEP_PATH" in
+        "$ENTITY_NAME/$PROJECT_NAME/"*) ;;
+        *)
+            echo "Refusing unexpected completed scheduled sweep path: $COMPLETED_SCHEDULED_SWEEP_PATH" >&2
+            exit 2
+            ;;
+    esac
+fi
 
 . "$MEMORY_ALIGN_PROJECT/cluster-env.sh"
 cd "$MEMORY_ALIGN_PROJECT"
@@ -254,19 +264,30 @@ SOURCE_SELECTION_DIR="$MEMORY_ALIGN_PROJECT/outputs/mal-adamw-source-selection-$
 printf 'SOURCE_SELECTION_DIR=%q\n' "$SOURCE_SELECTION_DIR" >>"$SWEEP_RECORD"
 
 # Phase 1: 40 runs. Two source finalists x pwr {0.5, 1.0} x two
-# learning rates x five seeds, with the warmup+cosine schedule only.
-create_confirmatory_sweep \
-    adamw-in-place \
-    "mal-adamw-in-place-scheduled-${SLURM_JOB_ID}" \
-    "$SOURCE_SELECTION_DIR/selected_configs.txt"
-SCHEDULED_SWEEP_PATH=$CREATED_SWEEP_PATH
-SCHEDULED_EXPECTED_RUNS=$CREATED_EXPECTED_RUNS
+# learning rates x five seeds, with the warmup+cosine schedule only. A validated
+# completed sweep may be supplied when resuming after a master-node failure.
+if [[ -n "$COMPLETED_SCHEDULED_SWEEP_PATH" ]]; then
+    SCHEDULED_SWEEP_PATH=$COMPLETED_SCHEDULED_SWEEP_PATH
+    SCHEDULED_EXPECTED_RUNS=40
+    "$CLUSTER_PYTHON" sweeps/validate_sweep.py \
+        "$SCHEDULED_SWEEP_PATH" \
+        --expected_runs "$SCHEDULED_EXPECTED_RUNS"
+else
+    create_confirmatory_sweep \
+        adamw-in-place \
+        "mal-adamw-in-place-scheduled-${SLURM_JOB_ID}" \
+        "$SOURCE_SELECTION_DIR/selected_configs.txt"
+    SCHEDULED_SWEEP_PATH=$CREATED_SWEEP_PATH
+    SCHEDULED_EXPECTED_RUNS=$CREATED_EXPECTED_RUNS
+fi
 record_sweep SCHEDULED_IN_PLACE_SWEEP_PATH "$SCHEDULED_SWEEP_PATH" "$SCHEDULED_EXPECTED_RUNS"
-run_agents_until_complete \
-    "$SCHEDULED_SWEEP_PATH" \
-    "$SCHEDULED_EXPECTED_RUNS" \
-    mal-adamw-ip-s \
-    SCHEDULED_IN_PLACE
+if [[ -z "$COMPLETED_SCHEDULED_SWEEP_PATH" ]]; then
+    run_agents_until_complete \
+        "$SCHEDULED_SWEEP_PATH" \
+        "$SCHEDULED_EXPECTED_RUNS" \
+        mal-adamw-ip-s \
+        SCHEDULED_IN_PLACE
+fi
 
 FINAL_SELECTION_DIR="$MEMORY_ALIGN_PROJECT/outputs/mal-adamw-final-selection-${SLURM_JOB_ID}"
 "$CLUSTER_PYTHON" analysis/select_final_mal_adamw.py \
