@@ -527,6 +527,14 @@ def main() -> int:
                     "val_auc": float(np.mean(validation_accuracies)) if validation_accuracies else 0.0,
                     "test_acc": 0.0,
                     "test/acc": 0.0,
+                    "test_loss_at_final_epoch": 0.0,
+                    "test/loss_at_final_epoch": 0.0,
+                    "test_acc_at_final_epoch": 0.0,
+                    "test/acc_at_final_epoch": 0.0,
+                    "test_loss_at_best_val": 0.0,
+                    "test/loss_at_best_val": 0.0,
+                    "test_acc_at_best_val": 0.0,
+                    "test/acc_at_best_val": 0.0,
                 }
             )
             if not best_state:
@@ -534,8 +542,15 @@ def main() -> int:
         else:
             if not best_state:
                 raise RuntimeError("Training completed without a validation checkpoint.")
+            test_loss_at_final_epoch, test_acc_at_final_epoch = evaluate(
+                model,
+                test_loader,
+                device=device,
+                amp_dtype=amp_dtype,
+                amp_enabled=amp_enabled,
+            )
             model.load_state_dict(best_state)
-            test_loss, test_acc = evaluate(
+            test_loss_at_best_val, test_acc_at_best_val = evaluate(
                 model,
                 test_loader,
                 device=device,
@@ -547,10 +562,20 @@ def main() -> int:
                     "selection_val_acc": best_val_acc,
                     "final_val_acc": validation_accuracies[-1],
                     "val_auc": float(np.mean(validation_accuracies)),
-                    "test_loss": test_loss,
-                    "test_acc": test_acc,
-                    "test/loss": test_loss,
-                    "test/acc": test_acc,
+                    # Backward-compatible aliases denote the checkpoint
+                    # selected solely by validation accuracy.
+                    "test_loss": test_loss_at_best_val,
+                    "test_acc": test_acc_at_best_val,
+                    "test/loss": test_loss_at_best_val,
+                    "test/acc": test_acc_at_best_val,
+                    "test_loss_at_final_epoch": test_loss_at_final_epoch,
+                    "test/loss_at_final_epoch": test_loss_at_final_epoch,
+                    "test_acc_at_final_epoch": test_acc_at_final_epoch,
+                    "test/acc_at_final_epoch": test_acc_at_final_epoch,
+                    "test_loss_at_best_val": test_loss_at_best_val,
+                    "test/loss_at_best_val": test_loss_at_best_val,
+                    "test_acc_at_best_val": test_acc_at_best_val,
+                    "test/acc_at_best_val": test_acc_at_best_val,
                     "final/val_acc": validation_accuracies[-1],
                 }
             )

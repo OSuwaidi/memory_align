@@ -46,6 +46,19 @@ def build_recursive_configs(selection_file: Path) -> tuple[str, ...]:
     return tuple(recursive_configs)
 
 
+def read_single_in_place_config(selection_file: Path) -> str:
+    configs = tuple(line.strip() for line in selection_file.read_text(encoding="utf-8").splitlines() if line.strip())
+    if len(configs) != 1:
+        raise ValueError("The scheduler-free confirmation requires exactly one selected in-place configuration.")
+    raw_config = configs[0]
+    fields = raw_config.split(",")
+    if len(fields) != 6 or fields[0] != "True" or fields[2:4] != ["none", "attenuate"]:
+        raise ValueError(f"Unexpected in-place MAL_config: {raw_config}")
+    if fields[1] not in {"0.5", "1.0"} or fields[4] not in ADAMW_ALIGNMENTS or fields[5] not in ADAMW_GRADIENT_WEIGHT_MODES:
+        raise ValueError(f"Unsupported in-place MAL_config: {raw_config}")
+    return raw_config
+
+
 def _common_command(args: argparse.Namespace) -> list[str]:
     return [
         "${env}",
@@ -197,7 +210,48 @@ def build_sweep_configuration(args: argparse.Namespace) -> dict[str, Any]:
                 "base_lr": {"values": (5e-4, 1e-3)},
                 "weight_decay": {"values": (0.05,)},
                 "seed": {"values": SEEDS},
-                "use_scheduler": {"values": (True, False)},
+                # Recursive state must first earn its way forward in the
+                # standard scheduled regime. The scheduler-free condition is
+                # launched separately only if this screen beats out-of-place.
+                "use_scheduler": {"values": (True,)},
+                "selection_source_sweep": {"values": (args.source_sweep,)},
+            },
+            "command": [
+                *_common_command(args),
+                "--arch",
+                "vit_tiny_patch16_224",
+                "--pretrained",
+                "True",
+                "--image_size",
+                "224",
+                "--epochs",
+                "30",
+                "--val_acc_target",
+                "65",
+                "--max_micro_batch_size",
+                "64",
+                "--eval_batch_size",
+                "256",
+                "--beta2",
+                "0.999",
+                "${args}",
+            ],
+        }
+
+    if args.experiment == "adamw-in-place-unscheduled":
+        if args.selection_file is None or args.source_sweep is None:
+            raise ValueError("adamw-in-place-unscheduled requires --selection_file and --source_sweep.")
+        return {
+            **common,
+            "metric": {"name": "selection_val_acc", "goal": "maximize"},
+            "parameters": {
+                "optimizer": {"values": ("MAL_AdamW",)},
+                "MAL_config": {"values": (read_single_in_place_config(args.selection_file),)},
+                "batch_size": {"values": (256,)},
+                "base_lr": {"values": (5e-4, 1e-3)},
+                "weight_decay": {"values": (0.05,)},
+                "seed": {"values": SEEDS},
+                "use_scheduler": {"values": (False,)},
                 "selection_source_sweep": {"values": (args.source_sweep,)},
             },
             "command": [
@@ -230,7 +284,7 @@ def main() -> int:
     parser.add_argument("program")
     parser.add_argument(
         "--experiment",
-        choices=("sgdm-resnet50", "adamw-vit", "adamw-gradient-weight", "adamw-in-place"),
+        choices=("sgdm-resnet50", "adamw-vit", "adamw-gradient-weight", "adamw-in-place", "adamw-in-place-unscheduled"),
         required=True,
     )
     parser.add_argument("--sweep_name", "--sweep-name", required=True)
@@ -242,11 +296,16 @@ def main() -> int:
     parser.add_argument("--source_sweep", "--source-sweep")
     args = parser.parse_args()
 
+    sweep_configuration = build_sweep_configuration(args)
     sweep_id = wandb.sweep(
         entity=ENTITY_NAME,
         project=args.project_name,
-        sweep=build_sweep_configuration(args),
+        sweep=sweep_configuration,
     )
+    expected_runs = 1
+    for parameter in sweep_configuration["parameters"].values():
+        expected_runs *= len(parameter["values"])
+    print(f"EXPECTED_RUNS={expected_runs}")
     print(f"Run with:\n$ uv run wandb agent --forward-signals {ENTITY_NAME}/{args.project_name}/{sweep_id}")
     return 0
 

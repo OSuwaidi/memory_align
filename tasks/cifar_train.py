@@ -767,19 +767,36 @@ def main():
         # Keep numerically unstable cells in the completed heatmap with an
         # explicit zero score, rather than crashing the W&B grid or evaluating
         # an arbitrary pre-divergence checkpoint.
-        test_acc = 0.0
+        test_acc_at_final_epoch = 0.0
+        test_acc_at_best_val = 0.0
     else:
         if not best_model:
             raise RuntimeError("Training completed without producing a validation checkpoint.")
-        model.load_state_dict(best_model)
-        test_acc = eval_model(
+        test_acc_at_final_epoch = eval_model(
             model,
             test_loader,
             amp_dtype=amp_dtype,
             amp_enabled=amp_enabled,
         )
-    run.summary["test_acc"] = test_acc
-    run.summary["test/acc"] = test_acc
+        model.load_state_dict(best_model)
+        test_acc_at_best_val = eval_model(
+            model,
+            test_loader,
+            amp_dtype=amp_dtype,
+            amp_enabled=amp_enabled,
+        )
+    run.summary.update(
+        {
+            # Backward-compatible aliases denote the validation-selected
+            # checkpoint; selection never uses the test set.
+            "test_acc": test_acc_at_best_val,
+            "test/acc": test_acc_at_best_val,
+            "test_acc_at_final_epoch": test_acc_at_final_epoch,
+            "test/acc_at_final_epoch": test_acc_at_final_epoch,
+            "test_acc_at_best_val": test_acc_at_best_val,
+            "test/acc_at_best_val": test_acc_at_best_val,
+        }
+    )
 
     run.finish(exit_code=0)
     return 0

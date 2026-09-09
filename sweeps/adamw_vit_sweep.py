@@ -23,7 +23,7 @@ BASE_LRS = (1.5e-4, 1e-3)
 WEIGHT_DECAYS = (5e-2, 1e-3)
 BATCH_SIZES = (256, 1024)
 USE_SCHEDULER = (True,)
-DEFAULT_MAL_CONFIG = "False,1.0,moment,replace,moment,fixed"
+DEFAULT_MAL_CONFIG = "False,1.0,none,attenuate,update,complement"
 
 
 def get_finished_run_ids(project_name: str, sweep_ids: list[str]) -> list[str]:
@@ -70,7 +70,6 @@ def main() -> int:
                 "values": (
                     "AdamW",
                     "AM_AdamW",
-                    "CAUTIOUS_AdamW",
                     "AdaTAMW",
                     "MAL_AdamW",
                 )
@@ -125,7 +124,7 @@ def main() -> int:
         sweep=sweep_configuration,
         prior_runs=prior_run_ids,
     )
-    expected_runs = 5 * len(BATCH_SIZES) * len(BASE_LRS) * len(WEIGHT_DECAYS) * len(SEEDS)
+    expected_runs = 4 * len(BATCH_SIZES) * len(BASE_LRS) * len(WEIGHT_DECAYS) * len(SEEDS)
     print(f"EXPECTED_RUNS={expected_runs}")
     print(f"Run with:\n$ uv run wandb agent --forward-signals {ENTITY_NAME}/{args.project_name}/{sweep_id}")
     return 0

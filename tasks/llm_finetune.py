@@ -796,6 +796,12 @@ def main() -> int:
         run.summary["final/val_loss"] = final_val_loss
         run.summary["test/loss"] = test_loss
         run.summary["test/perplexity"] = perplexity(test_loss)
+        # This task currently evaluates only the final fine-tuned model; do
+        # not imply that a validation-selected checkpoint was restored.
+        run.summary["test_loss_at_final_epoch"] = test_loss
+        run.summary["test/loss_at_final_epoch"] = test_loss
+        run.summary["test_perplexity_at_final_epoch"] = perplexity(test_loss)
+        run.summary["test/perplexity_at_final_epoch"] = perplexity(test_loss)
     except Exception:
         process_state["exit_code"] = 1
         raise

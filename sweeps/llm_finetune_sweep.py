@@ -14,11 +14,11 @@ DATASET_CONFIG = "wikitext-2-raw-v1"
 DATASET_REVISION = "b08601e04326c79dfdd32d625aee71d232d685c3"
 
 SGDM_OPTIMIZERS = ("SGDM", "AM_MSGD", "CAUTIOUS_SGDM", "TAM_SGDM", "MAL_SGDM")
-ADAMW_OPTIMIZERS = ("AdamW", "AM_AdamW", "CAUTIOUS_AdamW", "AdaTAMW", "MAL_AdamW")
+ADAMW_OPTIMIZERS = ("AdamW", "AM_AdamW", "AdaTAMW", "MAL_AdamW")
 SEEDS = (42, 1337, 2026)
 BATCH_SIZES = (32,)
 LR_MULTIPLIERS = (0.3, 1.0, 3.0)
-DEFAULT_MAL_CONFIG = "False,1.0,step,attenuate,metric,fixed"
+DEFAULT_MAL_CONFIG = "False,1.0,none,attenuate,metric,fixed"
 
 
 def get_finished_run_ids(project_name: str, sweep_ids: list[str]) -> list[str]:
@@ -53,6 +53,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if args.family in {"sgdm", "all"} and args.mal_config.split(",")[-1].strip().lower() != "fixed":
+        parser.error("SGDM-family sweeps require a MAL_config with gradient_weight_mode=fixed.")
+
     optimizers = {
         "sgdm": SGDM_OPTIMIZERS,
         "adamw": ADAMW_OPTIMIZERS,
@@ -65,6 +68,7 @@ def main() -> int:
         "metric": {"name": "val/loss", "goal": "minimize"},
         "parameters": {
             "optimizer": {"values": optimizers},
+            "MAL_config": {"values": (args.mal_config,)},
             "batch_size": {"values": BATCH_SIZES},
             "lr_multiplier": {"values": LR_MULTIPLIERS},
             "seed": {"values": SEEDS},
@@ -109,8 +113,6 @@ def main() -> int:
             "0.9",
             "--beta2",
             "0.999",
-            "--MAL_config",
-            args.mal_config,
             "--amp_dtype",
             args.amp_dtype,
             "--float32_precision",
@@ -130,6 +132,8 @@ def main() -> int:
         sweep=sweep_configuration,
         prior_runs=prior_run_ids,
     )
+    expected_runs = len(optimizers) * len(BATCH_SIZES) * len(LR_MULTIPLIERS) * len(SEEDS)
+    print(f"EXPECTED_RUNS={expected_runs}")
     print(f"Run with:\n$ uv run wandb agent --forward-signals {ENTITY_NAME}/{args.project_name}/{sweep_id}")
     return 0
 
