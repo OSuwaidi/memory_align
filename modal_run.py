@@ -1,24 +1,19 @@
-"""Run the active CIFAR-10 W&B sweep on a Modal L40S.
+"""Run the paired MAL-AdamW in-place MAE pilot on Modal.
 
-One-time setup::
+Create the associated W&B sweep with::
 
-    modal setup
-    modal secret create wandb-secret WANDB_API_KEY=<your-wandb-api-key>
+    uv run sweeps/mal_adamw_mae_in_place_sweep.py tasks/mae_pretrain.py \
+        --sweep-name mal-adamw-mae-in-place-modal-pilot
 
-Launch the agent (``--detach`` lets it survive terminal disconnects)::
+Then launch two detached, single-run agents with the printed sweep path::
 
-    modal run --detach modal_run.py
+    uv run modal run --detach modal_run.py \
+        --sweep-path osuwaidi-khalifa-university/MAL_benchmark/SWEEP_ID
 
-By default the W&B agent keeps requesting runs until the sweep finishes or the
-credit-aware runtime limit is reached. To intentionally run fewer trials::
-
-    modal run --detach modal_run.py --count 5
-
-The runtime limit is a guardrail based on Modal's public August 2026 prices; it
-is not an account-level spending cap. It assumes the Starter tier's full $30
-monthly credit is available and leaves $1 for image builds and other overhead.
-The absolute deadline is passed as a Function input so it survives Modal
-preemptions and retries instead of granting a fresh budget to every attempt.
+The image checks out the current committed revision rather than mounting the
+working tree. This makes Modal use the same task and optimizer implementation
+as the AUS cluster even when the local repository has unrelated uncommitted
+changes.
 """
 
 from __future__ import annotations
@@ -32,73 +27,72 @@ import time
 
 import modal
 
-APP_NAME = "cifar10-wandb-sweep-86q26b8k"
-SWEEP_ID = "osuwaidi-khalifa-university/FINAL_MAL_CIFAR10/86q26b8k"
-
-# L40S is the best practical speed/credit trade-off for this small CNN workload:
-# substantially faster than L4/A10, without paying H100/B200 rates for compute
-# that ResNet18 on 32x32 inputs is unlikely to saturate.
-GPU = "L40S"
-CPU_CORES = 8.0  # Modal physical cores (1 physical CPU = 2 vCPUs); feeds torchvision transforms.
-MEMORY_MIB = 16 * 1024
-
-# Current public Modal rates (USD/s), as checked 2026-08-20.
-L40S_RATE = 0.000542
-CPU_CORE_RATE = 0.0000131
-MEMORY_GIB_RATE = 0.00000222
-STARTER_CREDIT = 30.0
-BUILD_AND_OVERHEAD_RESERVE = 1.0
-TOTAL_RATE = L40S_RATE + CPU_CORES * CPU_CORE_RATE + (MEMORY_MIB / 1024) * MEMORY_GIB_RATE
-DEFAULT_AGENT_SECONDS = math.floor((STARTER_CREDIT - BUILD_AND_OVERHEAD_RESERVE) / TOTAL_RATE)
-CREDIT_SHUTDOWN_GRACE_SECONDS = 4 * 60
-# Modal gives a preempted container about 30 seconds to exit before killing it.
-PREEMPTION_SHUTDOWN_GRACE_SECONDS = 20
-FORCED_SHUTDOWN_GRACE_SECONDS = 5
-MAX_FAILURE_RETRIES = 10
+APP_NAME = "mal-adamw-mae-in-place-pilot"
+ALLOWED_SWEEP_PREFIX = "osuwaidi-khalifa-university/MAL_benchmark/"
+SOURCE_REPOSITORY = "https://github.com/OSuwaidi/memory_align.git"
+SOURCE_REVISION = subprocess.run(
+    ("git", "rev-parse", "HEAD"),
+    check=True,
+    capture_output=True,
+    text=True,
+).stdout.strip()
 
 REMOTE_PROJECT_DIR = "/workspace"
-CIFAR10_URL = "https://huggingface.co/datasets/liangnanying/cifar-10-python/resolve/main/cifar-10-python.tar.gz"
-CIFAR10_MD5 = "c58f30108f718f92721af3b95e74349a"
-CIFAR10_ARCHIVE = "/tmp/cifar-10-python.tar.gz"
-CIFAR10_DATA_DIR = f"{REMOTE_PROJECT_DIR}/data"
+TINY_IMAGENET_DIR = f"{REMOTE_PROJECT_DIR}/data/tiny-imagenet-200"
+
+# Modal and the AUS nodes both expose an NVIDIA A10-class GPU. Holding the GPU
+# generation fixed is preferable for this paired optimizer comparison.
+GPU = "A10"
+CPU_CORES = 8.0
+MEMORY_MIB = 16 * 1024
+AGENT_COUNT = 2
+RUNS_PER_AGENT = 1
+
+# Public Modal rates checked on 2026-09-10. The two functions share the old
+# script's $30 Starter-credit assumption and leave $1 for image-build overhead.
+A10_RATE = 0.000306
+CPU_CORE_RATE = 0.0000131
+MEMORY_GIB_RATE = 0.00000222
+STARTER_CREDIT_USD = 30.0
+BUILD_RESERVE_USD = 1.0
+TOTAL_RATE_PER_AGENT = A10_RATE + CPU_CORES * CPU_CORE_RATE + (MEMORY_MIB / 1024) * MEMORY_GIB_RATE
+DEFAULT_AGENT_SECONDS = math.floor((STARTER_CREDIT_USD - BUILD_RESERVE_USD) / (AGENT_COUNT * TOTAL_RATE_PER_AGENT))
+CREDIT_SHUTDOWN_GRACE_SECONDS = 4 * 60
+PREEMPTION_SHUTDOWN_GRACE_SECONDS = 20
+FORCED_SHUTDOWN_GRACE_SECONDS = 5
+
+PYPI_PACKAGES = (
+    "numpy==2.5.2",
+    "pillow==12.3.0",
+    "scikit-learn==1.9.0",
+    "timm==1.0.29",
+    "tqdm==4.70.0",
+    "wandb==0.29.0",
+)
+PYTORCH_INDEX = "https://download.pytorch.org/whl/cu128"
 
 image = (
     modal.Image.debian_slim(python_version="3.14")
-    .apt_install("ca-certificates", "curl")
-    # Install the exact locked third-party environment, including CUDA PyTorch.
-    .uv_sync(".", extra_options="--no-dev")
-    # Download during the cached, CPU-only image build instead of GPU runtime.
-    # The extracted path is exactly what torchvision.datasets.CIFAR10 expects.
+    .apt_install("ca-certificates", "git")
+    .uv_pip_install("torch==2.11.0", "torchvision==0.26.0", index_url=PYTORCH_INDEX)
+    .uv_pip_install(*PYPI_PACKAGES)
     .run_commands(
-        f"mkdir -p {CIFAR10_DATA_DIR}",
-        (
-            "curl --fail --location --show-error --retry 5 --retry-all-errors "
-            f"--retry-delay 2 --connect-timeout 30 --output {CIFAR10_ARCHIVE} {CIFAR10_URL}"
-        ),
-        f"echo '{CIFAR10_MD5}  {CIFAR10_ARCHIVE}' | md5sum --check --status",
-        f"tar -xzf {CIFAR10_ARCHIVE} -C {CIFAR10_DATA_DIR}",
-        f"test -s {CIFAR10_DATA_DIR}/cifar-10-batches-py/data_batch_1",
-        f"test -s {CIFAR10_DATA_DIR}/cifar-10-batches-py/test_batch",
-        f"rm -f {CIFAR10_ARCHIVE}",
+        f"git clone --filter=blob:none --no-checkout {SOURCE_REPOSITORY} {REMOTE_PROJECT_DIR}",
+        f"git -C {REMOTE_PROJECT_DIR} fetch --depth 1 origin {SOURCE_REVISION}",
+        f"git -C {REMOTE_PROJECT_DIR} checkout --detach {SOURCE_REVISION}",
+        f'test "$(git -C {REMOTE_PROJECT_DIR} rev-parse HEAD)" = "{SOURCE_REVISION}"',
+        f"python {REMOTE_PROJECT_DIR}/download_datasets.py --task tiny-imagenet --tiny-imagenet-dir {REMOTE_PROJECT_DIR}/data",
+        f"test -s {TINY_IMAGENET_DIR}/val/val_annotations.txt",
     )
-    # All image build steps must precede add_local_* runtime mounts.
     .workdir(REMOTE_PROJECT_DIR)
-    .add_local_file("tasks/cifar_train.py", f"{REMOTE_PROJECT_DIR}/cifar_train.py")
-    .add_local_dir("optims", f"{REMOTE_PROJECT_DIR}/optims")
-    .add_local_dir("sweeps", f"{REMOTE_PROJECT_DIR}/sweeps")
 )
 
 app = modal.App(APP_NAME, image=image)
 wandb_secret = modal.Secret.from_name("wandb-secret")
 
 
-def _terminate_agent(
-    agent: subprocess.Popen[bytes],
-    *,
-    reason: str,
-    graceful_timeout: int,
-) -> None:
-    """Stop W&B cleanly so its child training run is marked preempted."""
+def _terminate_agent(agent: subprocess.Popen[bytes], *, reason: str, graceful_timeout: int) -> None:
+    """Stop W&B cleanly so the active run is not left indefinitely running."""
     if agent.poll() is not None:
         return
 
@@ -110,7 +104,6 @@ def _terminate_agent(
     try:
         agent.wait(timeout=graceful_timeout)
     except subprocess.TimeoutExpired:
-        print("W&B did not stop during the grace period; terminating it.", flush=True)
         agent.terminate()
         try:
             agent.wait(timeout=FORCED_SHUTDOWN_GRACE_SECONDS)
@@ -124,70 +117,97 @@ def _terminate_agent(
     cpu=CPU_CORES,
     memory=MEMORY_MIB,
     timeout=DEFAULT_AGENT_SECONDS + CREDIT_SHUTDOWN_GRACE_SECONDS + 60,
-    retries=modal.Retries(initial_delay=0.0, max_retries=MAX_FAILURE_RETRIES),
+    retries=modal.Retries(initial_delay=5.0, max_retries=1),
     single_use_containers=True,
+    max_containers=AGENT_COUNT,
     secrets=[wandb_secret],
 )
-def run_sweep_agent(count: int, deadline_unix_seconds: float) -> int:
-    """Run a retryable W&B agent until sweep completion or the fixed deadline."""
-    if count < 0:
-        raise ValueError("count must be zero (unlimited) or a positive integer")
+def run_sweep_agent(agent_index: int, sweep_path: str, deadline_unix_seconds: float) -> int:
+    """Claim and execute exactly one W&B run before the shared deadline."""
+    if not 1 <= agent_index <= AGENT_COUNT:
+        raise ValueError(f"agent_index must be in [1, {AGENT_COUNT}]")
+    if not sweep_path.startswith(ALLOWED_SWEEP_PREFIX):
+        raise ValueError(f"sweep_path must start with {ALLOWED_SWEEP_PREFIX}")
     if not os.environ.get("WANDB_API_KEY"):
         raise RuntimeError("Modal secret 'wandb-secret' must contain WANDB_API_KEY")
 
     remaining_seconds = deadline_unix_seconds - time.time()
     if remaining_seconds <= 0:
-        print("Overall credit-aware deadline already reached; not restarting W&B.", flush=True)
+        print(f"Agent {agent_index}: shared credit deadline already reached.", flush=True)
         return 0
     if remaining_seconds > DEFAULT_AGENT_SECONDS + 60:
-        raise ValueError("deadline exceeds the maximum credit-aware runtime")
+        raise ValueError("deadline exceeds the shared Starter-credit guard")
 
     gpu_name = subprocess.run(
-        ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+        ("nvidia-smi", "--query-gpu=name", "--format=csv,noheader"),
         check=True,
         capture_output=True,
         text=True,
     ).stdout.strip()
-    budget_hours = remaining_seconds / 3600
-    estimated_cost = remaining_seconds * TOTAL_RATE
+    torch_check = subprocess.run(
+        (
+            sys.executable,
+            "-c",
+            (
+                "import torch, torchvision; "
+                "assert torch.cuda.is_available(); "
+                "print(f'torch={torch.__version__}, torchvision={torchvision.__version__}')"
+            ),
+        ),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    checked_out_revision = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=REMOTE_PROJECT_DIR,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if checked_out_revision != SOURCE_REVISION:
+        raise RuntimeError(f"source revision mismatch: {checked_out_revision} != {SOURCE_REVISION}")
+
     deadline_utc = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(deadline_unix_seconds))
     print(
-        f"Starting/restarting W&B sweep agent on {gpu_name}. "
-        f"Overall deadline: {deadline_utc}; remaining guard: {budget_hours:.2f} h (~${estimated_cost:.2f}).",
+        f"Agent {agent_index}/{AGENT_COUNT}: {gpu_name}; {torch_check}; source={SOURCE_REVISION}; "
+        f"one W&B run; shared deadline={deadline_utc}.",
         flush=True,
     )
 
-    command = [sys.executable, "-m", "wandb", "agent", "--forward-signals"]
-    if count:
-        command.extend(["--count", str(count)])
-    command.append(SWEEP_ID)
-
+    command = [
+        sys.executable,
+        "-m",
+        "wandb",
+        "agent",
+        "--forward-signals",
+        "--count",
+        str(RUNS_PER_AGENT),
+        sweep_path,
+    ]
     agent = subprocess.Popen(command, cwd=REMOTE_PROJECT_DIR)
     try:
         while agent.poll() is None:
-            remaining = deadline_unix_seconds - time.time()
-            if remaining <= 0:
+            remaining_seconds = deadline_unix_seconds - time.time()
+            if remaining_seconds <= 0:
                 _terminate_agent(
                     agent,
-                    reason="Overall credit-aware runtime reached",
+                    reason=f"Agent {agent_index}: shared credit-aware runtime reached",
                     graceful_timeout=CREDIT_SHUTDOWN_GRACE_SECONDS,
                 )
                 break
-            time.sleep(min(30, remaining))
+            time.sleep(min(30, remaining_seconds))
     except KeyboardInterrupt:
-        # Modal uses an interrupt for preemption. Re-raise it after W&B marks
-        # the active run preempted; Modal will restart this same Function input.
         _terminate_agent(
             agent,
-            reason="Modal interrupted/preempted this Function attempt",
+            reason=f"Agent {agent_index}: Modal interrupted or preempted the function",
             graceful_timeout=PREEMPTION_SHUTDOWN_GRACE_SECONDS,
         )
-        print("The Function input will be retried with the original overall deadline.", flush=True)
         raise
     except BaseException:
         _terminate_agent(
             agent,
-            reason="The sweep-agent wrapper failed unexpectedly",
+            reason=f"Agent {agent_index}: wrapper failed unexpectedly",
             graceful_timeout=PREEMPTION_SHUTDOWN_GRACE_SECONDS,
         )
         raise
@@ -199,16 +219,20 @@ def run_sweep_agent(count: int, deadline_unix_seconds: float) -> int:
 
 
 @app.local_entrypoint()
-def main(count: int = 0, max_hours: float = DEFAULT_AGENT_SECONDS / 3600) -> None:
-    """Launch the remote sweep agent via `modal run --detach modal_run.py`."""
-    if count < 0:
-        raise ValueError("--count must be zero (unlimited) or a positive integer")
-    if not 0 < max_hours <= DEFAULT_AGENT_SECONDS / 3600:
-        raise ValueError(f"--max-hours must be in (0, {DEFAULT_AGENT_SECONDS / 3600:.2f}]")
+def main(sweep_path: str, max_hours: float = DEFAULT_AGENT_SECONDS / 3600) -> None:
+    """Launch two detached one-run agents for the paired W&B pilot."""
+    if not sweep_path.startswith(ALLOWED_SWEEP_PREFIX):
+        raise ValueError(f"--sweep-path must start with {ALLOWED_SWEEP_PREFIX}")
+    maximum_hours = DEFAULT_AGENT_SECONDS / 3600
+    if not 0 < max_hours <= maximum_hours:
+        raise ValueError(f"--max-hours must be in (0, {maximum_hours:.2f}]")
 
-    max_runtime_seconds = max(1, math.floor(max_hours * 3600))
-    # Modal retries receive the same serialized arguments, so this absolute
-    # deadline prevents a preemption from resetting the credit guard.
-    deadline_unix_seconds = time.time() + max_runtime_seconds
-    return_code = run_sweep_agent.remote(count=count, deadline_unix_seconds=deadline_unix_seconds)
-    print(f"W&B sweep agent exited with status {return_code}.")
+    deadline_unix_seconds = time.time() + math.floor(max_hours * 3600)
+    estimated_maximum_cost = max_hours * AGENT_COUNT * TOTAL_RATE_PER_AGENT * 3600
+    print(
+        f"Launching {AGENT_COUNT} Modal {GPU} agents, one W&B run each, from source {SOURCE_REVISION}. "
+        f"The shared runtime guard is {max_hours:.2f} h/agent (~${estimated_maximum_cost:.2f} total maximum)."
+    )
+    for agent_index in range(1, AGENT_COUNT + 1):
+        call = run_sweep_agent.spawn(agent_index, sweep_path, deadline_unix_seconds)
+        print(f"AGENT_{agent_index}_CALL_ID={call.object_id}")
