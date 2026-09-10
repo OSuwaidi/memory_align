@@ -5,7 +5,7 @@ Create the associated W&B sweep with::
     uv run sweeps/mal_adamw_mae_in_place_sweep.py tasks/mae_pretrain.py \
         --sweep-name mal-adamw-mae-in-place-modal-pilot
 
-Then launch two detached, single-run agents with the printed sweep path::
+Then launch one detached two-GPU function with the printed sweep path::
 
     uv run modal run --detach modal_run.py \
         --sweep-path osuwaidi-khalifa-university/MAL_benchmark/SWEEP_ID
@@ -41,10 +41,14 @@ REMOTE_PROJECT_DIR = "/workspace"
 TINY_IMAGENET_DIR = f"{REMOTE_PROJECT_DIR}/data/tiny-imagenet-200"
 
 # Modal and the AUS nodes both expose an NVIDIA A10-class GPU. Holding the GPU
-# generation fixed is preferable for this paired optimizer comparison.
-GPU = "A10"
+# generation fixed is preferable for this paired optimizer comparison. Both
+# agents live in one two-GPU function because detached Modal entrypoints only
+# guarantee the lifetime of their last triggered function call.
+GPU_TYPE = "A10"
+GPU_COUNT = 2
+GPU_REQUEST = f"{GPU_TYPE}:{GPU_COUNT}"
 CPU_CORES = 8.0
-MEMORY_MIB = 16 * 1024
+MEMORY_MIB = 32 * 1024
 AGENT_COUNT = 2
 RUNS_PER_AGENT = 1
 
@@ -55,8 +59,8 @@ CPU_CORE_RATE = 0.0000131
 MEMORY_GIB_RATE = 0.00000222
 STARTER_CREDIT_USD = 30.0
 BUILD_RESERVE_USD = 1.0
-TOTAL_RATE_PER_AGENT = A10_RATE + CPU_CORES * CPU_CORE_RATE + (MEMORY_MIB / 1024) * MEMORY_GIB_RATE
-DEFAULT_AGENT_SECONDS = math.floor((STARTER_CREDIT_USD - BUILD_RESERVE_USD) / (AGENT_COUNT * TOTAL_RATE_PER_AGENT))
+TOTAL_FUNCTION_RATE = GPU_COUNT * A10_RATE + CPU_CORES * CPU_CORE_RATE + (MEMORY_MIB / 1024) * MEMORY_GIB_RATE
+DEFAULT_FUNCTION_SECONDS = math.floor((STARTER_CREDIT_USD - BUILD_RESERVE_USD) / TOTAL_FUNCTION_RATE)
 CREDIT_SHUTDOWN_GRACE_SECONDS = 4 * 60
 PREEMPTION_SHUTDOWN_GRACE_SECONDS = 20
 FORCED_SHUTDOWN_GRACE_SECONDS = 5
@@ -113,19 +117,17 @@ def _terminate_agent(agent: subprocess.Popen[bytes], *, reason: str, graceful_ti
 
 
 @app.function(
-    gpu=GPU,
+    gpu=GPU_REQUEST,
     cpu=CPU_CORES,
     memory=MEMORY_MIB,
-    timeout=DEFAULT_AGENT_SECONDS + CREDIT_SHUTDOWN_GRACE_SECONDS + 60,
+    timeout=DEFAULT_FUNCTION_SECONDS + CREDIT_SHUTDOWN_GRACE_SECONDS + 60,
     retries=modal.Retries(initial_delay=5.0, max_retries=1),
     single_use_containers=True,
-    max_containers=AGENT_COUNT,
+    max_containers=1,
     secrets=[wandb_secret],
 )
-def run_sweep_agent(agent_index: int, sweep_path: str, deadline_unix_seconds: float) -> int:
-    """Claim and execute exactly one W&B run before the shared deadline."""
-    if not 1 <= agent_index <= AGENT_COUNT:
-        raise ValueError(f"agent_index must be in [1, {AGENT_COUNT}]")
+def run_sweep_agents(sweep_path: str, deadline_unix_seconds: float) -> list[int]:
+    """Run one isolated single-run W&B agent on each allocated GPU."""
     if not sweep_path.startswith(ALLOWED_SWEEP_PREFIX):
         raise ValueError(f"sweep_path must start with {ALLOWED_SWEEP_PREFIX}")
     if not os.environ.get("WANDB_API_KEY"):
@@ -133,17 +135,19 @@ def run_sweep_agent(agent_index: int, sweep_path: str, deadline_unix_seconds: fl
 
     remaining_seconds = deadline_unix_seconds - time.time()
     if remaining_seconds <= 0:
-        print(f"Agent {agent_index}: shared credit deadline already reached.", flush=True)
-        return 0
-    if remaining_seconds > DEFAULT_AGENT_SECONDS + 60:
+        print("Shared credit deadline already reached.", flush=True)
+        return []
+    if remaining_seconds > DEFAULT_FUNCTION_SECONDS + 60:
         raise ValueError("deadline exceeds the shared Starter-credit guard")
 
-    gpu_name = subprocess.run(
+    gpu_names = subprocess.run(
         ("nvidia-smi", "--query-gpu=name", "--format=csv,noheader"),
         check=True,
         capture_output=True,
         text=True,
-    ).stdout.strip()
+    ).stdout.strip().splitlines()
+    if len(gpu_names) != GPU_COUNT:
+        raise RuntimeError(f"Expected {GPU_COUNT} GPUs, found {len(gpu_names)}: {gpu_names}")
     torch_check = subprocess.run(
         (
             sys.executable,
@@ -151,7 +155,8 @@ def run_sweep_agent(agent_index: int, sweep_path: str, deadline_unix_seconds: fl
             (
                 "import torch, torchvision; "
                 "assert torch.cuda.is_available(); "
-                "print(f'torch={torch.__version__}, torchvision={torchvision.__version__}')"
+                f"assert torch.cuda.device_count() == {GPU_COUNT}; "
+                "print(f'torch={torch.__version__}, torchvision={torchvision.__version__}, devices={torch.cuda.device_count()}')"
             ),
         ),
         check=True,
@@ -170,8 +175,8 @@ def run_sweep_agent(agent_index: int, sweep_path: str, deadline_unix_seconds: fl
 
     deadline_utc = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(deadline_unix_seconds))
     print(
-        f"Agent {agent_index}/{AGENT_COUNT}: {gpu_name}; {torch_check}; source={SOURCE_REVISION}; "
-        f"one W&B run; shared deadline={deadline_utc}.",
+        f"GPUs={gpu_names}; {torch_check}; source={SOURCE_REVISION}; "
+        f"{AGENT_COUNT} isolated one-run W&B agents; shared deadline={deadline_utc}.",
         flush=True,
     )
 
@@ -185,54 +190,69 @@ def run_sweep_agent(agent_index: int, sweep_path: str, deadline_unix_seconds: fl
         str(RUNS_PER_AGENT),
         sweep_path,
     ]
-    agent = subprocess.Popen(command, cwd=REMOTE_PROJECT_DIR)
+    agents: list[subprocess.Popen[bytes]] = []
+    for agent_index in range(AGENT_COUNT):
+        agent_environment = dict(os.environ)
+        agent_environment.update(
+            {
+                "CUDA_VISIBLE_DEVICES": str(agent_index),
+                "OMP_NUM_THREADS": "4",
+                "WANDB_DIR": f"/tmp/wandb-agent-{agent_index + 1}",
+            }
+        )
+        os.makedirs(agent_environment["WANDB_DIR"], exist_ok=True)
+        agents.append(subprocess.Popen(command, cwd=REMOTE_PROJECT_DIR, env=agent_environment))
+
     try:
-        while agent.poll() is None:
+        while any(agent.poll() is None for agent in agents):
             remaining_seconds = deadline_unix_seconds - time.time()
             if remaining_seconds <= 0:
-                _terminate_agent(
-                    agent,
-                    reason=f"Agent {agent_index}: shared credit-aware runtime reached",
-                    graceful_timeout=CREDIT_SHUTDOWN_GRACE_SECONDS,
-                )
+                for agent_index, agent in enumerate(agents, start=1):
+                    _terminate_agent(
+                        agent,
+                        reason=f"Agent {agent_index}: shared credit-aware runtime reached",
+                        graceful_timeout=CREDIT_SHUTDOWN_GRACE_SECONDS,
+                    )
                 break
             time.sleep(min(30, remaining_seconds))
     except KeyboardInterrupt:
-        _terminate_agent(
-            agent,
-            reason=f"Agent {agent_index}: Modal interrupted or preempted the function",
-            graceful_timeout=PREEMPTION_SHUTDOWN_GRACE_SECONDS,
-        )
+        for agent_index, agent in enumerate(agents, start=1):
+            _terminate_agent(
+                agent,
+                reason=f"Agent {agent_index}: Modal interrupted or preempted the function",
+                graceful_timeout=PREEMPTION_SHUTDOWN_GRACE_SECONDS,
+            )
         raise
     except BaseException:
-        _terminate_agent(
-            agent,
-            reason=f"Agent {agent_index}: wrapper failed unexpectedly",
-            graceful_timeout=PREEMPTION_SHUTDOWN_GRACE_SECONDS,
-        )
+        for agent_index, agent in enumerate(agents, start=1):
+            _terminate_agent(
+                agent,
+                reason=f"Agent {agent_index}: wrapper failed unexpectedly",
+                graceful_timeout=PREEMPTION_SHUTDOWN_GRACE_SECONDS,
+            )
         raise
 
-    return_code = agent.wait()
-    if return_code not in (0, 130, -signal.SIGINT):
-        raise subprocess.CalledProcessError(return_code, command)
-    return return_code
+    return_codes = [agent.wait() for agent in agents]
+    for return_code in return_codes:
+        if return_code not in (0, 130, -signal.SIGINT):
+            raise subprocess.CalledProcessError(return_code, command)
+    return return_codes
 
 
 @app.local_entrypoint()
-def main(sweep_path: str, max_hours: float = DEFAULT_AGENT_SECONDS / 3600) -> None:
-    """Launch two detached one-run agents for the paired W&B pilot."""
+def main(sweep_path: str, max_hours: float = DEFAULT_FUNCTION_SECONDS / 3600) -> None:
+    """Launch the detached two-GPU function for the paired W&B pilot."""
     if not sweep_path.startswith(ALLOWED_SWEEP_PREFIX):
         raise ValueError(f"--sweep-path must start with {ALLOWED_SWEEP_PREFIX}")
-    maximum_hours = DEFAULT_AGENT_SECONDS / 3600
+    maximum_hours = DEFAULT_FUNCTION_SECONDS / 3600
     if not 0 < max_hours <= maximum_hours:
         raise ValueError(f"--max-hours must be in (0, {maximum_hours:.2f}]")
 
     deadline_unix_seconds = time.time() + math.floor(max_hours * 3600)
-    estimated_maximum_cost = max_hours * AGENT_COUNT * TOTAL_RATE_PER_AGENT * 3600
+    estimated_maximum_cost = max_hours * TOTAL_FUNCTION_RATE * 3600
     print(
-        f"Launching {AGENT_COUNT} Modal {GPU} agents, one W&B run each, from source {SOURCE_REVISION}. "
-        f"The shared runtime guard is {max_hours:.2f} h/agent (~${estimated_maximum_cost:.2f} total maximum)."
+        f"Launching one Modal {GPU_REQUEST} function with {AGENT_COUNT} W&B agents from source {SOURCE_REVISION}. "
+        f"The shared runtime guard is {max_hours:.2f} h (~${estimated_maximum_cost:.2f} total maximum)."
     )
-    for agent_index in range(1, AGENT_COUNT + 1):
-        call = run_sweep_agent.spawn(agent_index, sweep_path, deadline_unix_seconds)
-        print(f"AGENT_{agent_index}_CALL_ID={call.object_id}")
+    call = run_sweep_agents.spawn(sweep_path, deadline_unix_seconds)
+    print(f"FUNCTION_CALL_ID={call.object_id}")
