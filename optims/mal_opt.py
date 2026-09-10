@@ -14,10 +14,8 @@ def get_norms_and_eff_beta(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     g_norm = torch.linalg.vector_norm(g)
     probe_norm = torch.linalg.vector_norm(probe)
-    dot = torch.dot(g.flatten(), probe.flatten())
+    dot = (g * probe).sum()
 
-    # Preserve the true cosine whenever both vectors are numerically non-zero;
-    # adding eps unconditionally makes the gate depend on their absolute scale.
     denominator = g_norm.clamp_min(eps) * probe_norm.clamp_min(eps)
     cosine_sim = (dot / denominator).clamp(-1.0, 1.0)
 
@@ -211,18 +209,18 @@ class MAL_SGDM(Optimizer):
                 g_norm, u_norm, beta_eff = get_norms_and_eff_beta(g, u, pwr)
                 beta_eff = _apply_gate(beta, beta_eff, gate_mode)
                 beta_eff = torch.where(g_norm > 0.0, beta_eff, beta)
-                m_eff = torch.addcmul(g, m, beta_eff)  # beta_eff * m_{t-1} + g
+                m_eff = g.addcmul(m, beta_eff)  # beta_eff * m_{t-1} + g
 
                 if in_place:
                     m.copy_(m_eff)
                 else:
                     m.copy_(m_probe)  # plain heavy ball
 
-                u_eff = torch.addcmul(g, m, beta_eff) if nesterov else m_eff
+                u_eff = g.addcmul(m, beta_eff) if nesterov else m_eff
 
                 if scale:
-                    u_eff_norm = torch.linalg.vector_norm(u_eff) + 1e-7
-                    u_eff.mul_(u_norm / u_eff_norm)
+                    u_eff_norm = torch.linalg.vector_norm(u_eff) + 1e-8
+                    u_eff.mul_(u_norm.clamp_min(1e-12) / u_eff_norm)
 
                 p.sub_(u_eff, alpha=lr)
 
@@ -342,7 +340,7 @@ class MAL_AdamW(Optimizer):
         pwr: float = 1.0,
         align: str = "white",
         in_place: bool = False,
-        scale: bool | str = True,
+        scale: bool | str = False,
         gate_mode: str = "attenuate",
         gradient_weight_mode="fixed",
     ) -> None:
@@ -509,20 +507,20 @@ class MAL_AdamW(Optimizer):
                 u = (m_probe / r_probe).div_(denominator)
 
                 if align == "update":
-                    grad, dir = g, u
+                    grad, base_step = g, u
                 elif align == "metric":  # cosine in the D^{-1} inner product: numerator is the descent term g^T D^{-1} m, and m=0 is exactly self-aligned
                     d_sqrt = denominator.sqrt()
-                    grad, dir = g / d_sqrt, m_probe / d_sqrt
+                    grad, base_step = g / d_sqrt, m_probe / d_sqrt
                 elif (
                     align == "white"
                 ):  # comparing \(D^{-1}g\) with \(D^{-1}m\), whose dot product can have the opposite sign from the actual descent term \(g^\top D^{-1}m\)
-                    grad, dir = g / denominator, u
+                    grad, base_step = g / denominator, u
                 else:  # align == "moment":
-                    grad, dir = g, m_probe
+                    grad, base_step = g, m_probe
 
                 a_norm, b_norm, beta1_eff = get_norms_and_eff_beta(
                     grad,
-                    dir,
+                    base_step,
                     pwr,
                 )
                 beta1_eff = _apply_gate(beta1, beta1_eff, gate_mode)
@@ -554,6 +552,168 @@ class MAL_AdamW(Optimizer):
                         u_probe_norm = b_norm if align in ("update", "white") else torch.linalg.vector_norm(u)
                         u_eff_norm = torch.linalg.vector_norm(u_eff) + eps
                         u_eff.mul_(u_probe_norm / u_eff_norm)
+
+                if wd > 0.0:
+                    p.mul_(1.0 - lr * wd)  # decoupled decay
+
+                p.sub_(u_eff, alpha=lr)
+
+        return loss
+
+
+class AdaMAL(Optimizer):
+    """MAL heavy-ball numerator with adaptive squared-gradient scaling.
+
+    Each tensor's raw-gradient cosine against ``beta1 * m + g`` gates the
+    historical contribution, giving ``m_eff = beta_eff * m + g``. The first
+    moment is never normalized. ``unbias`` controls only the second moment;
+    its default is False, matching AdaTAM's uncorrected denominator.
+
+    Transient state stores the fixed-beta probe. Recursive state stores the
+    effective moment; with ``scale="moment"`` it deliberately stores the
+    rescaled moment. ``scale="step"`` rescales only the applied update, so it
+    leaves that recursive moment unscaled. Norm matching is approximate due
+    to the additive numerical epsilon.
+    """
+
+    def __init__(
+        self,
+        params: Iterable[torch.nn.Parameter],
+        lr: float = 1e-3,
+        betas: tuple[float, float] = (0.9, 0.95),
+        eps: float = 1e-8,
+        weight_decay: float = 0.0,
+        pwr: float = 1.0,
+        in_place: bool = False,
+        scale: bool | str = False,
+        gate_mode: str = "attenuate",
+        unbias: bool = False,
+    ) -> None:
+        if lr < 0.0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError(f"Invalid beta1 value: {betas[0]}")
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError(f"Invalid beta2 value: {betas[1]}")
+        if eps <= 0.0:
+            raise ValueError(f"Invalid eps value: {eps}")
+        if weight_decay < 0.0:
+            raise ValueError(f"Invalid weight_decay value: {weight_decay}")
+        if pwr not in (0.5, 1.0):
+            raise ValueError(f"Invalid p value: {pwr}")
+        if isinstance(scale, bool):
+            scale = "step" if scale else "none"
+        if scale not in ("step", "moment", "none"):
+            raise ValueError(f"Invalid scale value: {scale}")
+        if gate_mode not in ("replace", "attenuate"):
+            raise ValueError(f"Invalid gate_mode value: {gate_mode}")
+        if not isinstance(unbias, bool):
+            raise ValueError(f"Invalid unbias value: {unbias}")
+
+        decay_params: list[torch.nn.Parameter] = []
+        no_decay_params: list[torch.nn.Parameter] = []
+
+        for p in params:
+            if not p.requires_grad:
+                continue
+            # Exclude biases and 1D normalization parameters from weight decay
+            if weight_decay == 0 or p.ndim <= 1:
+                no_decay_params.append(p)
+            else:
+                decay_params.append(p)
+
+        if not decay_params and not no_decay_params:
+            raise ValueError("AdamW received no trainable parameters.")
+
+        optim_groups = []
+
+        for group_params, group_wd in ((no_decay_params, 0.0), (decay_params, weight_decay)):
+            if group_params:
+                optim_groups.append(
+                    {
+                        "params": group_params,
+                        "weight_decay": group_wd,
+                    }
+                )
+
+        defaults = {
+            "lr": lr,
+            "beta1": betas[0],
+            "beta2": betas[1],
+            "pwr": pwr,
+            "eps": eps,
+            "in_place": in_place,
+            "scale": scale,
+            "gate_mode": gate_mode,
+            "unbias": unbias,
+        }
+        super().__init__(optim_groups, defaults)
+
+    @torch.no_grad()
+    def step(self, closure: Callable[[], float | torch.Tensor] | None = None) -> Any:
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            lr = group["lr"]
+            wd = group["weight_decay"]
+            beta1 = group["beta1"]
+            beta2 = group["beta2"]
+            pwr = group["pwr"]
+            in_place = group["in_place"]
+            scale = group["scale"]
+            gate_mode = group["gate_mode"]
+            eps = group["eps"]
+            unbias = group["unbias"]
+
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+
+                g = p.grad
+                state = self.state[p]
+                if not state:
+                    state["step"] = 0
+                    state["momentum_buffer"] = torch.zeros_like(p)
+                    state["exp_avg_sq"] = torch.zeros_like(p)
+
+                state["step"] += 1
+                step = state["step"]
+                m = state["momentum_buffer"]
+                v = state["exp_avg_sq"]
+
+                m_probe = g.add(m, alpha=beta1)
+                g_norm, m_probe_norm, beta1_eff = get_norms_and_eff_beta(g, m_probe, pwr)
+                beta1_eff = _apply_gate(beta1, beta1_eff, gate_mode)
+                beta1_eff = torch.where(g_norm > 0.0, beta1_eff, beta1)
+
+                m_eff = g.addcmul(m, beta1_eff)
+
+                v.mul_(beta2).addcmul_(g, g, value=1.0 - beta2)
+                if unbias:
+                    v_unbias = v / (1.0 - beta2**step)
+                else:
+                    v_unbias = v
+                denominator = v_unbias.sqrt().add_(eps)
+
+                if scale == "moment":
+                    m_eff_norm = torch.linalg.vector_norm(m_eff) + eps
+                    m_eff.mul_(m_probe_norm.clamp_min(1e-12) / m_eff_norm)  # commit scaled version into buffer if in-place is True
+                    u_eff = m_eff.div(denominator)
+
+                else:
+                    u_eff = m_eff.div(denominator)
+                    if scale == "step":
+                        u_probe_norm = torch.linalg.vector_norm(m_probe.div(denominator))
+                        u_eff_norm = torch.linalg.vector_norm(u_eff) + eps
+                        u_eff.mul_(u_probe_norm / u_eff_norm)
+
+                if in_place:
+                    m.copy_(m_eff)
+                else:
+                    m.copy_(m_probe)
 
                 if wd > 0.0:
                     p.mul_(1.0 - lr * wd)  # decoupled decay
