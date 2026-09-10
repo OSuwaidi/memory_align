@@ -55,13 +55,16 @@ def main() -> int:
         parser.error("--poll-seconds must be positive")
 
     api = wandb.Api(timeout=180)
+    sweep = api.sweep(args.sweep_path)
     stop_requested: set[str] = set()
     terminal_excluded: set[str] = set()
     initial_finished_ids: set[str] | None = None
 
     while True:
-        api.flush()
-        sweep = api.sweep(args.sweep_path)
+        # Sweep.runs is populated when the Sweep object is constructed and is
+        # not invalidated by Api.flush(). Force-reload it so newly allocated
+        # runs are visible to this long-lived cancellation guard.
+        sweep.load(force=True)
         optimizer_runs = [run for run in sweep.runs if dict(run.config).get("optimizer") == args.optimizer]
         signatures = [run_signature(run) for run in optimizer_runs]
         if len(signatures) != len(set(signatures)):
