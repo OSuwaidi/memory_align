@@ -1,25 +1,29 @@
-"""Run the paired MAL-AdamW in-place MAE pilot on Modal.
+"""Run a small, reproducible MAL-AdamW MAE sweep on Modal.
 
 Create the associated W&B sweep with::
 
-    uv run sweeps/mal_adamw_mae_in_place_sweep.py tasks/mae_pretrain.py \
-        --sweep-name mal-adamw-mae-in-place-modal-pilot
+    uv run sweeps/mal_adamw_mae_in_place_matched_sweep.py \
+        tasks/mae_pretrain.py --phase controls \
+        --sweep-name mal-adamw-mae-in-place-modal-controls
 
 Then launch one detached two-GPU function with the printed sweep path::
 
-    uv run modal run --detach modal_run.py \
-        --sweep-path osuwaidi-khalifa-university/MAL_benchmark/SWEEP_ID
+    MAL_MODAL_SOURCE_REVISION=COMMIT MAL_MODAL_APP_NAME=APP_NAME \
+        uv run modal run --detach modal_run.py \
+        --sweep-path osuwaidi-khalifa-university/MAL_benchmark/SWEEP_ID \
+        --runs-per-agent 1 --max-hours 2.25
 
-The image checks out the current committed revision rather than mounting the
-working tree. This makes Modal use the same task and optimizer implementation
-as the AUS cluster even when the local repository has unrelated uncommitted
-changes.
+By default, the image checks out the current committed revision rather than
+mounting the working tree. Set ``MAL_MODAL_SOURCE_REVISION`` to reproduce a
+previous experiment exactly and ``MAL_MODAL_APP_NAME`` when launching multiple
+independent detached jobs concurrently.
 """
 
 from __future__ import annotations
 
 import math
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -27,15 +31,19 @@ import time
 
 import modal
 
-APP_NAME = "mal-adamw-mae-in-place-pilot"
+APP_NAME = os.environ.get("MAL_MODAL_APP_NAME", "mal-adamw-mae-modal")
 ALLOWED_SWEEP_PREFIX = "osuwaidi-khalifa-university/MAL_benchmark/"
 SOURCE_REPOSITORY = "https://github.com/OSuwaidi/memory_align.git"
-SOURCE_REVISION = subprocess.run(
-    ("git", "rev-parse", "HEAD"),
-    check=True,
-    capture_output=True,
-    text=True,
-).stdout.strip()
+SOURCE_REVISION = os.environ.get("MAL_MODAL_SOURCE_REVISION")
+if SOURCE_REVISION is None:
+    SOURCE_REVISION = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+if re.fullmatch(r"[0-9a-f]{40}", SOURCE_REVISION) is None:
+    raise ValueError("MAL_MODAL_SOURCE_REVISION must be a full 40-character lowercase Git commit hash.")
 
 REMOTE_PROJECT_DIR = "/workspace"
 TINY_IMAGENET_DIR = f"{REMOTE_PROJECT_DIR}/data/tiny-imagenet-200"
@@ -50,10 +58,10 @@ GPU_REQUEST = f"{GPU_TYPE}:{GPU_COUNT}"
 CPU_CORES = 8.0
 MEMORY_MIB = 32 * 1024
 AGENT_COUNT = 2
-RUNS_PER_AGENT = 1
 
-# Public Modal rates checked on 2026-09-10. The two functions share the old
-# script's $30 Starter-credit assumption and leave $1 for image-build overhead.
+# Public Modal rates checked on 2026-09-10. This defines the absolute
+# per-function ceiling; each launch should use a much smaller explicit
+# ``--max-hours`` value based on the live billing balance.
 A10_RATE = 0.000306
 CPU_CORE_RATE = 0.0000131
 MEMORY_GIB_RATE = 0.00000222
@@ -77,6 +85,10 @@ PYTORCH_INDEX = "https://download.pytorch.org/whl/cu128"
 
 image = (
     modal.Image.debian_slim(python_version="3.14")
+    # The mounted runner is imported again inside the container, where local
+    # shell variables are not inherited. Persist the resolved revision in the
+    # image environment so both imports agree on the pinned training source.
+    .env({"MAL_MODAL_SOURCE_REVISION": SOURCE_REVISION})
     .apt_install("ca-certificates", "git")
     .uv_pip_install("torch==2.11.0", "torchvision==0.26.0", index_url=PYTORCH_INDEX)
     .uv_pip_install(*PYPI_PACKAGES)
@@ -88,7 +100,10 @@ image = (
         f"python {REMOTE_PROJECT_DIR}/download_datasets.py --task tiny-imagenet --tiny-imagenet-dir {REMOTE_PROJECT_DIR}/data",
         f"test -s {TINY_IMAGENET_DIR}/val/val_annotations.txt",
     )
-    .workdir(REMOTE_PROJECT_DIR)
+    # Keep the Modal runner's import root separate from the pinned repository.
+    # Training subprocesses still use REMOTE_PROJECT_DIR explicitly. Without
+    # this separation, an older checked-out modal_run.py can shadow this file.
+    .workdir("/root")
 )
 
 app = modal.App(APP_NAME, image=image)
@@ -126,12 +141,14 @@ def _terminate_agent(agent: subprocess.Popen[bytes], *, reason: str, graceful_ti
     max_containers=1,
     secrets=[wandb_secret],
 )
-def run_sweep_agents(sweep_path: str, deadline_unix_seconds: float) -> list[int]:
-    """Run one isolated single-run W&B agent on each allocated GPU."""
+def run_sweep_agents(sweep_path: str, deadline_unix_seconds: float, runs_per_agent: int) -> list[int]:
+    """Run one isolated bounded W&B agent on each allocated GPU."""
     if not sweep_path.startswith(ALLOWED_SWEEP_PREFIX):
         raise ValueError(f"sweep_path must start with {ALLOWED_SWEEP_PREFIX}")
     if not os.environ.get("WANDB_API_KEY"):
         raise RuntimeError("Modal secret 'wandb-secret' must contain WANDB_API_KEY")
+    if not 1 <= runs_per_agent <= 8:
+        raise ValueError("runs_per_agent must be in [1, 8]")
 
     remaining_seconds = deadline_unix_seconds - time.time()
     if remaining_seconds <= 0:
@@ -176,7 +193,8 @@ def run_sweep_agents(sweep_path: str, deadline_unix_seconds: float) -> list[int]
     deadline_utc = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(deadline_unix_seconds))
     print(
         f"GPUs={gpu_names}; {torch_check}; source={SOURCE_REVISION}; "
-        f"{AGENT_COUNT} isolated one-run W&B agents; shared deadline={deadline_utc}.",
+        f"{AGENT_COUNT} isolated W&B agents with {runs_per_agent} run(s) each; "
+        f"shared deadline={deadline_utc}.",
         flush=True,
     )
 
@@ -187,7 +205,7 @@ def run_sweep_agents(sweep_path: str, deadline_unix_seconds: float) -> list[int]
         "agent",
         "--forward-signals",
         "--count",
-        str(RUNS_PER_AGENT),
+        str(runs_per_agent),
         sweep_path,
     ]
     agents: list[subprocess.Popen[bytes]] = []
@@ -240,19 +258,26 @@ def run_sweep_agents(sweep_path: str, deadline_unix_seconds: float) -> list[int]
 
 
 @app.local_entrypoint()
-def main(sweep_path: str, max_hours: float = DEFAULT_FUNCTION_SECONDS / 3600) -> None:
-    """Launch the detached two-GPU function for the paired W&B pilot."""
+def main(
+    sweep_path: str,
+    runs_per_agent: int = 1,
+    max_hours: float = DEFAULT_FUNCTION_SECONDS / 3600,
+) -> None:
+    """Launch one detached two-GPU function for an exact-size W&B sweep."""
     if not sweep_path.startswith(ALLOWED_SWEEP_PREFIX):
         raise ValueError(f"--sweep-path must start with {ALLOWED_SWEEP_PREFIX}")
     maximum_hours = DEFAULT_FUNCTION_SECONDS / 3600
     if not 0 < max_hours <= maximum_hours:
         raise ValueError(f"--max-hours must be in (0, {maximum_hours:.2f}]")
+    if not 1 <= runs_per_agent <= 8:
+        raise ValueError("--runs-per-agent must be in [1, 8]")
 
     deadline_unix_seconds = time.time() + math.floor(max_hours * 3600)
     estimated_maximum_cost = max_hours * TOTAL_FUNCTION_RATE * 3600
     print(
-        f"Launching one Modal {GPU_REQUEST} function with {AGENT_COUNT} W&B agents from source {SOURCE_REVISION}. "
+        f"Launching one Modal {GPU_REQUEST} function with {AGENT_COUNT} W&B agents and "
+        f"{runs_per_agent} run(s) per agent from source {SOURCE_REVISION}. "
         f"The shared runtime guard is {max_hours:.2f} h (~${estimated_maximum_cost:.2f} total maximum)."
     )
-    call = run_sweep_agents.spawn(sweep_path, deadline_unix_seconds)
+    call = run_sweep_agents.spawn(sweep_path, deadline_unix_seconds, runs_per_agent)
     print(f"FUNCTION_CALL_ID={call.object_id}")
