@@ -41,11 +41,14 @@ ADAMAL_IN_PLACE_CONFIGS = tuple(f"True,1.0,none,attenuate,{align},{unbias}" for 
 
 
 def build_sweep_configuration(args: argparse.Namespace) -> dict[str, Any]:
-    base_lr = COMPLEMENT_BRACKET_BASE_LR if args.screen == "complement-lr-bracket" else REPRESENTATIVE_BASE_LR
+    default_base_lr = COMPLEMENT_BRACKET_BASE_LR if args.screen == "complement-lr-bracket" else REPRESENTATIVE_BASE_LR
+    batch_size = args.batch_size if args.batch_size is not None else REPRESENTATIVE_BATCH_SIZE
+    base_lr = args.base_lr if args.base_lr is not None else default_base_lr
+    weight_decay = args.weight_decay if args.weight_decay is not None else REPRESENTATIVE_WEIGHT_DECAY
     parameters: dict[str, Any] = {
-        "batch_size": {"values": (REPRESENTATIVE_BATCH_SIZE,)},
+        "batch_size": {"values": (batch_size,)},
         "base_lr": {"values": (base_lr,)},
-        "weight_decay": {"values": (REPRESENTATIVE_WEIGHT_DECAY,)},
+        "weight_decay": {"values": (weight_decay,)},
         "seed": {"values": SEEDS},
         "use_scheduler": {"values": (True,)},
     }
@@ -123,7 +126,7 @@ def main() -> int:
     parser.add_argument("program", help="MAE training entry point (normally tasks/mae_pretrain.py)")
     parser.add_argument(
         "--screen",
-        choices=("adamal", "adamal-in-place", "fixed-control", "complement-lr-bracket"),
+        choices=("adamal", "adamal-in-place", "fixed-control", "complement-control", "complement-lr-bracket"),
         required=True,
     )
     parser.add_argument("--sweep_name", "--sweep-name", required=True)
@@ -133,6 +136,9 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=EPOCHS)
     parser.add_argument("--warmup_epochs", "--warmup-epochs", type=int, default=WARMUP_EPOCHS)
     parser.add_argument("--probe_every", "--probe-every", type=int, default=PROBE_EVERY)
+    parser.add_argument("--batch_size", "--batch-size", type=int)
+    parser.add_argument("--base_lr", "--base-lr", type=float)
+    parser.add_argument("--weight_decay", "--weight-decay", type=float)
     parser.add_argument("--amp_dtype", "--amp-dtype", choices=("bfloat16", "float32"), default="bfloat16")
     parser.add_argument("--float32_precision", "--float32-precision", choices=("tf32", "ieee"), default="tf32")
     args = parser.parse_args()
