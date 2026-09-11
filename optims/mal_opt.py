@@ -566,11 +566,14 @@ class AdaMAL(Optimizer):
 
     Each tensor's cosine gates its historical contribution, giving
     ``m_eff = beta_eff * m + g``. With ``m_probe = beta1 * m + g``, alignment is
-    ``cos(g, m_probe)`` for ``align="moment"`` (the default), or
-    ``cos(g, m_probe / D)`` for ``align="update"``, using the current adaptive
-    denominator D. The latter is the same alignment geometry as MAL_AdamW's
-    update mode. The first moment is never normalized. ``unbias`` controls
-    only the second moment; its default is False, matching AdaTAM's denominator.
+    ``cos(g, m_probe)`` for ``align="moment"`` (the default),
+    ``cos(g, m_probe / D)`` for ``align="update"``, or
+    ``cos(g / sqrt(D), m_probe / sqrt(D))`` for ``align="metric"``, using the
+    current adaptive denominator D. Both adaptive geometries have numerator
+    ``g.T @ inv(D) @ m_probe``, the first-order descent term of the probe;
+    ``metric`` additionally uses the norm induced by ``inv(D)``. The first
+    moment is never normalized. ``unbias`` controls only the second moment;
+    its default is False, matching AdaTAM's denominator.
 
     Transient state stores the fixed-beta probe. Recursive state stores the
     effective moment; with ``scale="moment"`` it deliberately stores the
@@ -613,7 +616,7 @@ class AdaMAL(Optimizer):
             raise ValueError(f"Invalid gate_mode value: {gate_mode}")
         if not isinstance(unbias, bool):
             raise TypeError(f"Invalid unbias value: {unbias}")
-        if align not in ("moment", "update"):
+        if align not in ("moment", "update", "metric"):
             raise ValueError(f"Invalid AdaMAL align value: {align}")
 
         decay_params: list[torch.nn.Parameter] = []
@@ -656,6 +659,14 @@ class AdaMAL(Optimizer):
         }
         super().__init__(optim_groups, defaults)
 
+        # Model-wide, parameter-count-weighted diagnostics from the latest
+        # optimizer step. They remain on-device until the training loop logs
+        # them, avoiding per-parameter host synchronization.
+        self.last_gate_mean: torch.Tensor | None = None
+        self.last_gate_min: torch.Tensor | None = None
+        self.last_gate_max: torch.Tensor | None = None
+        self.last_beta_eff_mean: torch.Tensor | None = None
+
     @property
     def unbias(self) -> bool:
         """Whether the adaptive second moment is bias-corrected."""
@@ -682,7 +693,7 @@ class AdaMAL(Optimizer):
             for key, default in self.defaults.items():
                 group.setdefault(key, default)
 
-            if group["align"] not in ("moment", "update"):
+            if group["align"] not in ("moment", "update", "metric"):
                 raise ValueError(f"Checkpoint has unsupported AdaMAL align: {group['align']}")
             if group["pwr"] not in (0.5, 1.0):
                 raise ValueError(f"Checkpoint has unsupported AdaMAL pwr: {group['pwr']}")
@@ -703,6 +714,12 @@ class AdaMAL(Optimizer):
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
+
+        gate_total: torch.Tensor | None = None
+        beta_eff_total: torch.Tensor | None = None
+        gate_min: torch.Tensor | None = None
+        gate_max: torch.Tensor | None = None
+        diagnostic_parameter_count = 0
 
         for group in self.param_groups:
             lr = group["lr"]
@@ -745,10 +762,34 @@ class AdaMAL(Optimizer):
                     v_unbias = v
                 denominator = v_unbias.sqrt().add_(eps)
 
-                u = m_probe.div(denominator) if align == "update" else m_probe
-                g_norm, alignment_probe_norm, beta1_eff = get_norms_and_eff_beta(g, u, pwr)
-                beta1_eff = _apply_gate(beta1, beta1_eff, gate_mode)
+                if align == "update":
+                    alignment_gradient = g
+                    alignment_probe = m_probe.div(denominator)
+                elif align == "metric":
+                    metric_sqrt = denominator.sqrt()
+                    alignment_gradient = g.div(metric_sqrt)
+                    alignment_probe = m_probe.div(metric_sqrt)
+                else:
+                    alignment_gradient = g
+                    alignment_probe = m_probe
+
+                g_norm, alignment_probe_norm, gate = get_norms_and_eff_beta(
+                    alignment_gradient,
+                    alignment_probe,
+                    pwr,
+                )
+                beta1_eff = _apply_gate(beta1, gate, gate_mode)
                 beta1_eff = torch.where(g_norm > 0.0, beta1_eff, beta1)
+                diagnostic_weight = p.numel()
+                weighted_gate = gate * diagnostic_weight
+                weighted_beta_eff = beta1_eff * diagnostic_weight
+                gate_total = weighted_gate if gate_total is None else gate_total + weighted_gate
+                beta_eff_total = (
+                    weighted_beta_eff if beta_eff_total is None else beta_eff_total + weighted_beta_eff
+                )
+                gate_min = gate if gate_min is None else torch.minimum(gate_min, gate)
+                gate_max = gate if gate_max is None else torch.maximum(gate_max, gate)
+                diagnostic_parameter_count += diagnostic_weight
                 m_eff = g.addcmul(m, beta1_eff)
 
                 if scale == "moment":
@@ -760,7 +801,11 @@ class AdaMAL(Optimizer):
                 else:
                     u_eff = m_eff.div(denominator)
                     if scale == "step":
-                        u_probe_norm = alignment_probe_norm if align == "update" else torch.linalg.vector_norm(m_probe.div(denominator))
+                        u_probe_norm = (
+                            alignment_probe_norm
+                            if align == "update"
+                            else torch.linalg.vector_norm(m_probe.div(denominator))
+                        )
                         u_eff_norm = torch.linalg.vector_norm(u_eff) + eps
                         u_eff.mul_(u_probe_norm / u_eff_norm)
 
@@ -773,5 +818,12 @@ class AdaMAL(Optimizer):
                     p.mul_(1.0 - lr * wd)  # decoupled decay
 
                 p.sub_(u_eff, alpha=lr)
+
+        if gate_total is not None:
+            self.last_gate_mean = gate_total / diagnostic_parameter_count
+            self.last_gate_min = gate_min
+            self.last_gate_max = gate_max
+            assert beta_eff_total is not None
+            self.last_beta_eff_mean = beta_eff_total / diagnostic_parameter_count
 
         return loss

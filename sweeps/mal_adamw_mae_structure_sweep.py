@@ -1,9 +1,12 @@
 """Create matched MAE screens for AdaMAL and one MAL-AdamW control.
 
 Both screens use the same representative ViT-Tiny/Tiny-ImageNet recipe. The
-AdaMAL grid changes only recursion, second-moment bias correction, and the two
-theoretically defensible alignment geometries. The MAL-AdamW screen is one
-fixed-gradient control at the best matched transient/update geometry.
+The original AdaMAL grid changes recursion, second-moment bias correction, and
+alignment geometry. The focused in-place follow-up drops raw-moment alignment,
+which is not faithful to the geometry of an adaptively preconditioned update,
+and compares direct update alignment against the induced-metric cosine. The
+MAL-AdamW screen is one fixed-gradient control at the best matched
+transient/update geometry.
 """
 
 from __future__ import annotations
@@ -35,6 +38,11 @@ ADAMAL_CONFIGS = tuple(
     for unbias in (False, True)
     for align in ("moment", "update")
 )
+ADAMAL_IN_PLACE_CONFIGS = tuple(
+    f"True,1.0,none,attenuate,{align},{unbias}"
+    for unbias in (False, True)
+    for align in ("update", "metric")
+)
 
 
 def build_sweep_configuration(args: argparse.Namespace) -> dict[str, Any]:
@@ -45,11 +53,12 @@ def build_sweep_configuration(args: argparse.Namespace) -> dict[str, Any]:
         "seed": {"values": SEEDS},
         "use_scheduler": {"values": (True,)},
     }
-    if args.screen == "adamal":
+    if args.screen in {"adamal", "adamal-in-place"}:
+        configs = ADAMAL_CONFIGS if args.screen == "adamal" else ADAMAL_IN_PLACE_CONFIGS
         parameters.update(
             {
                 "optimizer": {"values": ("AdaMAL",)},
-                "AdaMAL_config": {"values": ADAMAL_CONFIGS},
+                "AdaMAL_config": {"values": configs},
             }
         )
     else:
@@ -109,7 +118,7 @@ def expected_run_count(configuration: dict[str, Any]) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("program", help="MAE training entry point (normally tasks/mae_pretrain.py)")
-    parser.add_argument("--screen", choices=("adamal", "fixed-control"), required=True)
+    parser.add_argument("--screen", choices=("adamal", "adamal-in-place", "fixed-control"), required=True)
     parser.add_argument("--sweep_name", "--sweep-name", required=True)
     parser.add_argument("--project_name", "--project-name", default=PROJECT_NAME)
     parser.add_argument("--data_dir", "--data-dir", default="./data/tiny-imagenet-200")

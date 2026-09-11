@@ -523,8 +523,8 @@ def parse_adamal_config(value: str) -> dict[str, Any]:
         raise ValueError("AdaMAL pwr must be 0.5 or 1.0.")
     if config["gate_mode"] not in ("replace", "attenuate"):
         raise ValueError("AdaMAL gate_mode must be replace or attenuate.")
-    if config["align"] not in ("moment", "update"):
-        raise ValueError("AdaMAL align must be moment or update.")
+    if config["align"] not in ("moment", "update", "metric"):
+        raise ValueError("AdaMAL align must be moment, update, or metric.")
     return config
 
 
@@ -1252,6 +1252,13 @@ def main() -> int:
                 assert optimizer.last_beta_min is not None and optimizer.last_beta_max is not None
                 metrics["diagnostic/am_beta_min"] = float(optimizer.last_beta_min)
                 metrics["diagnostic/am_beta_max"] = float(optimizer.last_beta_max)
+            elif isinstance(optimizer, AdaMAL) and optimizer.last_gate_mean is not None:
+                metrics["diagnostic/adamal_gate_mean"] = float(optimizer.last_gate_mean)
+                assert optimizer.last_gate_min is not None and optimizer.last_gate_max is not None
+                assert optimizer.last_beta_eff_mean is not None
+                metrics["diagnostic/adamal_gate_min"] = float(optimizer.last_gate_min)
+                metrics["diagnostic/adamal_gate_max"] = float(optimizer.last_gate_max)
+                metrics["diagnostic/adamal_beta_eff_mean"] = float(optimizer.last_beta_eff_mean)
 
             run.log(metrics)
             run.summary["best_val_loss"] = best_val_loss
