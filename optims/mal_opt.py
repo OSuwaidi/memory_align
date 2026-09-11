@@ -612,7 +612,7 @@ class AdaMAL(Optimizer):
         if gate_mode not in ("replace", "attenuate"):
             raise ValueError(f"Invalid gate_mode value: {gate_mode}")
         if not isinstance(unbias, bool):
-            raise ValueError(f"Invalid unbias value: {unbias}")
+            raise TypeError(f"Invalid unbias value: {unbias}")
         if align not in ("moment", "update"):
             raise ValueError(f"Invalid AdaMAL align value: {align}")
 
@@ -656,6 +656,47 @@ class AdaMAL(Optimizer):
         }
         super().__init__(optim_groups, defaults)
 
+    @property
+    def unbias(self) -> bool:
+        """Whether the adaptive second moment is bias-corrected."""
+        values = {group["unbias"] for group in self.param_groups}
+        if len(values) != 1:
+            raise RuntimeError("AdaMAL parameter groups disagree on unbias.")
+        return values.pop()
+
+    @unbias.setter
+    def unbias(self, value: bool) -> None:
+        if not isinstance(value, bool):
+            raise TypeError(f"Invalid unbias value: {value}")
+        for group in self.param_groups:
+            group["unbias"] = value
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        """Load AdaMAL state while preserving historical configuration meaning."""
+        migrated = _copy_state_dict_for_migration(state_dict)
+        for group in migrated["param_groups"]:
+            # AdaMAL checkpoints created before alignment was configurable used
+            # raw-moment alignment exclusively.
+            group.setdefault("align", "moment")
+            group.setdefault("unbias", self.defaults["unbias"])
+            for key, default in self.defaults.items():
+                group.setdefault(key, default)
+
+            if group["align"] not in ("moment", "update"):
+                raise ValueError(f"Checkpoint has unsupported AdaMAL align: {group['align']}")
+            if group["pwr"] not in (0.5, 1.0):
+                raise ValueError(f"Checkpoint has unsupported AdaMAL pwr: {group['pwr']}")
+            if group["gate_mode"] not in ("replace", "attenuate"):
+                raise ValueError(f"Checkpoint has unsupported AdaMAL gate_mode: {group['gate_mode']}")
+            scale = group["scale"]
+            if isinstance(scale, bool):
+                group["scale"] = "step" if scale else "none"
+            elif scale not in ("none", "step", "moment"):
+                raise ValueError(f"Checkpoint has unsupported AdaMAL scale: {scale}")
+            if not isinstance(group["unbias"], bool):
+                raise TypeError(f"Checkpoint has invalid AdaMAL unbias: {group['unbias']}")
+        super().load_state_dict(migrated)
+
     @torch.no_grad()
     def step(self, closure: Callable[[], float | torch.Tensor] | None = None) -> Any:
         loss = None
@@ -681,6 +722,10 @@ class AdaMAL(Optimizer):
                     continue
 
                 g = p.grad
+                if g.is_sparse:
+                    raise RuntimeError("AdaMAL does not support sparse gradients")
+                if torch.is_complex(p) or torch.is_complex(g):
+                    raise RuntimeError("AdaMAL does not support complex parameters or gradients")
                 state = self.state[p]
                 if not state:
                     state["step"] = 0

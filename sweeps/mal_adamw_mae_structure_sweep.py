@@ -1,9 +1,9 @@
-"""Create the focused MAL-AdamW MAE structure-selection sweep.
+"""Create matched MAE screens for AdaMAL and one MAL-AdamW control.
 
-The screen holds the MAE recipe fixed and changes only the fresh-gradient
-weighting, alignment geometry, and norm-source choices requested for MAL.
-It is intentionally a development experiment; the selected structure must be
-confirmed on the remaining learning-rate, batch-size, and weight-decay cells.
+Both screens use the same representative ViT-Tiny/Tiny-ImageNet recipe. The
+AdaMAL grid changes only recursion, second-moment bias correction, and the two
+theoretically defensible alignment geometries. The MAL-AdamW screen is one
+fixed-gradient control at the best matched transient/update geometry.
 """
 
 from __future__ import annotations
@@ -28,31 +28,44 @@ REPRESENTATIVE_BATCH_SIZE = 1024
 REPRESENTATIVE_BASE_LR = 1e-3
 REPRESENTATIVE_WEIGHT_DECAY = 5e-2
 
-FIXED_CONTROL = "False,1.0,none,attenuate,update,fixed"
-COMPLEMENT_CONTROL = "False,1.0,none,attenuate,update,complement"
-COMPLEMENT_SCALED_CONFIGS = tuple(
-    f"False,1.0,{scale},attenuate,{align},complement"
-    for scale in ("step", "moment")
-    for align in ("update", "metric", "moment")
+FIXED_MAL_CONFIG = "False,1.0,none,attenuate,update,fixed"
+ADAMAL_CONFIGS = tuple(
+    f"{in_place},1.0,none,attenuate,{align},{unbias}"
+    for in_place in (False, True)
+    for unbias in (False, True)
+    for align in ("moment", "update")
 )
-MAL_CONFIGS = (FIXED_CONTROL, COMPLEMENT_CONTROL, *COMPLEMENT_SCALED_CONFIGS)
 
 
 def build_sweep_configuration(args: argparse.Namespace) -> dict[str, Any]:
+    parameters: dict[str, Any] = {
+        "batch_size": {"values": (REPRESENTATIVE_BATCH_SIZE,)},
+        "base_lr": {"values": (REPRESENTATIVE_BASE_LR,)},
+        "weight_decay": {"values": (REPRESENTATIVE_WEIGHT_DECAY,)},
+        "seed": {"values": SEEDS},
+        "use_scheduler": {"values": (True,)},
+    }
+    if args.screen == "adamal":
+        parameters.update(
+            {
+                "optimizer": {"values": ("AdaMAL",)},
+                "AdaMAL_config": {"values": ADAMAL_CONFIGS},
+            }
+        )
+    else:
+        parameters.update(
+            {
+                "optimizer": {"values": ("MAL_AdamW",)},
+                "MAL_config": {"values": (FIXED_MAL_CONFIG,)},
+            }
+        )
+
     return {
         "program": args.program,
         "name": args.sweep_name,
         "method": "grid",
         "metric": {"name": "final_probe_val_acc", "goal": "maximize"},
-        "parameters": {
-            "optimizer": {"values": ("MAL_AdamW",)},
-            "MAL_config": {"values": MAL_CONFIGS},
-            "batch_size": {"values": (REPRESENTATIVE_BATCH_SIZE,)},
-            "base_lr": {"values": (REPRESENTATIVE_BASE_LR,)},
-            "weight_decay": {"values": (REPRESENTATIVE_WEIGHT_DECAY,)},
-            "seed": {"values": SEEDS},
-            "use_scheduler": {"values": (True,)},
-        },
+        "parameters": parameters,
         "command": [
             "${env}",
             "${interpreter}",
@@ -96,6 +109,7 @@ def expected_run_count(configuration: dict[str, Any]) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("program", help="MAE training entry point (normally tasks/mae_pretrain.py)")
+    parser.add_argument("--screen", choices=("adamal", "fixed-control"), required=True)
     parser.add_argument("--sweep_name", "--sweep-name", required=True)
     parser.add_argument("--project_name", "--project-name", default=PROJECT_NAME)
     parser.add_argument("--data_dir", "--data-dir", default="./data/tiny-imagenet-200")

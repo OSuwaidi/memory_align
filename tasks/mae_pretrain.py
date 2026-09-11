@@ -47,7 +47,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from optims.am_opt import AM_MSGD, AM_AdamW
 from optims.cautious_opt import C_SGDM, C_AdamW
-from optims.mal_opt import MAL_SGDM, MAL_AdamW
+from optims.mal_opt import MAL_SGDM, AdaMAL, MAL_AdamW
 from optims.tam_opt import TAM_SGDM, AdaTAMW
 from tasks.wandb_metadata import task_metadata
 
@@ -55,12 +55,13 @@ IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 SUPPORTED_ARCH = "vit_tiny_patch16_224"
 SGD_OPTIMIZERS = {"SGDM", "AM_MSGD", "CAUTIOUS_SGDM", "TAM_SGDM", "MAL_SGDM"}
-ADAMW_OPTIMIZERS = {"AdamW", "AM_AdamW", "CAUTIOUS_AdamW", "AdaTAMW", "MAL_AdamW"}
+ADAMW_OPTIMIZERS = {"AdamW", "AM_AdamW", "CAUTIOUS_AdamW", "AdaTAMW", "MAL_AdamW", "AdaMAL"}
 ALL_OPTIMIZERS = SGD_OPTIMIZERS | ADAMW_OPTIMIZERS
 MAL_ALIGN = "white"  # Backward-compatible fallback for five-field sweep configs.
 MAL_ALIGN_CHOICES = frozenset(("update", "metric", "white", "moment"))
 REQUIRED_SWEEP_KEYS = frozenset(("optimizer", "batch_size", "base_lr", "weight_decay", "seed", "use_scheduler"))
 MAL_CONFIG_KEYS = ("MAL_config", "mal_config")
+ADAMAL_CONFIG_KEYS = ("AdaMAL_config", "adamal_config")
 
 
 def parse_bool(value: str | bool) -> bool:
@@ -495,6 +496,38 @@ def parse_mal_config(value: str) -> dict[str, Any]:
     return config
 
 
+def parse_adamal_config(value: str) -> dict[str, Any]:
+    """Parse ``in_place,pwr,scale,gate_mode,align,unbias`` for AdaMAL."""
+    fields = [field.strip() for field in value.split(",")]
+    if len(fields) != 6:
+        raise ValueError("AdaMAL_config must be 'in_place,pwr,scale,gate_mode,align,unbias'.")
+
+    in_place_text, pwr_text, scale_text, gate_mode, align, unbias_text = fields
+    scale_key = scale_text.lower()
+    if scale_key in {"true", "false"}:
+        scale: bool | str = parse_bool(scale_text)
+    elif scale_key in {"none", "step", "moment"}:
+        scale = scale_key
+    else:
+        raise ValueError("AdaMAL scale must be True, False, none, step, or moment.")
+
+    config = {
+        "in_place": parse_bool(in_place_text),
+        "pwr": float(pwr_text),
+        "scale": scale,
+        "gate_mode": gate_mode.lower(),
+        "align": align.lower(),
+        "unbias": parse_bool(unbias_text),
+    }
+    if config["pwr"] not in (0.5, 1.0):
+        raise ValueError("AdaMAL pwr must be 0.5 or 1.0.")
+    if config["gate_mode"] not in ("replace", "attenuate"):
+        raise ValueError("AdaMAL gate_mode must be replace or attenuate.")
+    if config["align"] not in ("moment", "update"):
+        raise ValueError("AdaMAL align must be moment or update.")
+    return config
+
+
 def build_optimizer(
     name: str,
     model: nn.Module,
@@ -506,6 +539,7 @@ def build_optimizer(
     nesterov: bool,
     mal_config: dict[str, Any],
     mal_align: str,
+    adamal_config: dict[str, Any],
 ) -> Optimizer:
     if name not in ALL_OPTIMIZERS:
         raise ValueError(f'Unknown optimizer "{name}". Choose one of {sorted(ALL_OPTIMIZERS)}.')
@@ -560,14 +594,24 @@ def build_optimizer(
         return C_AdamW(parameters, lr=lr, betas=(momentum, beta2), weight_decay=weight_decay)
     if name == "AdaTAMW":
         return AdaTAMW(parameters, lr=lr, betas=(momentum, beta2), weight_decay=weight_decay)
-    return MAL_AdamW(
-        parameters,
-        lr=lr,
-        betas=(momentum, beta2),
-        weight_decay=weight_decay,
-        align=mal_align,
-        **mal_config,
-    )
+    if name == "MAL_AdamW":
+        return MAL_AdamW(
+            parameters,
+            lr=lr,
+            betas=(momentum, beta2),
+            weight_decay=weight_decay,
+            align=mal_align,
+            **mal_config,
+        )
+    if name == "AdaMAL":
+        return AdaMAL(
+            parameters,
+            lr=lr,
+            betas=(momentum, beta2),
+            weight_decay=weight_decay,
+            **adamal_config,
+        )
+    raise AssertionError(f'Optimizer dispatch is incomplete for "{name}".')
 
 
 def cosine_warmup_lr(
@@ -892,8 +936,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 def validate_config(args: argparse.Namespace, config: Any, parser: argparse.ArgumentParser) -> None:
     missing_sweep_keys = REQUIRED_SWEEP_KEYS.difference(config.keys())
-    if not any(key in config for key in MAL_CONFIG_KEYS):
+    optimizer_name = str(config.get("optimizer", ""))
+    if optimizer_name in {"MAL_SGDM", "MAL_AdamW"} and not any(key in config for key in MAL_CONFIG_KEYS):
         missing_sweep_keys = set(missing_sweep_keys) | {"MAL_config"}
+    if optimizer_name == "AdaMAL" and not any(key in config for key in ADAMAL_CONFIG_KEYS):
+        missing_sweep_keys = set(missing_sweep_keys) | {"AdaMAL_config"}
     if missing_sweep_keys:
         parser.error(f"Missing W&B sweep parameter(s): {', '.join(sorted(missing_sweep_keys))}.")
     if args.epochs <= 0:
@@ -1029,11 +1076,20 @@ def main() -> int:
         norm_pix_loss=args.norm_pix_loss,
     ).to(device)
     actual_lr = base_lr * batch_size / 256.0
-    raw_mal_config = str(next(config[key] for key in MAL_CONFIG_KEYS if key in config))
-    mal_config = parse_mal_config(raw_mal_config)
-    mal_align = str(mal_config.pop("align", config.get("mal_align", MAL_ALIGN))).lower()
-    if mal_align not in MAL_ALIGN_CHOICES:
-        parser.error(f"MAL align must be one of {sorted(MAL_ALIGN_CHOICES)}.")
+    raw_mal_config: str | None = None
+    raw_adamal_config: str | None = None
+    mal_config: dict[str, Any] = {}
+    adamal_config: dict[str, Any] = {}
+    mal_align = MAL_ALIGN
+    if optimizer_name in {"MAL_SGDM", "MAL_AdamW"}:
+        raw_mal_config = str(next(config[key] for key in MAL_CONFIG_KEYS if key in config))
+        mal_config = parse_mal_config(raw_mal_config)
+        mal_align = str(mal_config.pop("align", config.get("mal_align", MAL_ALIGN))).lower()
+        if mal_align not in MAL_ALIGN_CHOICES:
+            parser.error(f"MAL align must be one of {sorted(MAL_ALIGN_CHOICES)}.")
+    elif optimizer_name == "AdaMAL":
+        raw_adamal_config = str(next(config[key] for key in ADAMAL_CONFIG_KEYS if key in config))
+        adamal_config = parse_adamal_config(raw_adamal_config)
     optimizer = build_optimizer(
         optimizer_name,
         model,
@@ -1044,6 +1100,7 @@ def main() -> int:
         nesterov=nesterov,
         mal_config=mal_config,
         mal_align=mal_align,
+        adamal_config=adamal_config,
     )
 
     parameter_count = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
@@ -1052,11 +1109,25 @@ def main() -> int:
         + model.cls_token.numel()
     )
 
+    optimizer_metadata: dict[str, Any] = {}
+    if raw_mal_config is not None:
+        # Uppercase is the canonical W&B grouping field. Reading the old
+        # lowercase key above keeps prior sweep definitions reproducible.
+        optimizer_metadata = {
+            "MAL_config": raw_mal_config,
+            "optimizer_config": raw_mal_config,
+            "mal_align": mal_align,
+            **{f"mal_{key}": value for key, value in mal_config.items()},
+        }
+    elif raw_adamal_config is not None:
+        optimizer_metadata = {
+            "AdaMAL_config": raw_adamal_config,
+            "optimizer_config": raw_adamal_config,
+            **{f"adamal_{key}": value for key, value in adamal_config.items()},
+        }
+
     run.config.update(
         {
-            # Uppercase is the canonical W&B grouping field. Reading the old
-            # lowercase key above keeps prior sweep definitions reproducible.
-            "MAL_config": raw_mal_config,
             "actual_lr": actual_lr,
             "micro_batch_size": micro_batch_size,
             "accumulation_steps": accumulation_steps,
@@ -1073,8 +1144,7 @@ def main() -> int:
             "base_learning_rate": base_lr,
             "learning_rate": actual_lr,
             "resolved_data_dir": str(data_root),
-            "mal_align": mal_align,
-            **{f"mal_{key}": value for key, value in mal_config.items()},
+            **optimizer_metadata,
             **({"am_beta_max": args.momentum, "am_model_lambda": 0.1} if optimizer_name == "AM_MSGD" else {}),
             **({"am_beta1_max": args.momentum - 0.1 * 0.1, "am_model_lambda": 0.1} if optimizer_name == "AM_AdamW" else {}),
         },
@@ -1086,6 +1156,12 @@ def main() -> int:
             f"_inp{int(mal_config['in_place'])}_p{mal_config['pwr']:g}"
             f"_scl{str(mal_config['scale']).lower()}_g{mal_config['gate_mode']}"
             f"_a{mal_align}_gw{mal_config['gradient_weight_mode']}"
+        )
+    elif optimizer_name == "AdaMAL":
+        mal_suffix = (
+            f"_inp{int(adamal_config['in_place'])}_p{adamal_config['pwr']:g}"
+            f"_scl{str(adamal_config['scale']).lower()}_g{adamal_config['gate_mode']}"
+            f"_a{adamal_config['align']}_ub{int(adamal_config['unbias'])}"
         )
     run.name = f"{optimizer_name}{mal_suffix}_bs{batch_size}_blr{base_lr:g}_wd{weight_decay:g}_s{seed}"
     run.define_metric("epoch")

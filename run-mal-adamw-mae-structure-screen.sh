@@ -6,23 +6,27 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=14G
 #SBATCH --time=500:00:00
-#SBATCH --job-name=mal-adamw-screen
-#SBATCH --output=/shared/b00090279/memory_align/logs/adamw-screen-master-%j.out
-#SBATCH --error=/shared/b00090279/memory_align/logs/adamw-screen-master-%j.err
+#SBATCH --job-name=adamal-mae-screen
+#SBATCH --output=/shared/b00090279/memory_align/logs/adamal-screen-master-%j.out
+#SBATCH --error=/shared/b00090279/memory_align/logs/adamal-screen-master-%j.err
 
 set -euo pipefail
 
 MEMORY_ALIGN_PROJECT=/shared/b00090279/memory_align
 ENTITY_NAME=osuwaidi-khalifa-university
 PROJECT_NAME=MAL_benchmark
-SOURCE_SWEEP_PATH=${1:?'usage: run-mal-adamw-mae-structure-screen.sh <source-sweep-path> <source-agent-job-id>'}
-SOURCE_AGENT_JOB_ID=${2:?'usage: run-mal-adamw-mae-structure-screen.sh <source-sweep-path> <source-agent-job-id>'}
+SOURCE_SWEEP_PATH=${1:?'usage: run-mal-adamw-mae-structure-screen.sh <source-sweep-path> <source-agent-job-id> <source-culler-job-id> [cancellation-record]'}
+SOURCE_AGENT_JOB_ID=${2:?'missing source-agent-job-id'}
+SOURCE_CULLER_JOB_ID=${3:?'missing source-culler-job-id'}
+CANCELLATION_RECORD=${4:-$MEMORY_ALIGN_PROJECT/logs/csngjl40-mal-stop-live.json}
 EXPECTED_SOURCE_MAL_RUNS=24
 EXPECTED_SOURCE_MAL_FINISHED=9
-AGENT_COUNT=15
+ADAMAL_AGENT_COUNT=12
+FIXED_AGENT_COUNT=3
 MAX_AGENT_ROUNDS=3
 CLUSTER_PYTHON="$MEMORY_ALIGN_PROJECT/.cluster-venv/bin/python"
-ACTIVE_AGENT_JOB_ID=""
+ADAMAL_AGENT_JOB_ID=""
+FIXED_AGENT_JOB_ID=""
 
 case "$SOURCE_SWEEP_PATH" in
     "$ENTITY_NAME/$PROJECT_NAME/"*) ;;
@@ -31,10 +35,19 @@ case "$SOURCE_SWEEP_PATH" in
         exit 2
         ;;
 esac
-[[ "$SOURCE_AGENT_JOB_ID" =~ ^[0-9]+$ ]] || {
-    echo "Source agent job id must be numeric: $SOURCE_AGENT_JOB_ID" >&2
-    exit 2
-}
+for job_id in "$SOURCE_AGENT_JOB_ID" "$SOURCE_CULLER_JOB_ID"; do
+    [[ "$job_id" =~ ^[0-9]+$ ]] || {
+        echo "SLURM job ids must be numeric: $job_id" >&2
+        exit 2
+    }
+done
+case "$CANCELLATION_RECORD" in
+    "$MEMORY_ALIGN_PROJECT"/*) ;;
+    *)
+        echo "Cancellation record must be beneath $MEMORY_ALIGN_PROJECT" >&2
+        exit 2
+        ;;
+esac
 
 . "$MEMORY_ALIGN_PROJECT/cluster-env.sh"
 cd "$MEMORY_ALIGN_PROJECT"
@@ -50,10 +63,13 @@ cd "$MEMORY_ALIGN_PROJECT"
 
 cancel_active_agents() {
     local signal_name=${1:-TERM}
-    if [[ -n "$ACTIVE_AGENT_JOB_ID" ]] && squeue -h -j "$ACTIVE_AGENT_JOB_ID" 2>/dev/null | grep -q .; then
-        echo "Master received $signal_name; cancelling structure-screen array $ACTIVE_AGENT_JOB_ID" >&2
-        scancel "$ACTIVE_AGENT_JOB_ID"
-    fi
+    local job_id
+    for job_id in "$ADAMAL_AGENT_JOB_ID" "$FIXED_AGENT_JOB_ID"; do
+        if [[ -n "$job_id" ]] && squeue -h -j "$job_id" 2>/dev/null | grep -q .; then
+            echo "Master received $signal_name; cancelling screen array $job_id" >&2
+            scancel "$job_id"
+        fi
+    done
 }
 
 trap 'cancel_active_agents TERM; exit 143' TERM
@@ -86,11 +102,13 @@ extract_expected_runs() {
 
 submit_agents() {
     local sweep_path=$1
+    local agent_count=$2
+    local job_name=$3
     local submission
     submission=$(sbatch \
         --parsable \
-        --array="1-${AGENT_COUNT}" \
-        --job-name=mal-adamw-screen \
+        --array="1-${agent_count}" \
+        --job-name="$job_name" \
         "$MEMORY_ALIGN_PROJECT/wb-agents.sh" \
         "$sweep_path")
     printf '%s\n' "${submission%%;*}"
@@ -110,8 +128,7 @@ wait_for_job() {
 }
 
 validate_source_subset() {
-    local cancellation_record=$1
-    "$CLUSTER_PYTHON" - "$SOURCE_SWEEP_PATH" "$cancellation_record" <<'PY'
+    "$CLUSTER_PYTHON" - "$SOURCE_SWEEP_PATH" "$CANCELLATION_RECORD" <<'PY'
 import json
 import sys
 from collections import Counter
@@ -124,7 +141,6 @@ with open(record_path, encoding="utf-8") as handle:
     record = json.load(handle)
 
 expected_baselines = {"AdamW", "AM_AdamW", "AdaTAMW"}
-optimizer_counts = Counter(dict(run.config).get("optimizer") for run in runs)
 for optimizer in expected_baselines:
     selected = [run for run in runs if dict(run.config).get("optimizer") == optimizer]
     states = Counter(run.state for run in selected)
@@ -152,7 +168,6 @@ print(
             "baseline_finished": {optimizer: 24 for optimizer in sorted(expected_baselines)},
             "mal_finished_preserved": len(initial_finished),
             "mal_runs_stopped_or_terminally_excluded": len(excluded_runs),
-            "all_optimizer_counts": dict(optimizer_counts),
         },
         sort_keys=True,
     )
@@ -160,18 +175,31 @@ print(
 PY
 }
 
-run_screen_agents_until_complete() {
+create_screen() {
+    local screen=$1
+    local sweep_name=$2
+    local output_dir=$3
+    local creation_output
+    creation_output=$("$CLUSTER_PYTHON" sweeps/mal_adamw_mae_structure_sweep.py \
+        tasks/mae_pretrain.py \
+        --screen "$screen" \
+        --sweep_name "$sweep_name" \
+        --project_name "$PROJECT_NAME" \
+        --data_dir "$MEMORY_ALIGN_PROJECT/data/tiny-imagenet-200" \
+        --output_dir "$output_dir")
+    printf '%s\n' "$creation_output" >&2
+    CREATED_SWEEP_PATH=$(extract_sweep_path "$creation_output")
+    CREATED_EXPECTED_RUNS=$(extract_expected_runs "$creation_output")
+}
+
+validate_with_recovery() {
     local sweep_path=$1
     local expected_runs=$2
-    local round
-    local state
-    for ((round = 1; round <= MAX_AGENT_ROUNDS; round++)); do
-        ACTIVE_AGENT_JOB_ID=$(submit_agents "$sweep_path")
-        printf 'SCREEN_AGENT_JOB_%s=%q\n' "$round" "$ACTIVE_AGENT_JOB_ID" >>"$SWEEP_RECORD"
-        echo "Submitted focused MAL-AdamW sweep as GPU array $ACTIVE_AGENT_JOB_ID (round $round)."
-        wait_for_job "$ACTIVE_AGENT_JOB_ID" "structure-screen array"
-        ACTIVE_AGENT_JOB_ID=""
-
+    local agent_count=$3
+    local job_name=$4
+    local receipt_prefix=$5
+    local round state recovery_job_id
+    for ((round = 1; round < MAX_AGENT_ROUNDS; round++)); do
         for _attempt in {1..12}; do
             if "$CLUSTER_PYTHON" sweeps/validate_sweep.py "$sweep_path" --expected_runs "$expected_runs"; then
                 return 0
@@ -185,48 +213,64 @@ print(wandb.Api(timeout=180).sweep(sys.argv[1]).state)
 PY
 )
         if [[ "$state" == "FINISHED" || "$state" == "CANCELED" ]]; then
-            echo "Focused sweep reached $state without $expected_runs finished runs." >&2
+            echo "Sweep $sweep_path reached $state without $expected_runs finished runs." >&2
             return 1
         fi
-        echo "Focused sweep remains $state; submitting a recovery array."
+        recovery_job_id=$(submit_agents "$sweep_path" "$agent_count" "$job_name")
+        printf '%s_RECOVERY_JOB_%s=%q\n' "$receipt_prefix" "$round" "$recovery_job_id" >>"$SWEEP_RECORD"
+        wait_for_job "$recovery_job_id" "$receipt_prefix recovery array"
     done
-    echo "Focused sweep did not complete after $MAX_AGENT_ROUNDS agent rounds." >&2
+    echo "Sweep $sweep_path did not validate after recovery." >&2
     return 1
 }
 
-SWEEP_RECORD="$MEMORY_ALIGN_PROJECT/logs/mal-adamw-screen-sweeps-${SLURM_JOB_ID}.env"
-SOURCE_SWEEP_ID=${SOURCE_SWEEP_PATH##*/}
-CANCELLATION_RECORD="$MEMORY_ALIGN_PROJECT/logs/${SOURCE_SWEEP_ID}-mal-stop-${SLURM_JOB_ID}.json"
+SWEEP_RECORD="$MEMORY_ALIGN_PROJECT/logs/adamal-screen-sweeps-${SLURM_JOB_ID}.env"
 : >"$SWEEP_RECORD"
-printf 'SOURCE_SWEEP_PATH=%q\nSOURCE_AGENT_JOB_ID=%q\n' "$SOURCE_SWEEP_PATH" "$SOURCE_AGENT_JOB_ID" >>"$SWEEP_RECORD"
-
-"$CLUSTER_PYTHON" sweeps/stop_sweep_optimizer_runs.py \
-    "$SOURCE_SWEEP_PATH" \
-    --optimizer MAL_AdamW \
-    --expected-optimizer-runs "$EXPECTED_SOURCE_MAL_RUNS" \
-    --expected-finished-at-start "$EXPECTED_SOURCE_MAL_FINISHED" \
-    --poll-seconds 20 \
-    --record-path "$CANCELLATION_RECORD" &
-CULLER_PID=$!
+printf 'SOURCE_SWEEP_PATH=%q\nSOURCE_AGENT_JOB_ID=%q\nSOURCE_CULLER_JOB_ID=%q\nCANCELLATION_RECORD=%q\n' \
+    "$SOURCE_SWEEP_PATH" "$SOURCE_AGENT_JOB_ID" "$SOURCE_CULLER_JOB_ID" "$CANCELLATION_RECORD" >>"$SWEEP_RECORD"
 
 wait_for_job "$SOURCE_AGENT_JOB_ID" "source baseline array"
-wait "$CULLER_PID"
-validate_source_subset "$CANCELLATION_RECORD"
+wait_for_job "$SOURCE_CULLER_JOB_ID" "source MAL culler"
+validate_source_subset
 
-creation_output=$("$CLUSTER_PYTHON" sweeps/mal_adamw_mae_structure_sweep.py \
-    tasks/mae_pretrain.py \
-    --sweep_name "mal-adamw-mae-structure-screen-${SLURM_JOB_ID}" \
-    --project_name "$PROJECT_NAME" \
-    --data_dir "$MEMORY_ALIGN_PROJECT/data/tiny-imagenet-200" \
-    --output_dir "$MEMORY_ALIGN_PROJECT/outputs/mae-structure-screen")
-printf '%s\n' "$creation_output" >&2
-SCREEN_SWEEP_PATH=$(extract_sweep_path "$creation_output")
-SCREEN_EXPECTED_RUNS=$(extract_expected_runs "$creation_output")
-[[ "$SCREEN_EXPECTED_RUNS" == "24" ]] || {
-    echo "Focused structure screen must contain exactly 24 runs, found $SCREEN_EXPECTED_RUNS." >&2
+create_screen \
+    adamal \
+    "adamal-mae-structure-screen-${SLURM_JOB_ID}" \
+    "$MEMORY_ALIGN_PROJECT/outputs/adamal-mae-structure-screen"
+ADAMAL_SWEEP_PATH=$CREATED_SWEEP_PATH
+ADAMAL_EXPECTED_RUNS=$CREATED_EXPECTED_RUNS
+[[ "$ADAMAL_EXPECTED_RUNS" == "24" ]] || {
+    echo "AdaMAL screen must contain exactly 24 runs, found $ADAMAL_EXPECTED_RUNS." >&2
     exit 1
 }
-printf 'SCREEN_SWEEP_PATH=%q\nSCREEN_EXPECTED_RUNS=%q\n' "$SCREEN_SWEEP_PATH" "$SCREEN_EXPECTED_RUNS" >>"$SWEEP_RECORD"
 
-run_screen_agents_until_complete "$SCREEN_SWEEP_PATH" "$SCREEN_EXPECTED_RUNS"
-echo "Focused MAL-AdamW structure screen completed. Receipt: $SWEEP_RECORD"
+create_screen \
+    fixed-control \
+    "mal-adamw-fixed-control-${SLURM_JOB_ID}" \
+    "$MEMORY_ALIGN_PROJECT/outputs/mal-adamw-fixed-control"
+FIXED_SWEEP_PATH=$CREATED_SWEEP_PATH
+FIXED_EXPECTED_RUNS=$CREATED_EXPECTED_RUNS
+[[ "$FIXED_EXPECTED_RUNS" == "3" ]] || {
+    echo "Fixed MAL-AdamW control must contain exactly 3 runs, found $FIXED_EXPECTED_RUNS." >&2
+    exit 1
+}
+
+printf 'ADAMAL_SWEEP_PATH=%q\nADAMAL_EXPECTED_RUNS=%q\nFIXED_SWEEP_PATH=%q\nFIXED_EXPECTED_RUNS=%q\n' \
+    "$ADAMAL_SWEEP_PATH" "$ADAMAL_EXPECTED_RUNS" "$FIXED_SWEEP_PATH" "$FIXED_EXPECTED_RUNS" >>"$SWEEP_RECORD"
+
+# The two arrays run concurrently and occupy exactly 12 + 3 = 15 GPUs.
+ADAMAL_AGENT_JOB_ID=$(submit_agents "$ADAMAL_SWEEP_PATH" "$ADAMAL_AGENT_COUNT" adamal-mae)
+FIXED_AGENT_JOB_ID=$(submit_agents "$FIXED_SWEEP_PATH" "$FIXED_AGENT_COUNT" mal-adamw-fixed)
+printf 'ADAMAL_AGENT_JOB_ID=%q\nFIXED_AGENT_JOB_ID=%q\n' \
+    "$ADAMAL_AGENT_JOB_ID" "$FIXED_AGENT_JOB_ID" >>"$SWEEP_RECORD"
+echo "Submitted AdaMAL array $ADAMAL_AGENT_JOB_ID (12 GPUs) and fixed-control array $FIXED_AGENT_JOB_ID (3 GPUs)."
+
+wait_for_job "$FIXED_AGENT_JOB_ID" "fixed-control array"
+wait_for_job "$ADAMAL_AGENT_JOB_ID" "AdaMAL array"
+ADAMAL_AGENT_JOB_ID=""
+FIXED_AGENT_JOB_ID=""
+
+validate_with_recovery "$ADAMAL_SWEEP_PATH" "$ADAMAL_EXPECTED_RUNS" "$ADAMAL_AGENT_COUNT" adamal-mae ADAMAL
+validate_with_recovery "$FIXED_SWEEP_PATH" "$FIXED_EXPECTED_RUNS" "$FIXED_AGENT_COUNT" mal-adamw-fixed FIXED
+
+echo "AdaMAL structure screen and matched fixed-gradient control completed. Receipt: $SWEEP_RECORD"
