@@ -24,9 +24,10 @@ WEIGHT_DECAYS = (5e-2, 1e-3)
 BATCH_SIZES = (256, 1024)
 USE_SCHEDULER = (True,)
 DEFAULT_MAL_CONFIG = "False,1.0,none,attenuate,update,complement"
+OPTIMIZERS = ("AdamW", "AM_AdamW", "AdaTAMW", "MAL_AdamW")
 
 
-def get_finished_run_ids(project_name: str, sweep_ids: list[str]) -> list[str]:
+def get_finished_run_ids(project_name: str, sweep_ids: list[str], optimizers: set[str]) -> list[str]:
     api = wandb.Api()
     runs = api.runs(
         path=f"{ENTITY_NAME}/{project_name}",
@@ -35,7 +36,7 @@ def get_finished_run_ids(project_name: str, sweep_ids: list[str]) -> list[str]:
         lazy=True,
         include_sweeps=True,
     )
-    return [run.id for run in runs]
+    return [run.id for run in runs if dict(run.config).get("optimizer") in optimizers]
 
 
 def main() -> int:
@@ -45,6 +46,13 @@ def main() -> int:
     parser.add_argument("--sweep_name", "--sweep-name", required=True)
     parser.add_argument("--project_name", "--project-name", required=True)
     parser.add_argument("--prior_sweeps", "--prior-sweeps", nargs="+")
+    parser.add_argument(
+        "--optimizers",
+        nargs="+",
+        choices=OPTIMIZERS,
+        default=list(OPTIMIZERS),
+        help="Optimizer subset to include; useful for exact recovery sweeps.",
+    )
     parser.add_argument("--method", choices=("grid",), default="grid")
     parser.add_argument("--epochs", type=int, default=EPOCHS)
     parser.add_argument("--warmup_epochs", "--warmup-epochs", type=int, default=WARMUP_EPOCHS)
@@ -59,6 +67,8 @@ def main() -> int:
         help="Single shipped MAL-AdamW configuration.",
     )
     args = parser.parse_args()
+    if len(args.optimizers) != len(set(args.optimizers)):
+        parser.error("--optimizers cannot contain duplicates.")
 
     sweep_configuration = {
         "program": args.program,
@@ -66,14 +76,7 @@ def main() -> int:
         "method": args.method,
         "metric": {"name": "final_probe_val_acc", "goal": "maximize"},
         "parameters": {
-            "optimizer": {
-                "values": (
-                    "AdamW",
-                    "AM_AdamW",
-                    "AdaTAMW",
-                    "MAL_AdamW",
-                )
-            },
+            "optimizer": {"values": tuple(args.optimizers)},
             "MAL_config": {"values": (args.mal_config,)},
             "batch_size": {"values": BATCH_SIZES},
             "base_lr": {"values": BASE_LRS},
@@ -115,7 +118,7 @@ def main() -> int:
 
     prior_run_ids = None
     if args.prior_sweeps:
-        prior_run_ids = get_finished_run_ids(args.project_name, args.prior_sweeps)
+        prior_run_ids = get_finished_run_ids(args.project_name, args.prior_sweeps, set(args.optimizers))
         print(f"Adding {len(prior_run_ids)} finished runs from prior sweep(s): {args.prior_sweeps}")
 
     sweep_id = wandb.sweep(
@@ -124,7 +127,7 @@ def main() -> int:
         sweep=sweep_configuration,
         prior_runs=prior_run_ids,
     )
-    expected_runs = 4 * len(BATCH_SIZES) * len(BASE_LRS) * len(WEIGHT_DECAYS) * len(SEEDS)
+    expected_runs = len(args.optimizers) * len(BATCH_SIZES) * len(BASE_LRS) * len(WEIGHT_DECAYS) * len(SEEDS)
     print(f"EXPECTED_RUNS={expected_runs}")
     print(f"Run with:\n$ uv run wandb agent --forward-signals {ENTITY_NAME}/{args.project_name}/{sweep_id}")
     return 0

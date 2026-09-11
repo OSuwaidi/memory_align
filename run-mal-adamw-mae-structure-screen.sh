@@ -15,12 +15,8 @@ set -euo pipefail
 MEMORY_ALIGN_PROJECT=/shared/b00090279/memory_align
 ENTITY_NAME=osuwaidi-khalifa-university
 PROJECT_NAME=MAL_benchmark
-SOURCE_SWEEP_PATH=${1:?'usage: run-mal-adamw-mae-structure-screen.sh <source-sweep-path> <source-agent-job-id> <source-culler-job-id> [cancellation-record]'}
+SOURCE_SWEEP_PATH=${1:?'usage: run-mal-adamw-mae-structure-screen.sh <baseline-sweep-path> <baseline-agent-job-id>'}
 SOURCE_AGENT_JOB_ID=${2:?'missing source-agent-job-id'}
-SOURCE_CULLER_JOB_ID=${3:?'missing source-culler-job-id'}
-CANCELLATION_RECORD=${4:-$MEMORY_ALIGN_PROJECT/logs/csngjl40-mal-stop-live.json}
-EXPECTED_SOURCE_MAL_RUNS=24
-EXPECTED_SOURCE_MAL_FINISHED=9
 ADAMAL_AGENT_COUNT=12
 FIXED_AGENT_COUNT=3
 MAX_AGENT_ROUNDS=3
@@ -35,19 +31,10 @@ case "$SOURCE_SWEEP_PATH" in
         exit 2
         ;;
 esac
-for job_id in "$SOURCE_AGENT_JOB_ID" "$SOURCE_CULLER_JOB_ID"; do
-    [[ "$job_id" =~ ^[0-9]+$ ]] || {
-        echo "SLURM job ids must be numeric: $job_id" >&2
-        exit 2
-    }
-done
-case "$CANCELLATION_RECORD" in
-    "$MEMORY_ALIGN_PROJECT"/*) ;;
-    *)
-        echo "Cancellation record must be beneath $MEMORY_ALIGN_PROJECT" >&2
-        exit 2
-        ;;
-esac
+[[ "$SOURCE_AGENT_JOB_ID" =~ ^[0-9]+$ ]] || {
+    echo "SLURM job id must be numeric: $SOURCE_AGENT_JOB_ID" >&2
+    exit 2
+}
 
 . "$MEMORY_ALIGN_PROJECT/cluster-env.sh"
 cd "$MEMORY_ALIGN_PROJECT"
@@ -128,50 +115,25 @@ wait_for_job() {
 }
 
 validate_source_subset() {
-    "$CLUSTER_PYTHON" - "$SOURCE_SWEEP_PATH" "$CANCELLATION_RECORD" <<'PY'
-import json
+    "$CLUSTER_PYTHON" - "$SOURCE_SWEEP_PATH" <<'PY'
 import sys
 from collections import Counter
 
 import wandb
 
-sweep_path, record_path = sys.argv[1:]
+sweep_path = sys.argv[1]
 runs = list(wandb.Api(timeout=180).sweep(sweep_path).runs)
-with open(record_path, encoding="utf-8") as handle:
-    record = json.load(handle)
 
 expected_baselines = {"AdamW", "AM_AdamW", "AdaTAMW"}
+observed_optimizers = Counter(dict(run.config).get("optimizer") for run in runs)
+if set(observed_optimizers) != expected_baselines:
+    raise SystemExit(f"Unexpected optimizers in baseline recovery sweep: {dict(observed_optimizers)}")
 for optimizer in expected_baselines:
     selected = [run for run in runs if dict(run.config).get("optimizer") == optimizer]
     states = Counter(run.state for run in selected)
     if len(selected) != 24 or states != Counter({"finished": 24}):
         raise SystemExit(f"Incomplete baseline {optimizer}: count={len(selected)}, states={dict(states)}")
-
-mal_runs = [run for run in runs if dict(run.config).get("optimizer") == "MAL_AdamW"]
-mal_finished = {run.id for run in mal_runs if run.state == "finished"}
-initial_finished = set(record["initial_finished_ids"])
-excluded_runs = set(record["excluded_nonfinished_ids"])
-if len(mal_runs) != 24:
-    raise SystemExit(f"Expected 24 allocated MAL_AdamW runs, found {len(mal_runs)}")
-if mal_finished != initial_finished or len(initial_finished) != 9:
-    raise SystemExit(
-        f"The preserved MAL result set changed: initial={len(initial_finished)}, current_finished={len(mal_finished)}"
-    )
-if len(excluded_runs) != 15 or excluded_runs & initial_finished:
-    raise SystemExit(f"Invalid MAL exclusion receipt: excluded={len(excluded_runs)}")
-if {run.id for run in mal_runs} != initial_finished | excluded_runs:
-    raise SystemExit("Not every non-finished MAL run is covered by the stop receipt.")
-print(
-    json.dumps(
-        {
-            "sweep_path": sweep_path,
-            "baseline_finished": {optimizer: 24 for optimizer in sorted(expected_baselines)},
-            "mal_finished_preserved": len(initial_finished),
-            "mal_runs_stopped_or_terminally_excluded": len(excluded_runs),
-        },
-        sort_keys=True,
-    )
-)
+print(f"Validated 72 finished baseline runs in {sweep_path}.")
 PY
 }
 
@@ -226,11 +188,10 @@ PY
 
 SWEEP_RECORD="$MEMORY_ALIGN_PROJECT/logs/adamal-screen-sweeps-${SLURM_JOB_ID}.env"
 : >"$SWEEP_RECORD"
-printf 'SOURCE_SWEEP_PATH=%q\nSOURCE_AGENT_JOB_ID=%q\nSOURCE_CULLER_JOB_ID=%q\nCANCELLATION_RECORD=%q\n' \
-    "$SOURCE_SWEEP_PATH" "$SOURCE_AGENT_JOB_ID" "$SOURCE_CULLER_JOB_ID" "$CANCELLATION_RECORD" >>"$SWEEP_RECORD"
+printf 'SOURCE_SWEEP_PATH=%q\nSOURCE_AGENT_JOB_ID=%q\n' \
+    "$SOURCE_SWEEP_PATH" "$SOURCE_AGENT_JOB_ID" >>"$SWEEP_RECORD"
 
 wait_for_job "$SOURCE_AGENT_JOB_ID" "source baseline array"
-wait_for_job "$SOURCE_CULLER_JOB_ID" "source MAL culler"
 validate_source_subset
 
 create_screen \
