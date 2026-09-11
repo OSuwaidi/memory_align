@@ -564,10 +564,13 @@ class MAL_AdamW(Optimizer):
 class AdaMAL(Optimizer):
     """MAL heavy-ball numerator with adaptive squared-gradient scaling.
 
-    Each tensor's raw-gradient cosine against ``beta1 * m + g`` gates the
-    historical contribution, giving ``m_eff = beta_eff * m + g``. The first
-    moment is never normalized. ``unbias`` controls only the second moment;
-    its default is False, matching AdaTAM's uncorrected denominator.
+    Each tensor's cosine gates its historical contribution, giving
+    ``m_eff = beta_eff * m + g``. With ``m_probe = beta1 * m + g``, alignment is
+    ``cos(g, m_probe)`` for ``align="moment"`` (the default), or
+    ``cos(g, m_probe / D)`` for ``align="update"``, using the current adaptive
+    denominator D. The latter is the same alignment geometry as MAL_AdamW's
+    update mode. The first moment is never normalized. ``unbias`` controls
+    only the second moment; its default is False, matching AdaTAM's denominator.
 
     Transient state stores the fixed-beta probe. Recursive state stores the
     effective moment; with ``scale="moment"`` it deliberately stores the
@@ -588,6 +591,7 @@ class AdaMAL(Optimizer):
         scale: bool | str = False,
         gate_mode: str = "attenuate",
         unbias: bool = False,
+        align: str = "moment",
     ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -609,6 +613,8 @@ class AdaMAL(Optimizer):
             raise ValueError(f"Invalid gate_mode value: {gate_mode}")
         if not isinstance(unbias, bool):
             raise ValueError(f"Invalid unbias value: {unbias}")
+        if align not in ("moment", "update"):
+            raise ValueError(f"Invalid AdaMAL align value: {align}")
 
         decay_params: list[torch.nn.Parameter] = []
         no_decay_params: list[torch.nn.Parameter] = []
@@ -646,6 +652,7 @@ class AdaMAL(Optimizer):
             "scale": scale,
             "gate_mode": gate_mode,
             "unbias": unbias,
+            "align": align,
         }
         super().__init__(optim_groups, defaults)
 
@@ -667,6 +674,7 @@ class AdaMAL(Optimizer):
             gate_mode = group["gate_mode"]
             eps = group["eps"]
             unbias = group["unbias"]
+            align = group["align"]
 
             for p in group["params"]:
                 if p.grad is None:
@@ -685,12 +693,6 @@ class AdaMAL(Optimizer):
                 v = state["exp_avg_sq"]
 
                 m_probe = g.add(m, alpha=beta1)
-                g_norm, m_probe_norm, beta1_eff = get_norms_and_eff_beta(g, m_probe, pwr)
-                beta1_eff = _apply_gate(beta1, beta1_eff, gate_mode)
-                beta1_eff = torch.where(g_norm > 0.0, beta1_eff, beta1)
-
-                m_eff = g.addcmul(m, beta1_eff)
-
                 v.mul_(beta2).addcmul_(g, g, value=1.0 - beta2)
                 if unbias:
                     v_unbias = v / (1.0 - beta2**step)
@@ -698,7 +700,14 @@ class AdaMAL(Optimizer):
                     v_unbias = v
                 denominator = v_unbias.sqrt().add_(eps)
 
+                u = m_probe.div(denominator) if align == "update" else m_probe
+                g_norm, alignment_probe_norm, beta1_eff = get_norms_and_eff_beta(g, u, pwr)
+                beta1_eff = _apply_gate(beta1, beta1_eff, gate_mode)
+                beta1_eff = torch.where(g_norm > 0.0, beta1_eff, beta1)
+                m_eff = g.addcmul(m, beta1_eff)
+
                 if scale == "moment":
+                    m_probe_norm = alignment_probe_norm if align == "moment" else torch.linalg.vector_norm(m_probe)
                     m_eff_norm = torch.linalg.vector_norm(m_eff) + eps
                     m_eff.mul_(m_probe_norm.clamp_min(1e-12) / m_eff_norm)  # commit scaled version into buffer if in-place is True
                     u_eff = m_eff.div(denominator)
@@ -706,7 +715,7 @@ class AdaMAL(Optimizer):
                 else:
                     u_eff = m_eff.div(denominator)
                     if scale == "step":
-                        u_probe_norm = torch.linalg.vector_norm(m_probe.div(denominator))
+                        u_probe_norm = alignment_probe_norm if align == "update" else torch.linalg.vector_norm(m_probe.div(denominator))
                         u_eff_norm = torch.linalg.vector_norm(u_eff) + eps
                         u_eff.mul_(u_probe_norm / u_eff_norm)
 
