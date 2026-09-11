@@ -15,8 +15,9 @@ set -euo pipefail
 MEMORY_ALIGN_PROJECT=/shared/b00090279/memory_align
 ENTITY_NAME=osuwaidi-khalifa-university
 PROJECT_NAME=MAL_benchmark
-SOURCE_SWEEP_PATH=${1:?'usage: run-mal-adamw-mae-structure-screen.sh <baseline-sweep-path> <baseline-agent-job-id>'}
+SOURCE_SWEEP_PATH=${1:?'usage: run-mal-adamw-mae-structure-screen.sh <recovery-sweep-path> <recovery-agent-job-id> <prior-sweep-path>'}
 SOURCE_AGENT_JOB_ID=${2:?'missing source-agent-job-id'}
+PRIOR_SWEEP_PATH=${3:?'missing prior-sweep-path'}
 ADAMAL_AGENT_COUNT=12
 FIXED_AGENT_COUNT=3
 MAX_AGENT_ROUNDS=3
@@ -28,6 +29,13 @@ case "$SOURCE_SWEEP_PATH" in
     "$ENTITY_NAME/$PROJECT_NAME/"*) ;;
     *)
         echo "Refusing unexpected source sweep path: $SOURCE_SWEEP_PATH" >&2
+        exit 2
+        ;;
+esac
+case "$PRIOR_SWEEP_PATH" in
+    "$ENTITY_NAME/$PROJECT_NAME/"*) ;;
+    *)
+        echo "Refusing unexpected prior sweep path: $PRIOR_SWEEP_PATH" >&2
         exit 2
         ;;
 esac
@@ -115,25 +123,47 @@ wait_for_job() {
 }
 
 validate_source_subset() {
-    "$CLUSTER_PYTHON" - "$SOURCE_SWEEP_PATH" <<'PY'
+    "$CLUSTER_PYTHON" - "$SOURCE_SWEEP_PATH" "$PRIOR_SWEEP_PATH" <<'PY'
 import sys
 from collections import Counter
 
 import wandb
 
-sweep_path = sys.argv[1]
-runs = list(wandb.Api(timeout=180).sweep(sweep_path).runs)
+recovery_sweep_path, prior_sweep_path = sys.argv[1:]
+api = wandb.Api(timeout=180)
+recovery_runs = list(api.sweep(recovery_sweep_path).runs)
+prior_runs = list(api.sweep(prior_sweep_path).runs)
 
 expected_baselines = {"AdamW", "AM_AdamW", "AdaTAMW"}
-observed_optimizers = Counter(dict(run.config).get("optimizer") for run in runs)
-if set(observed_optimizers) != expected_baselines:
-    raise SystemExit(f"Unexpected optimizers in baseline recovery sweep: {dict(observed_optimizers)}")
+recovery_optimizers = Counter(dict(run.config).get("optimizer") for run in recovery_runs)
+if not set(recovery_optimizers).issubset(expected_baselines):
+    raise SystemExit(f"Unexpected optimizers in baseline recovery sweep: {dict(recovery_optimizers)}")
+
+def signature(run):
+    config = dict(run.config)
+    return (
+        config.get("optimizer"),
+        config.get("batch_size"),
+        config.get("base_lr"),
+        config.get("weight_decay"),
+        config.get("seed"),
+        config.get("use_scheduler"),
+    )
+
+finished_runs = {
+    run.id: run
+    for run in (*prior_runs, *recovery_runs)
+    if run.state == "finished" and dict(run.config).get("optimizer") in expected_baselines
+}
 for optimizer in expected_baselines:
-    selected = [run for run in runs if dict(run.config).get("optimizer") == optimizer]
-    states = Counter(run.state for run in selected)
-    if len(selected) != 24 or states != Counter({"finished": 24}):
-        raise SystemExit(f"Incomplete baseline {optimizer}: count={len(selected)}, states={dict(states)}")
-print(f"Validated 72 finished baseline runs in {sweep_path}.")
+    selected = [run for run in finished_runs.values() if dict(run.config).get("optimizer") == optimizer]
+    signatures = [signature(run) for run in selected]
+    if len(selected) != 24 or len(set(signatures)) != 24:
+        raise SystemExit(
+            f"Incomplete or duplicate baseline {optimizer}: finished={len(selected)}, "
+            f"unique_signatures={len(set(signatures))}"
+        )
+print(f"Validated 72 unique finished baseline cells across {prior_sweep_path} and {recovery_sweep_path}.")
 PY
 }
 
@@ -188,8 +218,8 @@ PY
 
 SWEEP_RECORD="$MEMORY_ALIGN_PROJECT/logs/adamal-screen-sweeps-${SLURM_JOB_ID}.env"
 : >"$SWEEP_RECORD"
-printf 'SOURCE_SWEEP_PATH=%q\nSOURCE_AGENT_JOB_ID=%q\n' \
-    "$SOURCE_SWEEP_PATH" "$SOURCE_AGENT_JOB_ID" >>"$SWEEP_RECORD"
+printf 'SOURCE_SWEEP_PATH=%q\nSOURCE_AGENT_JOB_ID=%q\nPRIOR_SWEEP_PATH=%q\n' \
+    "$SOURCE_SWEEP_PATH" "$SOURCE_AGENT_JOB_ID" "$PRIOR_SWEEP_PATH" >>"$SWEEP_RECORD"
 
 wait_for_job "$SOURCE_AGENT_JOB_ID" "source baseline array"
 validate_source_subset
