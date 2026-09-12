@@ -1,4 +1,4 @@
-"""Create the two post-selection CIFAR LR/batch-size heatmap sweeps.
+"""Create the post-selection CIFAR heatmaps and scheduler ablation.
 
 The optimizer and MAL structure are encoded in one ``optimizer_case`` sweep
 parameter.  This avoids the silent Cartesian duplication that would result
@@ -58,7 +58,8 @@ def build_configuration(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             mal_case("T-Rep/U", T_REP_U),
             mal_case("T-Rep/N", T_REP_N),
         )
-    else:
+        use_scheduler = True
+    elif args.experiment == "cifar100-benchmark":
         if not args.mal_sgdm_config:
             raise ValueError("--mal_sgdm_config is required for cifar100-benchmark")
         data = "cifar100"
@@ -73,13 +74,34 @@ def build_configuration(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "TAM_SGDM",
             mal_case("MAL-selected", args.mal_sgdm_config),
         )
+        use_scheduler = True
+    else:
+        if not args.mal_sgdm_config:
+            raise ValueError("--mal_sgdm_config is required for cifar100-scheduler-ablation")
+        # One conventional cell from scheduled sweep c72berzj. Holding every
+        # optimizer-independent hyperparameter fixed makes this a direct
+        # scheduler-removal stress test instead of a second tuning sweep.
+        data = "cifar100"
+        arch = "resnet50"
+        batch_sizes = (256,)
+        learning_rates = (0.1,)
+        target = 70.0
+        optimizer_cases = (
+            "SGDM",
+            "AM_MSGD",
+            "TAM_SGDM",
+            mal_case("MAL-selected", args.mal_sgdm_config),
+        )
+        use_scheduler = False
 
     expected_runs = len(optimizer_cases) * len(batch_sizes) * len(learning_rates) * len(SEEDS)
     configuration: dict[str, Any] = {
         "program": args.program,
         "name": args.sweep_name,
         "method": "grid",
-        "metric": {"name": "test_acc", "goal": "maximize"},
+        # Even for an exhaustive grid, keeping the sweep metric validation-only
+        # prevents the W&B UI from encouraging test-set model selection.
+        "metric": {"name": "best_val_acc", "goal": "maximize"},
         "parameters": {
             "optimizer_case": {"values": optimizer_cases},
             "nesterov": {"values": (False,)},
@@ -87,7 +109,7 @@ def build_configuration(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "lr": {"values": learning_rates},
             "weight_decay": {"values": (WEIGHT_DECAY,)},
             "seed": {"values": SEEDS},
-            "use_scheduler": {"values": (True,)},
+            "use_scheduler": {"values": (use_scheduler,)},
         },
         "command": [
             "${env}",
@@ -118,7 +140,11 @@ def build_configuration(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("program")
-    parser.add_argument("--experiment", choices=("cifar10-screen", "cifar100-benchmark"), required=True)
+    parser.add_argument(
+        "--experiment",
+        choices=("cifar10-screen", "cifar100-benchmark", "cifar100-scheduler-ablation"),
+        required=True,
+    )
     parser.add_argument("--sweep_name", "--sweep-name", required=True)
     parser.add_argument("--project_name", "--project-name", default=PROJECT_NAME)
     parser.add_argument("--data_dir", "--data-dir", default="./data")

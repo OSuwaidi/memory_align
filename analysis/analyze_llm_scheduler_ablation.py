@@ -2,9 +2,10 @@
 
 Learning rates are selected with validation loss only.  Test loss is reported
 after selection and is never used to choose an optimizer or learning rate.
-New homogeneous benchmark runs expose both the final-epoch checkpoint and the
-checkpoint selected by validation loss. Older runs remain analyzable, with an
-unavailable validation-selected test field rather than a fabricated alias.
+New completion and scheduler-free runs expose both the final-epoch checkpoint
+and the checkpoint selected by validation loss. Older pilot runs remain
+analyzable, with an unavailable validation-selected test field rather than a
+fabricated alias.
 """
 
 from __future__ import annotations
@@ -108,8 +109,16 @@ def collect_runs(
     excluded: list[dict[str, Any]] = []
     for raw_path in paths:
         path = sweep_path(raw_path)
-        sweep = api.sweep(path)
-        for run in sweep.runs:
+        entity, project, sweep_id = path.split("/")
+        if (entity, project) != (ENTITY, PROJECT):
+            raise ValueError(f"Unexpected W&B project in {path!r}.")
+        runs = api.runs(
+            f"{entity}/{project}",
+            filters={"sweep": sweep_id},
+            per_page=1_000,
+            lazy=False,
+        )
+        for run in runs:
             config = dict(run.config)
             optimizer = str(config.get("optimizer", ""))
             mal_config = str(config.get("MAL_config", config.get("mal_config", "")))
@@ -372,6 +381,7 @@ def markdown_report(
             f"- Scheduler-free sweeps: {', '.join(unscheduled_paths)}.",
             f"- Shared paired LR grid across all four optimizers: {', '.join(f'{value:g}' for value in sorted(common_lrs))}.",
             "- Learning-rate and optimizer selection use validation loss only. Test loss at the validation-selected checkpoint is the primary post-selection generalization metric; final-checkpoint test loss is retained to quantify late-training drift.",
+            "- Historical pilot 9565gqxx logged only final-model test loss. Its unavailable test-at-best-validation entries and paired deltas are left blank rather than inferred; every newly launched run logs both test checkpoints.",
             "- This is a compact 135M-parameter, one-dataset continued-language-modeling benchmark. It supports claims about this setting, not model-scale invariance or instruction tuning.",
         ]
     )

@@ -6,9 +6,9 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=14G
 #SBATCH --time=500:00:00
-#SBATCH --job-name=llm-sched-benchmark
-#SBATCH --output=/shared/b00090279/memory_align/logs/llm-scheduler-master-%j.out
-#SBATCH --error=/shared/b00090279/memory_align/logs/llm-scheduler-master-%j.err
+#SBATCH --job-name=postship-benchmark
+#SBATCH --output=/shared/b00090279/memory_align/logs/postship-master-%j.out
+#SBATCH --error=/shared/b00090279/memory_align/logs/postship-master-%j.err
 
 set -euo pipefail
 
@@ -16,7 +16,9 @@ MEMORY_ALIGN_PROJECT=/shared/b00090279/memory_align
 ENTITY_NAME=osuwaidi-khalifa-university
 PROJECT_NAME=MAL_benchmark
 SOURCE_SWEEP_PATH=${1:-$ENTITY_NAME/$PROJECT_NAME/9565gqxx}
+VISION_SOURCE_SWEEP_PATH=${2:-$ENTITY_NAME/$PROJECT_NAME/c72berzj}
 MAL_CONFIG=False,1.0,none,attenuate,update,complement
+MAL_SGDM_CONFIG=False,1.0,False,attenuate
 TOTAL_GPU_AGENTS=15
 MAX_RECOVERY_ROUNDS=2
 CLUSTER_VENV="$MEMORY_ALIGN_PROJECT/.cluster-venv"
@@ -31,13 +33,15 @@ declare -A AGENT_COUNTS=()
 declare -A AGENT_JOB_IDS=()
 ACTIVE_AGENT_JOB_IDS=()
 
-case "$SOURCE_SWEEP_PATH" in
-    "$ENTITY_NAME/$PROJECT_NAME/"*) ;;
-    *)
-        echo "Refusing unexpected source sweep path: $SOURCE_SWEEP_PATH" >&2
-        exit 2
-        ;;
-esac
+for source_sweep in "$SOURCE_SWEEP_PATH" "$VISION_SOURCE_SWEEP_PATH"; do
+    case "$source_sweep" in
+        "$ENTITY_NAME/$PROJECT_NAME/"*) ;;
+        *)
+            echo "Refusing unexpected source sweep path: $source_sweep" >&2
+            exit 2
+            ;;
+    esac
+done
 
 . "$MEMORY_ALIGN_PROJECT/cluster-env.sh"
 cd "$MEMORY_ALIGN_PROJECT"
@@ -100,7 +104,7 @@ extract_expected_runs() {
     printf '%s\n' "$expected"
 }
 
-create_sweep() {
+create_llm_sweep() {
     local key=$1
     local expected=$2
     local agent_count=$3
@@ -117,6 +121,35 @@ create_sweep() {
         --weight_decay 0.0 \
         --mal_config "$MAL_CONFIG" \
         "$@")
+    printf '%s\n' "$creation_output"
+    SWEEP_PATHS[$key]=$(extract_sweep_path "$creation_output")
+    EXPECTED_RUNS[$key]=$(extract_expected_runs "$creation_output")
+    AGENT_COUNTS[$key]=$agent_count
+    if [[ "${EXPECTED_RUNS[$key]}" != "$expected" ]]; then
+        echo "$key expected $expected runs, but its creator reported ${EXPECTED_RUNS[$key]}." >&2
+        exit 1
+    fi
+    printf '%s=%q\n%s_EXPECTED_RUNS=%q\n' \
+        "$key" "${SWEEP_PATHS[$key]}" "$key" "${EXPECTED_RUNS[$key]}" >>"$SWEEP_RECORD"
+}
+
+create_cifar_sweep() {
+    local key=$1
+    local expected=$2
+    local agent_count=$3
+    local name=$4
+    local creation_output
+    creation_output=$("$CLUSTER_PYTHON" sweeps/cifar_heatmap_sweep.py \
+        tasks/cifar_train.py \
+        --experiment cifar100-scheduler-ablation \
+        --sweep_name "$name" \
+        --project_name "$PROJECT_NAME" \
+        --data_dir "$MEMORY_ALIGN_PROJECT/data" \
+        --epochs 200 \
+        --split_seed 20260901 \
+        --amp_dtype bfloat16 \
+        --float32_precision tf32 \
+        --mal_sgdm_config "$MAL_SGDM_CONFIG")
     printf '%s\n' "$creation_output"
     SWEEP_PATHS[$key]=$(extract_sweep_path "$creation_output")
     EXPECTED_RUNS[$key]=$(extract_expected_runs "$creation_output")
@@ -214,10 +247,11 @@ launch_phase() {
     for key in "${keys[@]}"; do
         allocated=$((allocated + AGENT_COUNTS[$key]))
     done
-    if ((allocated != TOTAL_GPU_AGENTS)); then
-        echo "$phase must allocate exactly $TOTAL_GPU_AGENTS GPU agents; found $allocated." >&2
+    if ((allocated <= 0 || allocated > TOTAL_GPU_AGENTS)); then
+        echo "$phase must allocate between 1 and $TOTAL_GPU_AGENTS GPU agents; found $allocated." >&2
         exit 1
     fi
+    echo "$phase allocates $allocated/$TOTAL_GPU_AGENTS GPUs; no idle duplicate agents are submitted."
     for key in "${keys[@]}"; do
         job_id=$(submit_agents "$key" "${phase}-${key}")
         AGENT_JOB_IDS[$key]=$job_id
@@ -236,76 +270,71 @@ prepare_python_environment
     --task llm \
     --llm_cache_dir "$MEMORY_ALIGN_PROJECT/data/llm_cache"
 "$CLUSTER_PYTHON" sweeps/validate_sweep.py "$SOURCE_SWEEP_PATH" --expected_runs 54
+"$CLUSTER_PYTHON" download_datasets.py \
+    --task cifar100 \
+    --cifar100_dir "$MEMORY_ALIGN_PROJECT/data"
+"$CLUSTER_PYTHON" sweeps/validate_sweep.py "$VISION_SOURCE_SWEEP_PATH" --expected_runs 540
 
-SWEEP_RECORD="$MEMORY_ALIGN_PROJECT/logs/llm-scheduler-sweeps-${SLURM_JOB_ID}.env"
+SWEEP_RECORD="$MEMORY_ALIGN_PROJECT/logs/postship-sweeps-${SLURM_JOB_ID}.env"
 : >"$SWEEP_RECORD"
-printf 'SOURCE_SWEEP_PATH=%q\nMAL_CONFIG=%q\n' "$SOURCE_SWEEP_PATH" "$MAL_CONFIG" >>"$SWEEP_RECORD"
+printf 'SOURCE_SWEEP_PATH=%q\nVISION_SOURCE_SWEEP_PATH=%q\nMAL_CONFIG=%q\nMAL_SGDM_CONFIG=%q\n' \
+    "$SOURCE_SWEEP_PATH" "$VISION_SOURCE_SWEEP_PATH" "$MAL_CONFIG" "$MAL_SGDM_CONFIG" >>"$SWEEP_RECORD"
 
-# Phase 1 preserves the proven 9565gqxx task but reruns every selected optimizer
-# on one homogeneous A10G/software stack. Mixing the old RTX-4090 baselines with
-# new A10G MAL runs would be a material confound at the observed 1e-4--1e-3 loss
-# scale. AdamW/AM retain the source grid; AdaTAMW gets lower cells because its
-# pilot optimum was pinned to the lower boundary; MAL gets higher cells based
-# on its independently observed LR preference in MAE.
-create_sweep \
-    BASE_SCHEDULED_SWEEP_PATH 18 5 \
-    "adamw-am-smollm2-scheduled-${SLURM_JOB_ID}" \
-    --optimizers AdamW AM_AdamW \
-    --lr_multipliers 0.3 1.0 3.0 \
-    --use_scheduler True
-create_sweep \
-    MAL_SCHEDULED_SWEEP_PATH 15 5 \
+# Phase 1 adds only the shipped MAL-AdamW to the completed scheduled pilot.
+# The requested 0.3/1/3/10 multiplier grid brackets its plausible optimum
+# without rerunning 27 already-complete AdamW/AM-AdamW/AdaTAMW runs.
+create_llm_sweep \
+    MAL_SCHEDULED_SWEEP_PATH 12 12 \
     "mal-adamw-smollm2-scheduled-completion-${SLURM_JOB_ID}" \
     --optimizers MAL_AdamW \
-    --lr_multipliers 0.3 1.0 3.0 10.0 20.0 \
+    --lr_multipliers 0.3 1.0 3.0 10.0 \
     --use_scheduler True
-create_sweep \
-    ADATAM_SCHEDULED_SWEEP_PATH 18 5 \
-    "adatamw-smollm2-scheduled-lr-extension-${SLURM_JOB_ID}" \
-    --optimizers AdaTAMW \
-    --lr_multipliers 0.05 0.1 0.2 0.3 1.0 3.0 \
-    --use_scheduler True
-launch_phase llm-on BASE_SCHEDULED_SWEEP_PATH ADATAM_SCHEDULED_SWEEP_PATH MAL_SCHEDULED_SWEEP_PATH
+launch_phase llm-mal-on MAL_SCHEDULED_SWEEP_PATH
 
-# Phase 2 starts only after every scheduled addendum run is finished. Every
-# constant-LR cell has an exact scheduled counterpart. The shared 0.3/1/3 grid
-# supports method-level paired comparisons, while optimizer-specific extensions
-# bracket AdaTAMW's lower and MAL-AdamW's higher optimum without expanding every
-# optimizer onto irrelevant extremes.
-create_sweep \
-    BASE_UNSCHEDULED_SWEEP_PATH 18 5 \
-    "adamw-am-smollm2-scheduler-free-${SLURM_JOB_ID}" \
-    --optimizers AdamW AM_AdamW \
+# Phase 2 is the LLM scheduler ablation. The common 0.3/1/3 grid gives exact
+# scheduled counterparts for every optimizer; MAL additionally retains 10x.
+create_llm_sweep \
+    BASE_UNSCHEDULED_SWEEP_PATH 27 9 \
+    "adamw-am-adatamw-smollm2-scheduler-free-${SLURM_JOB_ID}" \
+    --optimizers AdamW AM_AdamW AdaTAMW \
     --lr_multipliers 0.3 1.0 3.0 \
     --use_scheduler False
-create_sweep \
-    ADATAM_UNSCHEDULED_SWEEP_PATH 18 5 \
-    "adatamw-smollm2-scheduler-free-${SLURM_JOB_ID}" \
-    --optimizers AdaTAMW \
-    --lr_multipliers 0.05 0.1 0.2 0.3 1.0 3.0 \
-    --use_scheduler False
-create_sweep \
-    MAL_UNSCHEDULED_SWEEP_PATH 15 5 \
+create_llm_sweep \
+    MAL_UNSCHEDULED_SWEEP_PATH 12 6 \
     "mal-adamw-smollm2-scheduler-free-${SLURM_JOB_ID}" \
     --optimizers MAL_AdamW \
-    --lr_multipliers 0.3 1.0 3.0 10.0 20.0 \
+    --lr_multipliers 0.3 1.0 3.0 10.0 \
     --use_scheduler False
-launch_phase llm-off BASE_UNSCHEDULED_SWEEP_PATH ADATAM_UNSCHEDULED_SWEEP_PATH MAL_UNSCHEDULED_SWEEP_PATH
+launch_phase llm-off BASE_UNSCHEDULED_SWEEP_PATH MAL_UNSCHEDULED_SWEEP_PATH
 
 ANALYSIS_DIR="$MEMORY_ALIGN_PROJECT/outputs/llm-scheduler-ablation-${SLURM_JOB_ID}"
 "$CLUSTER_PYTHON" analysis/analyze_llm_scheduler_ablation.py \
     --scheduled_sweeps \
-        "${SWEEP_PATHS[BASE_SCHEDULED_SWEEP_PATH]}" \
+        "$SOURCE_SWEEP_PATH" \
         "${SWEEP_PATHS[MAL_SCHEDULED_SWEEP_PATH]}" \
-        "${SWEEP_PATHS[ADATAM_SCHEDULED_SWEEP_PATH]}" \
     --unscheduled_sweeps \
         "${SWEEP_PATHS[BASE_UNSCHEDULED_SWEEP_PATH]}" \
-        "${SWEEP_PATHS[ADATAM_UNSCHEDULED_SWEEP_PATH]}" \
         "${SWEEP_PATHS[MAL_UNSCHEDULED_SWEEP_PATH]}" \
     --mal_config "$MAL_CONFIG" \
     --backfill_metadata \
     --output_dir "$ANALYSIS_DIR"
 printf 'ANALYSIS_DIR=%q\n' "$ANALYSIS_DIR" >>"$SWEEP_RECORD"
 
-echo "Scheduled completion and scheduler-free benchmark finished. Receipt: $SWEEP_RECORD"
-echo "Analysis report: $ANALYSIS_DIR/report.md"
+# Phase 3 adds the complementary vision stress test after the LLM ablation.
+# It exactly matches the canonical BS=256, LR=0.1, WD=5e-4 cells in c72berzj,
+# changing only warmup+cosine to constant LR for four SGDM-family optimizers.
+create_cifar_sweep \
+    CIFAR_UNSCHEDULED_SWEEP_PATH 12 12 \
+    "sgdm-family-resnet50-cifar100-scheduler-free-${SLURM_JOB_ID}"
+launch_phase cifar100-off CIFAR_UNSCHEDULED_SWEEP_PATH
+
+CIFAR_ANALYSIS_DIR="$MEMORY_ALIGN_PROJECT/outputs/cifar100-scheduler-ablation-${SLURM_JOB_ID}"
+"$CLUSTER_PYTHON" analysis/analyze_cifar_scheduler_ablation.py \
+    --scheduled_sweep "$VISION_SOURCE_SWEEP_PATH" \
+    --unscheduled_sweep "${SWEEP_PATHS[CIFAR_UNSCHEDULED_SWEEP_PATH]}" \
+    --output_dir "$CIFAR_ANALYSIS_DIR"
+printf 'CIFAR_ANALYSIS_DIR=%q\n' "$CIFAR_ANALYSIS_DIR" >>"$SWEEP_RECORD"
+
+echo "Post-shipping benchmark sequence finished. Receipt: $SWEEP_RECORD"
+echo "LLM analysis: $ANALYSIS_DIR/report.md"
+echo "CIFAR-100 analysis: $CIFAR_ANALYSIS_DIR/report.md"

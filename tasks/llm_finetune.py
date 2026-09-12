@@ -4,7 +4,8 @@ The default experiment fine-tunes SmolLM2-135M on fixed-length WikiText-2
 blocks.  Unlike adapter tuning, every pretrained parameter is optimized, so
 the experiment directly tests how each optimizer manages momentum near a
 well-trained starting point.  Validation loss is measured once before the
-first update and after every epoch; test loss is measured once at the end.
+first update and after every epoch. Test loss is measured for both the final
+model and the checkpoint selected by validation loss.
 Missing assets are downloaded automatically.  To prefetch them before a GPU
 job, run ``uv run download_datasets.py --task llm``.
 """
