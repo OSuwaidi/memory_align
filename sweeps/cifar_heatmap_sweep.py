@@ -18,6 +18,8 @@ SEEDS = (42, 1337, 2026)
 WEIGHT_DECAY = 5e-4
 
 T_ATT_U = "False,1.0,False,attenuate"
+T_ATT_U_P05 = "False,0.5,False,attenuate"
+I_ATT_U = "True,1.0,False,attenuate"
 T_REP_U = "False,1.0,False,replace"
 T_REP_N = "False,1.0,True,replace"
 
@@ -133,6 +135,20 @@ def build_configuration(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         target = 70.0
         optimizer_cases = ("TAM_baseline",)
         scheduler_values = (True, False)
+    elif args.experiment == "cifar100-mal-structure-scheduler-free":
+        # Exact recipe from scheduler-free sweep 52y7g41m, changing only one
+        # MAL structural field at a time around the shipped default.
+        data = "cifar100"
+        arch = "resnet50"
+        batch_sizes = (256,)
+        learning_rates = (0.1,)
+        target = 70.0
+        optimizer_cases = (
+            mal_case("MAL-default", T_ATT_U),
+            mal_case("MAL-pwr0.5", T_ATT_U_P05),
+            mal_case("MAL-in-place", I_ATT_U),
+        )
+        scheduler_values = (False,)
     else:
         raise ValueError(f"Unsupported experiment {args.experiment!r}")
 
@@ -197,6 +213,7 @@ def main() -> int:
             "cifar10-scheduler-ablation",
             "cifar10-scheduled-controls",
             "cifar100-tam-controls",
+            "cifar100-mal-structure-scheduler-free",
         ),
         required=True,
     )
