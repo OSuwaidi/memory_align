@@ -58,7 +58,7 @@ def build_configuration(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             mal_case("T-Rep/U", T_REP_U),
             mal_case("T-Rep/N", T_REP_N),
         )
-        use_scheduler = True
+        scheduler_values = (True,)
     elif args.experiment == "cifar100-benchmark":
         if not args.mal_sgdm_config:
             raise ValueError("--mal_sgdm_config is required for cifar100-benchmark")
@@ -74,8 +74,8 @@ def build_configuration(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "TAM_SGDM",
             mal_case("MAL-selected", args.mal_sgdm_config),
         )
-        use_scheduler = True
-    else:
+        scheduler_values = (True,)
+    elif args.experiment == "cifar100-scheduler-ablation":
         if not args.mal_sgdm_config:
             raise ValueError("--mal_sgdm_config is required for cifar100-scheduler-ablation")
         # One conventional cell from scheduled sweep c72berzj. Holding every
@@ -92,9 +92,57 @@ def build_configuration(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "TAM_SGDM",
             mal_case("MAL-selected", args.mal_sgdm_config),
         )
-        use_scheduler = False
+        scheduler_values = (False,)
+    elif args.experiment == "cifar10-scheduler-ablation":
+        if not args.mal_sgdm_config:
+            raise ValueError("--mal_sgdm_config is required for cifar10-scheduler-ablation")
+        # The practical BS=256/LR=0.1 cell from scheduled sweep bps6rkim:
+        # every method was stable, and its non-saturated AUC/accuracy gaps make
+        # scheduler-removal effects measurable.  Weight decay remains 5e-4.
+        data = "cifar10"
+        arch = "resnet18"
+        batch_sizes = (256,)
+        learning_rates = (0.1,)
+        target = 90.0
+        optimizer_cases = (
+            "SGDM",
+            "AM_MSGD",
+            "TAM_SGDM",
+            "TAM_baseline",
+            mal_case("MAL-selected", args.mal_sgdm_config),
+        )
+        scheduler_values = (False,)
+    elif args.experiment == "cifar10-scheduled-controls":
+        # bps6rkim already contains scheduled AM-MSGD, TAM-SGDM, and the
+        # selected MAL-SGDM at this cell.  Only the two missing controls run.
+        data = "cifar10"
+        arch = "resnet18"
+        batch_sizes = (256,)
+        learning_rates = (0.1,)
+        target = 90.0
+        optimizer_cases = ("SGDM", "TAM_baseline")
+        scheduler_values = (True,)
+    elif args.experiment == "cifar100-tam-controls":
+        # Add the fixed-gate TAM control on both sides of the exact scheduler
+        # ablation cell.  The adaptive TAM/other methods come from c72berzj and
+        # the paired scheduler-free sweep, so none of them is repeated here.
+        data = "cifar100"
+        arch = "resnet50"
+        batch_sizes = (256,)
+        learning_rates = (0.1,)
+        target = 70.0
+        optimizer_cases = ("TAM_baseline",)
+        scheduler_values = (True, False)
+    else:
+        raise ValueError(f"Unsupported experiment {args.experiment!r}")
 
-    expected_runs = len(optimizer_cases) * len(batch_sizes) * len(learning_rates) * len(SEEDS)
+    expected_runs = (
+        len(optimizer_cases)
+        * len(batch_sizes)
+        * len(learning_rates)
+        * len(SEEDS)
+        * len(scheduler_values)
+    )
     configuration: dict[str, Any] = {
         "program": args.program,
         "name": args.sweep_name,
@@ -109,7 +157,7 @@ def build_configuration(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "lr": {"values": learning_rates},
             "weight_decay": {"values": (WEIGHT_DECAY,)},
             "seed": {"values": SEEDS},
-            "use_scheduler": {"values": (use_scheduler,)},
+            "use_scheduler": {"values": scheduler_values},
         },
         "command": [
             "${env}",
@@ -142,7 +190,14 @@ def main() -> int:
     parser.add_argument("program")
     parser.add_argument(
         "--experiment",
-        choices=("cifar10-screen", "cifar100-benchmark", "cifar100-scheduler-ablation"),
+        choices=(
+            "cifar10-screen",
+            "cifar100-benchmark",
+            "cifar100-scheduler-ablation",
+            "cifar10-scheduler-ablation",
+            "cifar10-scheduled-controls",
+            "cifar100-tam-controls",
+        ),
         required=True,
     )
     parser.add_argument("--sweep_name", "--sweep-name", required=True)

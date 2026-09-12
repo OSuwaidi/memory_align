@@ -1,5 +1,5 @@
 from collections.abc import Callable, Iterable
-from typing import Any, ClassVar
+from typing import Any
 
 import torch
 from torch.optim import Optimizer
@@ -161,6 +161,83 @@ class TAM_SGDM(_TorqueAwareOptimizer):
         for group, p, momentum, grad in entries:
             momentum.mul_(group["beta"]).add_(grad * torque_scale.to(dtype=grad.dtype))
             p.add_(momentum, alpha=-group["lr"])
+
+        return loss
+
+
+class TAMBaselineSGDM(Optimizer):
+    """Fixed-gate control for Torque-Aware Momentum.
+
+    This is an ablation, not a proposed adaptive optimizer.  It preserves
+    TAM-SGDM's heavy-ball recurrence and coupled weight-decay convention while
+    replacing the model-wide torque coefficient with a constant ``0.5``:
+
+        m_t = beta * m_(t-1) + gradient_scale * g_t
+        theta_t = theta_(t-1) - lr * m_t
+
+    Comparing this control with :class:`TAM_SGDM` at identical seeds and
+    training hyperparameters isolates the value of TAM's adaptive torque term
+    from the effect of merely halving each incoming gradient.
+    """
+
+    def __init__(
+        self,
+        params: Iterable[torch.nn.Parameter],
+        lr: float = 0.1,
+        beta: float = 0.9,
+        gradient_scale: float = 0.5,
+        weight_decay: float = 0.0,
+    ) -> None:
+        if lr < 0.0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        if not 0.0 <= beta < 1.0:
+            raise ValueError(f"Invalid beta value: {beta}")
+        if gradient_scale < 0.0:
+            raise ValueError(f"Invalid gradient_scale value: {gradient_scale}")
+        if weight_decay < 0.0:
+            raise ValueError(f"Invalid weight_decay value: {weight_decay}")
+
+        decay_params: list[torch.nn.Parameter] = []
+        no_decay_params: list[torch.nn.Parameter] = []
+        for p in params:
+            if not p.requires_grad:
+                continue
+            if weight_decay == 0.0 or p.ndim <= 1:
+                no_decay_params.append(p)
+            else:
+                decay_params.append(p)
+
+        optim_groups = []
+        for group_params, group_wd in ((no_decay_params, 0.0), (decay_params, weight_decay)):
+            if group_params:
+                optim_groups.append({"params": group_params, "weight_decay": group_wd})
+
+        super().__init__(
+            optim_groups,
+            {"lr": lr, "beta": beta, "gradient_scale": gradient_scale},
+        )
+
+    @torch.no_grad()
+    def step(self, closure: Callable[[], float | torch.Tensor] | None = None) -> Any:
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            wd = group["weight_decay"]
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                if p.grad.is_sparse:
+                    raise RuntimeError("TAM optimizers do not support sparse gradients")
+                state = self.state[p]
+                if "momentum_buffer" not in state:
+                    state["momentum_buffer"] = torch.zeros_like(p)
+                momentum = state["momentum_buffer"]
+                grad = p.grad if wd == 0.0 else p.grad.add(p, alpha=wd)
+                momentum.mul_(group["beta"]).add_(grad, alpha=group["gradient_scale"])
+                p.add_(momentum, alpha=-group["lr"])
 
         return loss
 

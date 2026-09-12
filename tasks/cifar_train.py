@@ -31,7 +31,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 from optims.am_opt import AM_MSGD, AM_AdamW
 from optims.cautious_opt import C_SGDM, C_AdamW
 from optims.mal_opt import MAL_SGDM, MAL_AdamW
-from optims.tam_opt import TAM_SGDM, AdaTAMW
+from optims.tam_opt import TAM_SGDM, AdaTAMW, TAMBaselineSGDM
 from sweeps.cifar_resnet_sweep import add_training_args
 from tasks.wandb_metadata import task_metadata
 
@@ -561,6 +561,18 @@ def main():
             f"_scl:{str(mal_config['scale']).lower()}_gate:{mal_config['gate_mode']}"
             f"_a:{mal_align}_gw:{mal_config['gradient_weight_mode']}_bs:{bs}_{lr}_{seed}"
         )
+    elif optimizer == "TAM_SGDM":
+        run.config.update(
+            {"tam_adaptive_gate": True, "tam_gamma": 0.9, "tam_torque_eps": 1e-8},
+            allow_val_change=True,
+        )
+        run.name = f"{optimizer}_adaptive_bs:{bs}_{lr}_{seed}"
+    elif optimizer == "TAM_baseline":
+        run.config.update(
+            {"tam_adaptive_gate": False, "tam_gradient_scale": 0.5},
+            allow_val_change=True,
+        )
+        run.name = f"{optimizer}_gscale:0.5_bs:{bs}_{lr}_{seed}"
     else:
         run.name = f"{optimizer}_nest:{str(nest)[0]}_bs:{bs}_{lr}_{seed}"
     if bs >= 2 * MAX_MICRO_BATCH_SIZE:
@@ -598,7 +610,14 @@ def main():
 
     model.to(DEVICE)
 
-    sgd_optimizer_names = {"SGDM", "AM_MSGD", "CAUTIOUS_SGDM", "TAM_SGDM", "MAL_SGDM"}
+    sgd_optimizer_names = {
+        "SGDM",
+        "AM_MSGD",
+        "CAUTIOUS_SGDM",
+        "TAM_SGDM",
+        "TAM_baseline",
+        "MAL_SGDM",
+    }
     run.config.update(
         {
             "optimizer_family": "sgdm" if optimizer in sgd_optimizer_names else "adamw",
@@ -722,6 +741,15 @@ def main():
             model.parameters(),
             lr=lr,
             beta=BETA,
+            weight_decay=weight_decay,
+        )
+
+    elif optimizer == "TAM_baseline":
+        optimizer = TAMBaselineSGDM(
+            model.parameters(),
+            lr=lr,
+            beta=BETA,
+            gradient_scale=0.5,
             weight_decay=weight_decay,
         )
 
