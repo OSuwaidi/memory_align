@@ -8,8 +8,8 @@
 #SBATCH --mem=14G
 #SBATCH --time=24:00:00
 #SBATCH --job-name=mal-sgdm-telemetry
-#SBATCH --output=/shared/b00090279/memory_align/logs/mal-sgdm-telemetry-%j.out
-#SBATCH --error=/shared/b00090279/memory_align/logs/mal-sgdm-telemetry-%j.err
+#SBATCH --output=/shared/b00090279/memory_align/logs/mal-sgdm-telemetry-%A_%a.out
+#SBATCH --error=/shared/b00090279/memory_align/logs/mal-sgdm-telemetry-%A_%a.err
 
 set -euo pipefail
 
@@ -17,8 +17,22 @@ MEMORY_ALIGN_PROJECT=/shared/b00090279/memory_align
 CLUSTER_PYTHON="$MEMORY_ALIGN_PROJECT/.cluster-venv/bin/python"
 ENTITY_NAME=osuwaidi-khalifa-university
 PROJECT_NAME=MAL_benchmark
-OUTPUT_DIRECTORY="$MEMORY_ALIGN_PROJECT/outputs/mal-sgdm-telemetry-resnet18-cifar10-seed42-${SLURM_JOB_ID}"
-RECEIPT="$MEMORY_ALIGN_PROJECT/logs/mal-sgdm-telemetry-${SLURM_JOB_ID}.env"
+ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID:-1}
+SUITE_JOB_ID=${SLURM_ARRAY_JOB_ID:-$SLURM_JOB_ID}
+
+case "$ARRAY_TASK_ID" in
+    1) SEED=42;   SCHEDULE=cosine;   WARMUP_EPOCHS=5; VARIANT=scheduled ;;
+    2) SEED=1337; SCHEDULE=cosine;   WARMUP_EPOCHS=5; VARIANT=scheduled ;;
+    3) SEED=2026; SCHEDULE=cosine;   WARMUP_EPOCHS=5; VARIANT=scheduled ;;
+    4) SEED=42;   SCHEDULE=constant; WARMUP_EPOCHS=0; VARIANT=constant ;;
+    5) SEED=1337; SCHEDULE=constant; WARMUP_EPOCHS=0; VARIANT=constant ;;
+    6) SEED=2026; SCHEDULE=constant; WARMUP_EPOCHS=0; VARIANT=constant ;;
+    *) echo "Array task must be in 1-6, got $ARRAY_TASK_ID" >&2; exit 2 ;;
+esac
+
+SUITE_DIRECTORY="$MEMORY_ALIGN_PROJECT/outputs/mal-sgdm-telemetry-suite-${SUITE_JOB_ID}"
+OUTPUT_DIRECTORY="$SUITE_DIRECTORY/$VARIANT/seed-$SEED"
+RECEIPT="$MEMORY_ALIGN_PROJECT/logs/mal-sgdm-telemetry-${SUITE_JOB_ID}_${ARRAY_TASK_ID}.env"
 
 . "$MEMORY_ALIGN_PROJECT/cluster-env.sh"
 cd "$MEMORY_ALIGN_PROJECT"
@@ -31,14 +45,13 @@ if [[ -e "$OUTPUT_DIRECTORY" ]]; then
     echo "Refusing to overwrite telemetry output: $OUTPUT_DIRECTORY" >&2
     exit 1
 fi
+if [[ ! -d "$MEMORY_ALIGN_PROJECT/data/cifar-10-batches-py" ]]; then
+    echo "CIFAR-10 is not staged under $MEMORY_ALIGN_PROJECT/data; run download_datasets.py before allocating GPUs." >&2
+    exit 1
+fi
 
-"$CLUSTER_PYTHON" -m unittest checks.mal_sgdm_telemetry_checks
-"$CLUSTER_PYTHON" download_datasets.py \
-    --task cifar10 \
-    --cifar10_dir "$MEMORY_ALIGN_PROJECT/data"
-
-printf 'TELEMETRY_JOB_ID=%q\nOUTPUT_DIRECTORY=%q\nENTITY=%q\nPROJECT=%q\n' \
-    "$SLURM_JOB_ID" "$OUTPUT_DIRECTORY" "$ENTITY_NAME" "$PROJECT_NAME" >"$RECEIPT"
+printf 'TELEMETRY_JOB_ID=%q\nSUITE_JOB_ID=%q\nARRAY_TASK_ID=%q\nVARIANT=%q\nSEED=%q\nOUTPUT_DIRECTORY=%q\nENTITY=%q\nPROJECT=%q\n' \
+    "$SLURM_JOB_ID" "$SUITE_JOB_ID" "$ARRAY_TASK_ID" "$VARIANT" "$SEED" "$OUTPUT_DIRECTORY" "$ENTITY_NAME" "$PROJECT_NAME" >"$RECEIPT"
 
 "$CLUSTER_PYTHON" tasks/mal_sgdm_telemetry.py train \
     --output "$OUTPUT_DIRECTORY" \
@@ -48,14 +61,14 @@ printf 'TELEMETRY_JOB_ID=%q\nOUTPUT_DIRECTORY=%q\nENTITY=%q\nPROJECT=%q\n' \
     --batch-size 256 \
     --lr 0.1 \
     --weight-decay 0.0005 \
-    --schedule cosine \
-    --warmup-epochs 5 \
+    --schedule "$SCHEDULE" \
+    --warmup-epochs "$WARMUP_EPOCHS" \
     --min-lr 0.00001 \
     --norm group \
     --augmentation repo \
     --amp-dtype bfloat16 \
     --float32-precision tf32 \
-    --seed 42 \
+    --seed "$SEED" \
     --split-seed 20260901 \
     --workers 4 \
     --flush-steps 64 \
@@ -64,7 +77,7 @@ printf 'TELEMETRY_JOB_ID=%q\nOUTPUT_DIRECTORY=%q\nENTITY=%q\nPROJECT=%q\n' \
     --wandb-mode online \
     --wandb-entity "$ENTITY_NAME" \
     --wandb-project "$PROJECT_NAME" \
-    --wandb-name "MAL-SGDM gate telemetry · ResNet18/CIFAR-10 · seed 42"
+    --wandb-name "MAL-SGDM gate telemetry · $VARIANT · seed $SEED"
 
 "$CLUSTER_PYTHON" - "$OUTPUT_DIRECTORY" "$RECEIPT" <<'PY'
 import json

@@ -28,6 +28,23 @@ The canonical diagnostics run matching the repository's ResNet18/CIFAR-10 benchm
   --wandb-project MAL_benchmark
 ```
 
+For paper evidence, `run-mal-sgdm-telemetry.sh` is submitted as the array
+`1-6`: seeds 42, 1337 and 2026 under the canonical five-epoch warmup + cosine
+recipe, paired with the same seeds under constant LR.  Each run has its own
+lossless output directory beneath one suite directory.  The GPU array can be
+throttled independently (for example, `--array=1-6%5`) without changing the
+experimental design.
+
+After all six tasks succeed, `run-mal-sgdm-telemetry-analysis.sh` runs on a CPU
+node.  It validates the exact paired recipe and full tensor-step coverage, then
+`analysis/analyze_mal_sgdm_telemetry_suite.py` creates tagged CSV source tables,
+a descriptive report, and PNG (400 dpi), PDF and SVG versions of eight figures:
+model-wide `q`/`c` evolution, depth evolution and scheduler difference,
+parameter-kind distributions under both weighting views, stage threshold
+occupancy, the complete tensor map, and the associated training/validation
+curves.  Faint traces are individual seeds and aggregate bands are the observed
+three-seed range; tensor steps are never presented as independent replicates.
+
 The model and augmentation defaults follow `tasks/cifar_train.py`: a 3×3 stride-1 stem, no initial max-pooling, GroupNorm, a 10-class linear head, random crop/flip, RandAugment and random erasing. `--norm batch` switches to BatchNorm, and `--augmentation basic` selects just crop/flip and normalization. These choices affect gate dynamics, so compare runs with matching recipes. Batch size is 256. The official training set is split into 42,500 training and 7,500 validation images using a fixed stratified split; the indices are saved. Validation does not update the optimizer or enter telemetry. The official test set is untouched during fitting and model selection, then evaluated exactly twice: for the final model and for the checkpoint selected by validation accuracy.
 
 Training defaults to float32 without clipping or gradient accumulation. `--amp-dtype bfloat16 --float32-precision tf32` matches the CUDA benchmark recipe. Seeds, source hashes, library versions, the normalization choice and optimizer groups are saved in `run.json`. Seeded runs are not guaranteed bitwise identical across devices. `--workers` defaults to zero for macOS portability; it can be increased for throughput. The incomplete last training batch is dropped, matching the existing CIFAR runner.
