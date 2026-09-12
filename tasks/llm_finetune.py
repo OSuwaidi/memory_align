@@ -471,7 +471,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--mal_config",
         "--mal-config",
         dest="MAL_config",
-        default="False,1.0,step,attenuate,metric,fixed",
+        default="False,1.0,none,attenuate,update,complement",
     )
     parser.add_argument("--mal_align", "--mal-align", choices=("update", "metric", "white", "moment"), default="metric")
     parser.add_argument("--gradient_checkpointing", "--gradient-checkpointing", type=parse_bool, default=False)
@@ -649,6 +649,9 @@ def main() -> int:
             "steps_per_epoch": steps_per_epoch,
             "total_steps": total_steps,
             "warmup_steps": warmup_steps,
+            "scheduler": "linear_warmup_cosine" if args.use_scheduler else "constant",
+            "scheduler_ablation": "scheduled" if args.use_scheduler else "scheduler_free",
+            "effective_warmup_ratio": args.warmup_ratio if args.use_scheduler else 0.0,
             "trainable_parameters": parameter_count,
             "effective_batch_size": batch_size,
             "gradient_accumulation_steps": accumulation_steps,
@@ -675,7 +678,10 @@ def main() -> int:
             f"_scl{str(mal_config['scale']).lower()}_g{mal_config['gate_mode']}"
             f"_a{mal_align}_gw{mal_config['gradient_weight_mode']}"
         )
-    run.name = f"{optimizer_name}{mal_suffix}_bs{batch_size}_lrx{lr_multiplier:g}_lr{peak_lr:g}_s{seed}"
+    run.name = (
+        f"{optimizer_name}{mal_suffix}_bs{batch_size}_lrx{lr_multiplier:g}_lr{peak_lr:g}"
+        f"_wd{args.weight_decay:g}_sched{int(args.use_scheduler)}_s{seed}"
+    )
     run.define_metric("epoch")
     for namespace in ("train/*", "val/*", "test/*", "grad/*", "throughput/*", "diagnostic/*"):
         run.define_metric(namespace, step_metric="epoch")
@@ -713,6 +719,7 @@ def main() -> int:
 
         best_val_loss = initial_val_loss
         best_epoch = 0
+        best_model_state = {name: tensor.detach().cpu().clone() for name, tensor in model.state_dict().items()}
         tokens_seen = 0
         val_loss_auc = 0.0
         final_val_loss = initial_val_loss
@@ -746,6 +753,7 @@ def main() -> int:
             if final_val_loss < best_val_loss:
                 best_val_loss = final_val_loss
                 best_epoch = epoch
+                best_model_state = {name: tensor.detach().cpu().clone() for name, tensor in model.state_dict().items()}
 
             metrics: dict[str, float | int] = {
                 "epoch": epoch,
@@ -779,7 +787,7 @@ def main() -> int:
             run.summary["best/val_perplexity"] = perplexity(best_val_loss)
             run.summary["best/epoch"] = best_epoch
 
-        test_loss = evaluate(
+        final_test_loss = evaluate(
             model,
             test_loader,
             device=device,
@@ -787,21 +795,44 @@ def main() -> int:
             amp_enabled=amp_enabled,
             description="Final test",
         )
-        run.log({"epoch": args.epochs, "test/loss": test_loss, "test/perplexity": perplexity(test_loss)})
+        model.load_state_dict(best_model_state)
+        best_val_test_loss = evaluate(
+            model,
+            test_loader,
+            device=device,
+            amp_dtype=amp_dtype,
+            amp_enabled=amp_enabled,
+            description="Best-validation test",
+        )
+        run.log(
+            {
+                "epoch": args.epochs,
+                "test/loss_at_final_epoch": final_test_loss,
+                "test/perplexity_at_final_epoch": perplexity(final_test_loss),
+                "test/loss_at_best_val": best_val_test_loss,
+                "test/perplexity_at_best_val": perplexity(best_val_test_loss),
+            }
+        )
         run.summary["final_val_loss"] = final_val_loss
         run.summary["final_val_perplexity"] = perplexity(final_val_loss)
         run.summary["final_relative_val_improvement_pct"] = 100.0 * (initial_val_loss - final_val_loss) / initial_val_loss
-        run.summary["test_loss"] = test_loss
-        run.summary["test_perplexity"] = perplexity(test_loss)
+        run.summary["val_loss_sum"] = val_loss_auc
+        run.summary["mean_val_loss_over_epochs"] = val_loss_auc / args.epochs
         run.summary["final/val_loss"] = final_val_loss
-        run.summary["test/loss"] = test_loss
-        run.summary["test/perplexity"] = perplexity(test_loss)
-        # This task currently evaluates only the final fine-tuned model; do
-        # not imply that a validation-selected checkpoint was restored.
-        run.summary["test_loss_at_final_epoch"] = test_loss
-        run.summary["test/loss_at_final_epoch"] = test_loss
-        run.summary["test_perplexity_at_final_epoch"] = perplexity(test_loss)
-        run.summary["test/perplexity_at_final_epoch"] = perplexity(test_loss)
+        run.summary["test_loss_at_final_epoch"] = final_test_loss
+        run.summary["test/loss_at_final_epoch"] = final_test_loss
+        run.summary["test_perplexity_at_final_epoch"] = perplexity(final_test_loss)
+        run.summary["test/perplexity_at_final_epoch"] = perplexity(final_test_loss)
+        run.summary["test_loss_at_best_val"] = best_val_test_loss
+        run.summary["test/loss_at_best_val"] = best_val_test_loss
+        run.summary["test_perplexity_at_best_val"] = perplexity(best_val_test_loss)
+        run.summary["test/perplexity_at_best_val"] = perplexity(best_val_test_loss)
+        # Backward-compatible aliases remain explicitly tied to the final
+        # epoch so older sweep 9565gqxx and new runs share one test metric.
+        run.summary["test_loss"] = final_test_loss
+        run.summary["test_perplexity"] = perplexity(final_test_loss)
+        run.summary["test/loss"] = final_test_loss
+        run.summary["test/perplexity"] = perplexity(final_test_loss)
     except Exception:
         process_state["exit_code"] = 1
         raise
