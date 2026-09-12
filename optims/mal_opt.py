@@ -6,12 +6,13 @@ import torch
 from torch.optim import Optimizer
 
 
-def get_norms_and_eff_beta(
+def get_alignment_stats(
     g: torch.Tensor,
     probe: torch.Tensor,
     pwr: float,
     eps: float = 1e-8,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return the two norms, clamped cosine, and transformed alignment gate."""
     g_norm = torch.linalg.vector_norm(g)
     probe_norm = torch.linalg.vector_norm(probe)
     dot = (g * probe).sum()
@@ -19,7 +20,18 @@ def get_norms_and_eff_beta(
     denominator = g_norm.clamp_min(eps) * probe_norm.clamp_min(eps)
     cosine_sim = (dot / denominator).clamp(-1.0, 1.0)
 
-    return g_norm, probe_norm, ((1.0 + cosine_sim) * 0.5) ** pwr
+    return g_norm, probe_norm, cosine_sim, ((1.0 + cosine_sim) * 0.5) ** pwr
+
+
+def get_norms_and_eff_beta(
+    g: torch.Tensor,
+    probe: torch.Tensor,
+    pwr: float,
+    eps: float = 1e-8,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compatibility helper returning the historical norm/norm/gate triple."""
+    g_norm, probe_norm, _cosine_sim, gate = get_alignment_stats(g, probe, pwr, eps)
+    return g_norm, probe_norm, gate
 
 
 def _apply_gate(base_beta: float, gate: torch.Tensor, gate_mode: str) -> torch.Tensor:
@@ -85,6 +97,13 @@ class MAL_SGDM(Optimizer):
 
     Alignment is measured once over each complete parameter tensor, producing one
     scalar gate per tensor and optimizer step.
+
+    ``gate_observer``, when supplied, receives ``(parameter, cosine, q_t, c_t,
+    gradient_norm, probe_norm)`` immediately before the update. These are the
+    actual on-device scalars, including the clamped cosine used by MAL and the
+    zero-gradient fallback in ``c_t``; the observer must treat them as read-only.
+    Parameters with ``grad=None`` produce no observation. This runtime callback
+    is excluded from state dicts.
     """
 
     def __init__(
@@ -98,6 +117,8 @@ class MAL_SGDM(Optimizer):
         scale: bool = False,
         nesterov: bool = False,
         gate_mode: str = "attenuate",
+        *,
+        gate_observer: Callable[[torch.nn.Parameter, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], None] | None = None,
     ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -148,6 +169,7 @@ class MAL_SGDM(Optimizer):
             "gate_mode": gate_mode,
         }  # shared across all optim/param groups
         super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
+        self.gate_observer = gate_observer
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
         """Load current checkpoints and migrate the former group-list layout."""
@@ -206,9 +228,11 @@ class MAL_SGDM(Optimizer):
                 m_probe = g.add(m, alpha=beta)
                 u = g.add(m_probe, alpha=beta) if nesterov else m_probe
 
-                g_norm, u_norm, beta_eff = get_norms_and_eff_beta(g, u, pwr)
-                beta_eff = _apply_gate(beta, beta_eff, gate_mode)
+                g_norm, u_norm, cosine_sim, gate = get_alignment_stats(g, u, pwr)
+                beta_eff = _apply_gate(beta, gate, gate_mode)
                 beta_eff = torch.where(g_norm > 0.0, beta_eff, beta)
+                if self.gate_observer is not None:
+                    self.gate_observer(p, cosine_sim, gate, beta_eff, g_norm, u_norm)
                 m_eff = g.addcmul(m, beta_eff)  # beta_eff * m_{t-1} + g
 
                 if in_place:
