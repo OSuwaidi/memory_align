@@ -137,14 +137,14 @@ def build_configuration(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         scheduler_values = (True, False)
     elif args.experiment == "cifar100-mal-structure-scheduler-free":
         # Exact recipe from scheduler-free sweep 52y7g41m, changing only one
-        # MAL structural field at a time around the shipped default.
+        # MAL structural field at a time around its three matched default
+        # cells.  Do not spend another three runs repeating that baseline.
         data = "cifar100"
         arch = "resnet50"
         batch_sizes = (256,)
         learning_rates = (0.1,)
         target = 70.0
         optimizer_cases = (
-            mal_case("MAL-default", T_ATT_U),
             mal_case("MAL-pwr0.5", T_ATT_U_P05),
             mal_case("MAL-in-place", I_ATT_U),
         )

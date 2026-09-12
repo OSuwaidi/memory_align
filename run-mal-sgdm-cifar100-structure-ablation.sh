@@ -16,8 +16,10 @@ MEMORY_ALIGN_PROJECT=/shared/b00090279/memory_align
 ENTITY_NAME=osuwaidi-khalifa-university
 PROJECT_NAME=MAL_benchmark
 SOURCE_SWEEP=${1:-$ENTITY_NAME/$PROJECT_NAME/52y7g41m}
-EXPECTED_RUNS=9
-GPU_AGENTS=9
+# The source sweep supplies the three exact default cells; this sweep adds
+# only the two one-field variants across the same three seeds.
+EXPECTED_RUNS=6
+GPU_AGENTS=6
 CLUSTER_PYTHON="$MEMORY_ALIGN_PROJECT/.cluster-venv/bin/python"
 ACTIVE_JOB=
 

@@ -88,21 +88,29 @@ def row_for(run: Any, source: str, variant: str) -> dict[str, Any]:
     }
 
 
+def registered_recipe(config: dict[str, Any]) -> bool:
+    return (
+        config.get("optimizer") == "MAL_SGDM"
+        and config.get("data") == "cifar100"
+        and config.get("dataset_name") == "cifar100"
+        and config.get("model_name") == "resnet50"
+        and finite(config.get("epochs")) == 200
+        and finite(config.get("batch_size")) == 256
+        and finite(config.get("lr")) == 0.1
+        and finite(config.get("weight_decay")) == 5e-4
+        and finite(config.get("split_seed")) == 20260901
+        and int(config.get("seed", -1)) in SEEDS
+        and str(config.get("use_scheduler")).lower() == "false"
+    )
+
+
 def collect(api: wandb.Api, source_path: str, ablation_path: str) -> list[dict[str, Any]]:
     selected: list[dict[str, Any]] = []
     source_path = canonical_path(source_path)
     ablation_path = canonical_path(ablation_path)
     for run in runs(api, source_path):
         config = dict(run.config)
-        if (
-            run.state == "finished"
-            and config.get("optimizer") == "MAL_SGDM"
-            and canonical_mal(config.get("MAL_config")) == CONFIGS["MAL-default"]
-            and finite(config.get("batch_size")) == 256
-            and finite(config.get("lr")) == 0.1
-            and finite(config.get("weight_decay")) == 5e-4
-            and str(config.get("use_scheduler")).lower() == "false"
-        ):
+        if run.state == "finished" and registered_recipe(config) and canonical_mal(config.get("MAL_config")) == CONFIGS["MAL-default"]:
             selected.append(row_for(run, source_path, "MAL-default-source"))
 
     config_to_variant = {config: variant for variant, config in CONFIGS.items()}
@@ -111,28 +119,27 @@ def collect(api: wandb.Api, source_path: str, ablation_path: str) -> list[dict[s
         mal_config = canonical_mal(config.get("MAL_config"))
         if run.state != "finished" or mal_config not in config_to_variant:
             continue
-        if (
-            config.get("optimizer") != "MAL_SGDM"
-            or finite(config.get("batch_size")) != 256
-            or finite(config.get("lr")) != 0.1
-            or finite(config.get("weight_decay")) != 5e-4
-            or str(config.get("use_scheduler")).lower() != "false"
-        ):
+        if not registered_recipe(config):
             raise RuntimeError(f"Ablation run {run.id} does not match the registered recipe")
         selected.append(row_for(run, ablation_path, config_to_variant[mal_config]))
 
-    expected = {
-        (variant, seed)
-        for variant in (*CONFIGS, "MAL-default-source")
-        for seed in SEEDS
-    }
+    # The source sweep already supplies the exact matched default cells.  A
+    # separate default replication is useful when W&B allocated it, but it is
+    # not required to compare the two one-field variants.  This also permits a
+    # safe analysis when a grid controller closes after assigning only the six
+    # genuinely new pwr/in-place cells.
+    ablation_variants = {row["variant"] for row in selected if row["source"] == ablation_path}
+    required_variants = {"MAL-default-source", "MAL-pwr0.5", "MAL-in-place"}
+    if "MAL-default" in ablation_variants:
+        required_variants.add("MAL-default")
+    expected = {(variant, seed) for variant in required_variants for seed in SEEDS}
     observed = [(row["variant"], row["seed"]) for row in selected]
     if len(observed) != len(set(observed)):
         raise RuntimeError("Duplicate variant/seed cells detected")
     if set(observed) != expected:
         raise RuntimeError(f"Incomplete grid: missing={sorted(expected - set(observed))}")
     for row in selected:
-        required = ("best_val_acc", "val_auc", "test_acc_at_best_val")
+        required = ("best_val_acc", "val_auc", "test_acc_at_best_val", "test_acc_at_final_epoch")
         missing = [metric for metric in required if row[metric] is None]
         if missing:
             raise RuntimeError(f"Run {row['run_id']} lacks {missing}")
@@ -148,8 +155,10 @@ def aggregate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for row in rows:
         grouped[row["variant"]].append(row)
     output = []
-    order = ("MAL-default-source", *CONFIGS)
+    order = ("MAL-default-source", "MAL-default", "MAL-pwr0.5", "MAL-in-place")
     for variant in order:
+        if variant not in grouped:
+            continue
         record: dict[str, Any] = {"variant": variant, "n": len(grouped[variant])}
         for metric in METRICS:
             values = [float(row[metric]) for row in grouped[variant] if row[metric] is not None]
@@ -161,13 +170,14 @@ def aggregate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def paired_deltas(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     index = {(row["variant"], row["seed"]): row for row in rows}
     output = []
-    for variant in ("MAL-pwr0.5", "MAL-in-place", "MAL-default-source"):
-        record: dict[str, Any] = {"contrast": f"{variant} - MAL-default", "n": len(SEEDS)}
+    variants = [variant for variant in ("MAL-default", "MAL-pwr0.5", "MAL-in-place") if (variant, SEEDS[0]) in index]
+    for variant in variants:
+        record: dict[str, Any] = {"contrast": f"{variant} - MAL-default-source", "n": len(SEEDS)}
         for metric in METRICS:
             values = []
             for seed in SEEDS:
                 candidate = index[(variant, seed)][metric]
-                default = index[("MAL-default", seed)][metric]
+                default = index[("MAL-default-source", seed)][metric]
                 if candidate is not None and default is not None:
                     values.append(candidate - default)
             record[f"{metric}_delta_mean"], record[f"{metric}_delta_sd"] = mean_sd(values) if len(values) > 1 else (None, None)
@@ -182,8 +192,8 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
-def fmt(value: Any) -> str:
-    return "NA" if value is None else f"{float(value):.3f}"
+def fmt(mean: Any, sd: Any) -> str:
+    return "NA" if mean is None or sd is None else f"{float(mean):.3f} ± {float(sd):.3f}"
 
 
 def main() -> int:
@@ -218,15 +228,19 @@ def main() -> int:
         "",
         "ResNet-50/CIFAR-100; BS=256, LR=0.1, WD=5e-4, 200 epochs, no warmup or cosine; three matched seeds.",
         "",
-        "| Variant | Best val | Val AUC | Test @ best val | Test @ final |",
-        "|---|---:|---:|---:|---:|",
+        "The exact default cells are reused from the registered source sweep; the pwr=0.5 and in-place variants are the six newly allocated cells. Selection uses validation metrics. Test metrics are reported at both the validation-selected checkpoint and final epoch only after the comparison is fixed.",
+        "",
+        "| Variant | Best val | Val AUC | Epochs to 70% | Test @ best val | Test @ final |",
+        "|---|---:|---:|---:|---:|---:|",
     ]
     for row in aggregates:
         lines.append(
-            f"| {row['variant']} | {fmt(row['best_val_acc_mean'])} | {fmt(row['val_auc_mean'])} | "
-            f"{fmt(row['test_acc_at_best_val_mean'])} | {fmt(row['test_acc_at_final_epoch_mean'])} |"
+            f"| {row['variant']} | {fmt(row['best_val_acc_mean'], row['best_val_acc_sd'])} | "
+            f"{fmt(row['val_auc_mean'], row['val_auc_sd'])} | {fmt(row['epochs_to_target_mean'], row['epochs_to_target_sd'])} | "
+            f"{fmt(row['test_acc_at_best_val_mean'], row['test_acc_at_best_val_sd'])} | "
+            f"{fmt(row['test_acc_at_final_epoch_mean'], row['test_acc_at_final_epoch_sd'])} |"
         )
-    lines.extend(["", "Model/configuration selection must use validation metrics; test metrics are reported only after selection."])
+    lines.extend(["", "Paired seed-level differences relative to the source default are in `paired_deltas.csv`."])
     (args.output_dir / "report.md").write_text("\n".join(lines) + "\n")
     print(args.output_dir / "report.md")
     return 0
