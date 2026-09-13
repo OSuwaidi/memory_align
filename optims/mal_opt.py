@@ -117,6 +117,8 @@ class MAL_SGDM(Optimizer):
         scale: bool = False,
         nesterov: bool = False,
         gate_mode: str = "attenuate",
+        gradient_weight_mode: str = "fixed",
+        unbias: str = "none",
         *,
         gate_observer: Callable[[torch.nn.Parameter, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], None] | None = None,
     ) -> None:
@@ -132,6 +134,12 @@ class MAL_SGDM(Optimizer):
             raise ValueError("Nesterov momentum requires a positive initial beta")
         if gate_mode not in ("replace", "attenuate"):
             raise ValueError(f"Invalid gate_mode value: {gate_mode}")
+        if gradient_weight_mode not in ("fixed", "complement"):
+            raise ValueError(f"Invalid gradient_weight_mode value: {gradient_weight_mode}")
+        if unbias not in ("none", "buffer", "estimator"):
+            raise ValueError(f"Invalid unbias value: {unbias}")
+        if gradient_weight_mode == "fixed" and unbias != "none":
+            raise ValueError('unbias requires gradient_weight_mode="complement"')
 
         decay_params: list[torch.nn.Parameter] = []
         no_decay_params: list[torch.nn.Parameter] = []
@@ -167,6 +175,8 @@ class MAL_SGDM(Optimizer):
             "scale": scale,
             "nesterov": nesterov,
             "gate_mode": gate_mode,
+            "gradient_weight_mode": gradient_weight_mode,
+            "unbias": unbias,
         }  # shared across all optim/param groups
         super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
         self.gate_observer = gate_observer
@@ -210,6 +220,8 @@ class MAL_SGDM(Optimizer):
             scale = group["scale"]
             nesterov = group["nesterov"]
             gate_mode = group["gate_mode"]
+            gradient_weight_mode = group["gradient_weight_mode"]
+            unbias = group["unbias"]
 
             for p in group["params"]:
                 if p.grad is None:
@@ -219,13 +231,21 @@ class MAL_SGDM(Optimizer):
                 state = self.state[p]  # used such that loading model form checkpoint pushes all its weights + states to correct device
                 if "momentum_buffer" not in state:
                     state["momentum_buffer"] = torch.zeros_like(p)
+                    state["t"] = 0
+
+                state["t"] += 1
+                t = state["t"]
 
                 m = state["momentum_buffer"]
                 if wd > 0.0:
                     # Coupled weight decay
                     g = g.add(p, alpha=wd)
 
-                m_probe = g.add(m, alpha=beta)
+                if gradient_weight_mode == "fixed":
+                    m_probe = g.add(m, alpha=beta)
+                else:
+                    m_probe = g.lerp(m, weight=beta)
+
                 u = g.add(m_probe, alpha=beta) if nesterov else m_probe
 
                 g_norm, u_norm, cosine_sim, gate = get_alignment_stats(g, u, pwr)
@@ -233,7 +253,11 @@ class MAL_SGDM(Optimizer):
                 beta_eff = torch.where(g_norm > 0.0, beta_eff, beta)
                 if self.gate_observer is not None:
                     self.gate_observer(p, cosine_sim, gate, beta_eff, g_norm, u_norm)
-                m_eff = g.addcmul(m, beta_eff)  # beta_eff * m_{t-1} + g
+
+                if gradient_weight_mode == "fixed":
+                    m_eff = g.addcmul(m, beta_eff)  # beta_eff * m_{t-1} + g
+                else:
+                    m_eff = g.lerp(m, weight=beta_eff)  # beta_eff * m_{t-1} + (1 - beta_eff) g
 
                 if in_place:
                     m.copy_(m_eff)
@@ -245,6 +269,12 @@ class MAL_SGDM(Optimizer):
                 if scale:
                     u_eff_norm = torch.linalg.vector_norm(u_eff) + 1e-8
                     u_eff.mul_(u_norm.clamp_min(1e-12) / u_eff_norm)
+
+                if unbias == "buffer":
+                    num_term = g * (gate - 1.0) * beta**t
+                    u_eff.add_(num_term).div_(1.0 - beta**t)
+                elif unbias == "estimator":
+                    u_eff.div_(1.0 - gate * beta**t)
 
                 p.sub_(u_eff, alpha=lr)
 
@@ -808,9 +838,7 @@ class AdaMAL(Optimizer):
                 weighted_gate = gate * diagnostic_weight
                 weighted_beta_eff = beta1_eff * diagnostic_weight
                 gate_total = weighted_gate if gate_total is None else gate_total + weighted_gate
-                beta_eff_total = (
-                    weighted_beta_eff if beta_eff_total is None else beta_eff_total + weighted_beta_eff
-                )
+                beta_eff_total = weighted_beta_eff if beta_eff_total is None else beta_eff_total + weighted_beta_eff
                 gate_min = gate if gate_min is None else torch.minimum(gate_min, gate)
                 gate_max = gate if gate_max is None else torch.maximum(gate_max, gate)
                 diagnostic_parameter_count += diagnostic_weight
@@ -825,11 +853,7 @@ class AdaMAL(Optimizer):
                 else:
                     u_eff = m_eff.div(denominator)
                     if scale == "step":
-                        u_probe_norm = (
-                            alignment_probe_norm
-                            if align == "update"
-                            else torch.linalg.vector_norm(m_probe.div(denominator))
-                        )
+                        u_probe_norm = alignment_probe_norm if align == "update" else torch.linalg.vector_norm(m_probe.div(denominator))
                         u_eff_norm = torch.linalg.vector_norm(u_eff) + eps
                         u_eff.mul_(u_probe_norm / u_eff_norm)
 

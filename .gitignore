@@ -62,7 +62,7 @@ helper.py
 # pdm.toml
 .pdm-python
 .pdm-build/
-test*
+notebooks/
 tests/
 
 # pixi
