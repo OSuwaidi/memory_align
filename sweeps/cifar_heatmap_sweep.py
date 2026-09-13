@@ -27,7 +27,6 @@ T_REP_N = "False,1.0,True,replace"
 # in_place,pwr,scale,gate_mode,align,gradient_weight_mode,unbias.
 # ``align=moment`` names SGDM's only alignment geometry; it is metadata rather
 # than an additional degree of freedom.
-MAL_SGDM_DEFAULT = "False,1.0,False,attenuate,moment,fixed,none"
 MAL_SGDM_COMPLEMENT_NONE = "False,1.0,False,attenuate,moment,complement,none"
 MAL_SGDM_COMPLEMENT_BUFFER = "False,1.0,False,attenuate,moment,complement,buffer"
 MAL_SGDM_COMPLEMENT_ESTIMATOR = "False,1.0,False,attenuate,moment,complement,estimator"
@@ -72,6 +71,7 @@ def validate_sgdm_mal_config(value: str) -> str:
 
 
 def build_configuration(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    comparison_parameters: dict[str, Any] = {}
     if args.experiment == "cifar10-screen":
         data = "cifar10"
         arch = "resnet18"
@@ -87,22 +87,26 @@ def build_configuration(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         )
         scheduler_values = (True,)
     elif args.experiment == "cifar10-mal-qhm":
-        # Full matched heatmap against canonical MAL-SGDM.  The only changing
-        # method fields are complementary fresh-gradient weighting and its
-        # normalization; model, data split, augmentation, schedule and all
-        # optimizer-independent hyperparameters match the prior CIFAR-10 map.
+        # Full matched heatmap against the 147 completed canonical MAL-SGDM
+        # controls in sweep bps6rkim.  Reusing those exact cells avoids 126
+        # redundant runs through LR=0.8; this commit's added step bookkeeping
+        # does not alter the default recurrence (covered by the numerical check).
         data = "cifar10"
         arch = "resnet18"
         batch_sizes = CIFAR10_BATCH_SIZES
         learning_rates = CIFAR10_QHM_LRS
         target = 90.0
         optimizer_cases = (
-            mal_case("MAL-default", MAL_SGDM_DEFAULT),
             mal_case("MAL-complement-none", MAL_SGDM_COMPLEMENT_NONE),
             mal_case("MAL-complement-buffer", MAL_SGDM_COMPLEMENT_BUFFER),
             mal_case("MAL-complement-estimator", MAL_SGDM_COMPLEMENT_ESTIMATOR),
         )
         scheduler_values = (True,)
+        comparison_parameters = {
+            "comparison_sweep": {"value": "bps6rkim"},
+            "comparison_optimizer_variant": {"value": "T-Att/U"},
+            "comparison_MAL_config": {"value": "False,1.0,False,attenuate,False"},
+        }
     elif args.experiment == "cifar100-benchmark":
         if not args.mal_sgdm_config:
             raise ValueError("--mal_sgdm_config is required for cifar100-benchmark")
@@ -216,6 +220,7 @@ def build_configuration(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "weight_decay": {"values": (WEIGHT_DECAY,)},
             "seed": {"values": SEEDS},
             "use_scheduler": {"values": scheduler_values},
+            **comparison_parameters,
         },
         "command": [
             "${env}",
