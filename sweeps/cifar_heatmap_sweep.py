@@ -30,6 +30,8 @@ T_REP_N = "False,1.0,True,replace"
 MAL_SGDM_COMPLEMENT_NONE = "False,1.0,False,attenuate,moment,complement,none"
 MAL_SGDM_COMPLEMENT_BUFFER = "False,1.0,False,attenuate,moment,complement,buffer"
 MAL_SGDM_COMPLEMENT_ESTIMATOR = "False,1.0,False,attenuate,moment,complement,estimator"
+MAL_SGDM_FIXED_STEP = "False,1.0,step,attenuate,moment,fixed,none"
+MAL_SGDM_COMPLEMENT_STEP = "False,1.0,step,attenuate,moment,complement,none"
 
 CIFAR10_BATCH_SIZES = (64, 128, 256, 512, 1024, 2048, 4096)
 CIFAR10_LRS = (0.025, 0.05, 0.1, 0.2, 0.4, 0.8, 1.6)
@@ -100,6 +102,28 @@ def build_configuration(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             mal_case("MAL-complement-none", MAL_SGDM_COMPLEMENT_NONE),
             mal_case("MAL-complement-buffer", MAL_SGDM_COMPLEMENT_BUFFER),
             mal_case("MAL-complement-estimator", MAL_SGDM_COMPLEMENT_ESTIMATOR),
+        )
+        scheduler_values = (True,)
+        comparison_parameters = {
+            "comparison_sweep": {"value": "bps6rkim"},
+            "comparison_optimizer_variant": {"value": "T-Att/U"},
+            "comparison_MAL_config": {"value": "False,1.0,False,attenuate,False"},
+        }
+    elif args.experiment == "cifar10-mal-scale-screen":
+        # A compact cross-regime screen before considering step-norm matching
+        # as an SGDM-family default.  BS=128 represents the conventional noisy
+        # regime; BS=1024 tests large-batch behavior.  LR=0.1 is conventional,
+        # while 0.4/0.8 expose whether norm preservation expands or contracts
+        # the stable high-step region.  Canonical unscaled controls for all six
+        # cells are already complete in bps6rkim.
+        data = "cifar10"
+        arch = "resnet18"
+        batch_sizes = (128, 1024)
+        learning_rates = (0.1, 0.4, 0.8)
+        target = 90.0
+        optimizer_cases = (
+            mal_case("MAL-fixed-step", MAL_SGDM_FIXED_STEP),
+            mal_case("MAL-complement-step", MAL_SGDM_COMPLEMENT_STEP),
         )
         scheduler_values = (True,)
         comparison_parameters = {
@@ -256,6 +280,7 @@ def main() -> int:
         choices=(
             "cifar10-screen",
             "cifar10-mal-qhm",
+            "cifar10-mal-scale-screen",
             "cifar100-benchmark",
             "cifar100-scheduler-ablation",
             "cifar10-scheduler-ablation",
