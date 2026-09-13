@@ -23,8 +23,18 @@ I_ATT_U = "True,1.0,False,attenuate"
 T_REP_U = "False,1.0,False,replace"
 T_REP_N = "False,1.0,True,replace"
 
+# Explicit seven-field forms for the QHM-style MAL-SGDM ablation:
+# in_place,pwr,scale,gate_mode,align,gradient_weight_mode,unbias.
+# ``align=moment`` names SGDM's only alignment geometry; it is metadata rather
+# than an additional degree of freedom.
+MAL_SGDM_DEFAULT = "False,1.0,False,attenuate,moment,fixed,none"
+MAL_SGDM_COMPLEMENT_NONE = "False,1.0,False,attenuate,moment,complement,none"
+MAL_SGDM_COMPLEMENT_BUFFER = "False,1.0,False,attenuate,moment,complement,buffer"
+MAL_SGDM_COMPLEMENT_ESTIMATOR = "False,1.0,False,attenuate,moment,complement,estimator"
+
 CIFAR10_BATCH_SIZES = (64, 128, 256, 512, 1024, 2048, 4096)
 CIFAR10_LRS = (0.025, 0.05, 0.1, 0.2, 0.4, 0.8, 1.6)
+CIFAR10_QHM_LRS = (0.025, 0.05, 0.1, 0.2, 0.4, 0.8)
 CIFAR100_BATCH_SIZES = (128, 256, 512, 1024, 2048, 4096)
 CIFAR100_LRS = (0.025, 0.05, 0.1, 0.2, 0.4, 0.8)
 
@@ -35,14 +45,29 @@ def mal_case(label: str, config: str) -> str:
 
 def validate_sgdm_mal_config(value: str) -> str:
     fields = value.split(",")
-    if len(fields) != 4:
-        raise argparse.ArgumentTypeError("must be 'in_place,pwr,scale,gate_mode'")
+    if len(fields) not in (4, 7):
+        raise argparse.ArgumentTypeError(
+            "must be 'in_place,pwr,scale,gate_mode' or "
+            "'in_place,pwr,scale,gate_mode,moment,gradient_weight_mode,unbias'"
+        )
     if fields[0] not in {"True", "False"} or fields[2] not in {"True", "False"}:
         raise argparse.ArgumentTypeError("in_place and scale must be True or False")
     if fields[1] not in {"0.5", "1.0"}:
         raise argparse.ArgumentTypeError("pwr must be 0.5 or 1.0")
     if fields[3] not in {"attenuate", "replace"}:
         raise argparse.ArgumentTypeError("gate_mode must be attenuate or replace")
+    if len(fields) == 7:
+        align, gradient_weight_mode, unbias = fields[4:]
+        if align != "moment":
+            raise argparse.ArgumentTypeError("MAL-SGDM alignment must be moment")
+        if gradient_weight_mode not in {"fixed", "complement"}:
+            raise argparse.ArgumentTypeError("gradient_weight_mode must be fixed or complement")
+        if unbias not in {"none", "buffer", "estimator"}:
+            raise argparse.ArgumentTypeError("unbias must be none, buffer, or estimator")
+        if gradient_weight_mode == "fixed" and unbias != "none":
+            raise argparse.ArgumentTypeError("fixed gradient weighting requires unbias=none")
+        if gradient_weight_mode == "complement" and fields[3] != "attenuate":
+            raise argparse.ArgumentTypeError("complement gradient weighting requires gate_mode=attenuate")
     return value
 
 
@@ -59,6 +84,23 @@ def build_configuration(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             mal_case("T-Att/U", T_ATT_U),
             mal_case("T-Rep/U", T_REP_U),
             mal_case("T-Rep/N", T_REP_N),
+        )
+        scheduler_values = (True,)
+    elif args.experiment == "cifar10-mal-qhm":
+        # Full matched heatmap against canonical MAL-SGDM.  The only changing
+        # method fields are complementary fresh-gradient weighting and its
+        # normalization; model, data split, augmentation, schedule and all
+        # optimizer-independent hyperparameters match the prior CIFAR-10 map.
+        data = "cifar10"
+        arch = "resnet18"
+        batch_sizes = CIFAR10_BATCH_SIZES
+        learning_rates = CIFAR10_QHM_LRS
+        target = 90.0
+        optimizer_cases = (
+            mal_case("MAL-default", MAL_SGDM_DEFAULT),
+            mal_case("MAL-complement-none", MAL_SGDM_COMPLEMENT_NONE),
+            mal_case("MAL-complement-buffer", MAL_SGDM_COMPLEMENT_BUFFER),
+            mal_case("MAL-complement-estimator", MAL_SGDM_COMPLEMENT_ESTIMATOR),
         )
         scheduler_values = (True,)
     elif args.experiment == "cifar100-benchmark":
@@ -208,6 +250,7 @@ def main() -> int:
         "--experiment",
         choices=(
             "cifar10-screen",
+            "cifar10-mal-qhm",
             "cifar100-benchmark",
             "cifar100-scheduler-ablation",
             "cifar10-scheduler-ablation",

@@ -46,7 +46,7 @@ ALLOCATED_CPUS = int(os.environ.get("SLURM_CPUS_PER_TASK", cpu_count()))
 NUM_WORKERS = min(max(ALLOCATED_CPUS // max(NUM_GPUS, 1), 1), 16)
 EVAL_NUM_WORKERS = min(NUM_WORKERS, 6)
 MAX_MICRO_BATCH_SIZE = 512
-DEFAULT_MAL_SGDM_CONFIG = "False,1.0,False,replace"
+DEFAULT_MAL_SGDM_CONFIG = "False,1.0,False,attenuate"
 
 
 def parse_bool(value: str | bool) -> bool:
@@ -251,12 +251,16 @@ def resolve_optimizer_case(config) -> tuple[str, str, str]:
 def parse_mal_config(value: str) -> dict[str, Any]:
     """Parse current MAL configs while retaining false legacy safeguard fields."""
     fields = [field.strip() for field in value.split(",")]
-    if not 4 <= len(fields) <= 7:
-        raise ValueError("MAL_config must be 'in_place,pwr,scale,gate_mode[,align[,gradient_weight_mode]]'.")
+    if not 4 <= len(fields) <= 8:
+        raise ValueError(
+            "MAL_config must be "
+            "'in_place,pwr,scale,gate_mode[,align[,gradient_weight_mode[,unbias]]]'."
+        )
 
     in_place_text, pwr_text, scale_text, gate_mode, *tail = fields
     align = None
     gradient_weight_mode = "fixed"
+    unbias = "none"
     if tail and tail[0].lower() in {"true", "false"}:
         legacy_safeguard = parse_bool(tail.pop(0))
         if legacy_safeguard:
@@ -265,6 +269,8 @@ def parse_mal_config(value: str) -> dict[str, Any]:
         align = tail.pop(0).lower()
     if tail:
         gradient_weight_mode = tail.pop(0).lower()
+    if tail:
+        unbias = tail.pop(0).lower()
     if tail:
         raise ValueError("MAL_config contains too many fields.")
 
@@ -282,6 +288,7 @@ def parse_mal_config(value: str) -> dict[str, Any]:
         "scale": scale,
         "gate_mode": gate_mode,
         "gradient_weight_mode": gradient_weight_mode,
+        "unbias": unbias,
     }
     if parsed["pwr"] not in (0.5, 1.0):
         raise ValueError("MAL pwr must be 0.5 or 1.0.")
@@ -291,6 +298,10 @@ def parse_mal_config(value: str) -> dict[str, Any]:
         raise ValueError("MAL gradient_weight_mode must be fixed or complement.")
     if gradient_weight_mode == "complement" and gate_mode != "attenuate":
         raise ValueError('MAL gradient_weight_mode="complement" requires gate_mode="attenuate".')
+    if unbias not in ("none", "buffer", "estimator"):
+        raise ValueError("MAL unbias must be none, buffer, or estimator.")
+    if gradient_weight_mode == "fixed" and unbias != "none":
+        raise ValueError('MAL unbias requires gradient_weight_mode="complement".')
     if align is not None:
         if align not in ("update", "metric", "white", "moment"):
             raise ValueError("MAL align must be update, metric, white, or moment.")
@@ -523,16 +534,19 @@ def main():
         parser.error(f"--epochs must be greater than {WARMUP_EPOCHS} warmup epochs when scheduling is enabled")
 
     mal_config = parse_mal_config(raw_mal_config)
-    mal_align = str(mal_config.pop("align", "metric"))
+    mal_align = str(mal_config.pop("align", "moment" if optimizer == "MAL_SGDM" else "metric"))
     optimizer_mal_config = dict(mal_config)
     if optimizer == "MAL_SGDM":
-        gradient_weight_mode = optimizer_mal_config.pop("gradient_weight_mode")
-        if gradient_weight_mode != "fixed":
-            raise ValueError("MAL-SGDM does not implement gradient_weight_mode; use fixed.")
         if isinstance(optimizer_mal_config["scale"], str):
             if optimizer_mal_config["scale"] == "moment":
                 raise ValueError('MAL-SGDM does not support scale="moment".')
             optimizer_mal_config["scale"] = optimizer_mal_config["scale"] == "step"
+    elif optimizer == "MAL_AdamW":
+        # ``unbias`` is an SGDM-QHM option. MAL-AdamW always performs its exact
+        # first-moment coefficient normalization internally.
+        sgdm_unbias = optimizer_mal_config.pop("unbias")
+        if sgdm_unbias != "none":
+            raise ValueError("MAL-AdamW does not accept the MAL-SGDM unbias modes.")
     run.config.update(
         {
             "optimizer": optimizer,
@@ -553,7 +567,8 @@ def main():
         run.name = (
             f"{optimizer}_{optimizer_variant}_inp:{int(mal_config['in_place'])}"
             f"_pwr:{mal_config['pwr']}_scl:{str(mal_config['scale']).lower()}"
-            f"_gate:{mal_config['gate_mode']}_nest:{int(nest)}_bs:{bs}_{lr}_{seed}"
+            f"_gate:{mal_config['gate_mode']}_gw:{mal_config['gradient_weight_mode']}"
+            f"_ub:{mal_config['unbias']}_nest:{int(nest)}_bs:{bs}_{lr}_{seed}"
         )
     elif optimizer == "MAL_AdamW":
         run.name = (
@@ -686,7 +701,7 @@ def main():
             lr=lr,
             weight_decay=weight_decay,
             align=mal_align,
-            **mal_config,
+            **optimizer_mal_config,
         )
 
     elif optimizer == "AM_AdamW":

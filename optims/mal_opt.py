@@ -91,6 +91,28 @@ class MAL_SGDM(Optimizer):
     the corresponding fixed-beta probe. This preserves the base optimizer's
     step magnitude while retaining MAL's change in direction.
 
+    ``gradient_weight_mode="complement"`` provides the QHM-like alternative
+
+    :math:`m_t^{eff}=a_t m_{t-1}+(1-a_t)g_t`,
+
+    where :math:`a_t=\beta q_t`.  Its transient buffer is the normalized EMA
+    :math:`m_t^{probe}=\beta m_{t-1}+(1-\beta)g_t`; multiplying every stored
+    buffer by a positive constant would not change the cosine gate, but the
+    normalized form makes the complementary weights meaningful.  The three
+    ``unbias`` modes then apply, respectively:
+
+    - ``"none"``: the raw adaptive EMA;
+    - ``"buffer"``: :math:`q_t\hat m_t+(1-q_t)g_t`, where
+      :math:`\hat m_t=m_t^{probe}/(1-\beta^t)` is the unbiased base EMA;
+    - ``"estimator"``: divide the adaptive EMA by its exact transient
+      coefficient mass :math:`1-a_t\beta^{t-1}`.
+
+    The two corrections are distinct, defensible QHM-style estimators.  They
+    require transient (``in_place=False``), unscaled, non-Nesterov updates;
+    recursive memory would instead require tracking the entire realized
+    coefficient product.  Complementary weighting is restricted to attenuation
+    because replacement makes the self-aligned first update identically zero.
+
     A zero buffer makes the probe self-aligned (:math:`q_t=1`). A zero gradient
     carries no alignment evidence, so :math:`c_t` falls back to the fixed ``beta``
     rather than treating an undefined direction as an artificial 0.5.
@@ -138,8 +160,16 @@ class MAL_SGDM(Optimizer):
             raise ValueError(f"Invalid gradient_weight_mode value: {gradient_weight_mode}")
         if unbias not in ("none", "buffer", "estimator"):
             raise ValueError(f"Invalid unbias value: {unbias}")
+        if gradient_weight_mode == "complement" and gate_mode != "attenuate":
+            raise ValueError('gradient_weight_mode="complement" requires gate_mode="attenuate"')
+        if gradient_weight_mode == "complement" and nesterov:
+            raise ValueError('gradient_weight_mode="complement" does not define a Nesterov variant')
         if gradient_weight_mode == "fixed" and unbias != "none":
             raise ValueError('unbias requires gradient_weight_mode="complement"')
+        if unbias != "none" and in_place:
+            raise ValueError('unbias requires in_place=False because the correction assumes transient base memory')
+        if unbias != "none" and scale:
+            raise ValueError('unbias requires scale=False; tensorwise norm matching would cancel its scalar correction')
 
         decay_params: list[torch.nn.Parameter] = []
         no_decay_params: list[torch.nn.Parameter] = []
@@ -199,8 +229,37 @@ class MAL_SGDM(Optimizer):
                 for parameter_id, momentum_buffer in zip(group["params"], legacy_momentum, strict=True):
                     state.setdefault(parameter_id, {})["momentum_buffer"] = momentum_buffer
 
+            # Missing fields identify a pre-QHM checkpoint, whose recurrence
+            # was necessarily the historical fixed-gradient formulation.
+            group.setdefault("gradient_weight_mode", "fixed")
+            group.setdefault("unbias", "none")
             for key, default in self.defaults.items():
                 group.setdefault(key, default)
+
+            gradient_weight_mode = group["gradient_weight_mode"]
+            unbias = group["unbias"]
+            if gradient_weight_mode not in ("fixed", "complement"):
+                raise ValueError(f"Checkpoint has unsupported gradient_weight_mode: {gradient_weight_mode}")
+            if unbias not in ("none", "buffer", "estimator"):
+                raise ValueError(f"Checkpoint has unsupported unbias mode: {unbias}")
+            if gradient_weight_mode == "complement" and group["gate_mode"] != "attenuate":
+                raise ValueError('gradient_weight_mode="complement" requires gate_mode="attenuate"')
+            if gradient_weight_mode == "complement" and group["nesterov"]:
+                raise ValueError('gradient_weight_mode="complement" does not define a Nesterov variant')
+            if gradient_weight_mode == "fixed" and unbias != "none":
+                raise ValueError('unbias requires gradient_weight_mode="complement"')
+            if unbias != "none" and group["in_place"]:
+                raise ValueError('unbias requires in_place=False because the correction assumes transient base memory')
+            if unbias != "none" and group["scale"]:
+                raise ValueError('unbias requires scale=False; tensorwise norm matching would cancel its scalar correction')
+
+            for parameter_id in group["params"]:
+                parameter_state = state.get(parameter_id)
+                if not isinstance(parameter_state, dict) or "momentum_buffer" not in parameter_state:
+                    continue
+                # ``t`` existed briefly during development; published state
+                # uses the same ``step`` spelling as the other optimizers.
+                parameter_state["step"] = int(parameter_state.pop("t", parameter_state.get("step", 0)))
         super().load_state_dict(migrated)
 
     @torch.no_grad()
@@ -231,10 +290,10 @@ class MAL_SGDM(Optimizer):
                 state = self.state[p]  # used such that loading model form checkpoint pushes all its weights + states to correct device
                 if "momentum_buffer" not in state:
                     state["momentum_buffer"] = torch.zeros_like(p)
-                    state["t"] = 0
+                state.setdefault("step", 0)
 
-                state["t"] += 1
-                t = state["t"]
+                state["step"] += 1
+                step = state["step"]
 
                 m = state["momentum_buffer"]
                 if wd > 0.0:
@@ -271,10 +330,16 @@ class MAL_SGDM(Optimizer):
                     u_eff.mul_(u_norm.clamp_min(1e-12) / u_eff_norm)
 
                 if unbias == "buffer":
-                    num_term = g * (gate - 1.0) * beta**t
-                    u_eff.add_(num_term).div_(1.0 - beta**t)
+                    beta_power = beta**step
+                    num_term = g * (gate - 1.0) * beta_power
+                    u_eff.add_(num_term).div_(1.0 - beta_power)
                 elif unbias == "estimator":
-                    u_eff.div_(1.0 - gate * beta**t)
+                    # The fallback for a zero gradient sets beta_eff=beta even
+                    # though its undefined raw cosine maps to gate=0.5.  Using
+                    # beta_eff here keeps the coefficient mass exact in that
+                    # case as well as for ordinary non-zero gradients.
+                    coefficient_mass = 1.0 - beta_eff * beta ** (step - 1)
+                    u_eff.div_(coefficient_mass)
 
                 p.sub_(u_eff, alpha=lr)
 
