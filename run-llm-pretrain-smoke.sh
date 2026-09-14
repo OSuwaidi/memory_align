@@ -4,8 +4,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=14G
 #SBATCH --time=01:00:00
 #SBATCH --job-name=agm-llm-smoke
 #SBATCH --output=/shared/b00090279/memory_align/logs/llm-pretrain-smoke-%j.out

@@ -471,6 +471,7 @@ def main() -> int:
         cumulative_loss_count = int(checkpoint["cumulative_loss_count"])
         best_val_loss = float(checkpoint["best_val_loss"])
         best_val_step = int(checkpoint["best_val_step"])
+        del checkpoint
         print(f"Resuming {case.optimizer} at optimizer step {start_step:,}/{args.max_steps:,}.")
 
     sequences_consumed = start_step * args.micro_batch_size * args.gradient_accumulation_steps

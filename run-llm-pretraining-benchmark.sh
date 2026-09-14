@@ -3,8 +3,8 @@
 #SBATCH --partition=cpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=14G
 #SBATCH --time=240:00:00
 #SBATCH --job-name=agm-llm-pretrain
 #SBATCH --output=/shared/b00090279/memory_align/logs/llm-pretrain-master-%j.out
