@@ -147,7 +147,13 @@ export TOKENIZERS_PARALLELISM=true
 
 # Calibrate only memory capacity. The effective batch remains 262,144 tokens
 # under either branch, so this fallback cannot change the scientific recipe.
-if smoke_submission=$(sbatch --parsable --wait "$MEMORY_ALIGN_PROJECT/run-llm-pretrain-smoke.sh" 4); then
+# A recovery submission may reuse a separately verified preflight by exporting
+# LLM_PRETRAIN_SKIP_PREFLIGHT=1; this never skips corpus validation above.
+if [[ "${LLM_PRETRAIN_SKIP_PREFLIGHT:-0}" == "1" ]]; then
+    MICRO_BATCH_SIZE=4
+    GRADIENT_ACCUMULATION_STEPS=32
+    smoke_submission="reused-completed-preflight"
+elif smoke_submission=$(sbatch --parsable --wait "$MEMORY_ALIGN_PROJECT/run-llm-pretrain-smoke.sh" 4); then
     MICRO_BATCH_SIZE=4
     GRADIENT_ACCUMULATION_STEPS=32
 else
