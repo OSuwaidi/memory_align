@@ -44,7 +44,7 @@ def build_sweep(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         seeds = SCREEN_SEEDS
         max_steps = args.max_steps or SCREEN_STEPS
         evaluate_test = False
-        eval_every = min(args.eval_every or 100, max_steps)
+        eval_every = min(args.eval_every or 250, max_steps)
         checkpoint_every = min(args.checkpoint_every or 250, max_steps)
         stage_metadata = {
             "study_stage": {"value": "hyperparameter_screen"},
