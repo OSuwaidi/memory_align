@@ -15,13 +15,14 @@ set -euo pipefail
 
 MEMORY_ALIGN_PROJECT=/shared/b00090279/memory_align
 MICRO_BATCH_SIZE=${1:-4}
+TOKEN_DATA_DIR=${2:-"$MEMORY_ALIGN_PROJECT/data/fineweb-edu-smollm2"}
 
 . "$MEMORY_ALIGN_PROJECT/cluster-env.sh"
 cd "$MEMORY_ALIGN_PROJECT"
 
 for optimizer_name in AdamW AM_AdamW AdaTAMW AGM_AdamW; do
     "$MEMORY_ALIGN_PROJECT/.cluster-venv/bin/python" tasks/llm_pretrain.py \
-        --data_dir "$MEMORY_ALIGN_PROJECT/data/fineweb-edu-smollm2" \
+        --data_dir "$TOKEN_DATA_DIR" \
         --optimizer_case "${optimizer_name}::0.00075::0.01" \
         --seed 42 \
         --sequence_length 2048 \
