@@ -50,6 +50,18 @@ def build_sweep(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "study_stage": {"value": "hyperparameter_screen"},
             "selection_rule": {"value": "minimum mean final dev loss across screen seeds"},
         }
+    elif args.stage == "agm_none_screen":
+        cases = tuple(optimizer_case("AGM_AdamW", learning_rate, weight_decay) for learning_rate in LEARNING_RATES for weight_decay in WEIGHT_DECAYS)
+        seeds = SCREEN_SEEDS
+        max_steps = args.max_steps or SCREEN_STEPS
+        evaluate_test = False
+        eval_every = min(args.eval_every or 250, max_steps)
+        checkpoint_every = min(args.checkpoint_every or 250, max_steps)
+        stage_metadata = {
+            "study_stage": {"value": "agm_scale_none_paired_screen"},
+            "selection_rule": {"value": "paired dev-loss comparison with step-scaled AGM-AdamW in sweep 6rupvp9p"},
+            "agm_scale": {"value": "none"},
+        }
     else:
         if args.selected_configs is None:
             raise ValueError("--selected_configs is required for the confirmation stage")
@@ -124,7 +136,7 @@ def build_sweep(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("program")
-    parser.add_argument("--stage", choices=("screen", "confirmation"), required=True)
+    parser.add_argument("--stage", choices=("screen", "confirmation", "agm_none_screen"), required=True)
     parser.add_argument("--sweep_name", "--sweep-name", required=True)
     parser.add_argument("--project_name", "--project-name", default=PROJECT_NAME)
     parser.add_argument("--data_dir", "--data-dir", required=True)

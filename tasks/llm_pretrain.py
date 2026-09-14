@@ -50,7 +50,13 @@ DATASET_NAME = "HuggingFaceFW/fineweb-edu"
 DATASET_CONFIG = "sample-10BT"
 DATASET_REVISION = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
 OPTIMIZERS = ("AdamW", "AM_AdamW", "AdaTAMW", "AGM_AdamW")
-AGM_CONFIG = "False,1.0,step,attenuate,update,complement"
+AGM_SCALES = ("none", "step")
+
+
+def agm_config_name(scale: str) -> str:
+    if scale not in AGM_SCALES:
+        raise ValueError(f"Unknown AGM scale {scale!r}; choose one of {AGM_SCALES}.")
+    return f"False,1.0,{scale},attenuate,update,complement"
 
 
 def parse_bool(value: str | bool) -> bool:
@@ -174,6 +180,7 @@ def build_optimizer(
     beta1: float,
     beta2: float,
     epsilon: float,
+    agm_scale: str = "step",
 ) -> Optimizer:
     parameters: Iterable[nn.Parameter] = model.parameters()
     if case.optimizer == "AdamW":
@@ -212,7 +219,7 @@ def build_optimizer(
             pwr=1.0,
             align="update",
             in_place=False,
-            scale="step",
+            scale=agm_scale,
             gate_mode="attenuate",
             gradient_weight_mode="complement",
         )
@@ -337,6 +344,13 @@ def main() -> int:
     parser.add_argument("--study_stage", "--study-stage", default="direct")
     parser.add_argument("--selection_rule", "--selection-rule")
     parser.add_argument("--hyperparameter_selection_receipt", "--hyperparameter-selection-receipt")
+    parser.add_argument(
+        "--agm_scale",
+        "--agm-scale",
+        choices=AGM_SCALES,
+        default="step",
+        help="AGM-AdamW norm scaling; 'step' is the active benchmark setting and 'none' is the paired ablation.",
+    )
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
@@ -381,7 +395,8 @@ def main() -> int:
         "optimizer": case.optimizer,
         "learning_rate": case.learning_rate,
         "weight_decay": case.weight_decay,
-        "AGM_config": AGM_CONFIG if case.optimizer == "AGM_AdamW" else None,
+        "AGM_config": agm_config_name(args.agm_scale) if case.optimizer == "AGM_AdamW" else None,
+        "agm_scale": args.agm_scale if case.optimizer == "AGM_AdamW" else None,
         "effective_batch_tokens": tokens_per_update,
         "training_token_budget": token_budget,
         "dev_tokens": metadata["dev_tokens"],
@@ -401,7 +416,9 @@ def main() -> int:
     config = dict(run.config)
     case = OptimizerCase.parse(str(config["optimizer_case"]))
     seed = int(config["seed"])
-    run.name = f"{case.optimizer}_lr{case.learning_rate:g}_wd{case.weight_decay:g}_tok{token_budget}_s{seed}"
+    agm_scale = str(config["agm_scale"]) if case.optimizer == "AGM_AdamW" else "step"
+    scale_suffix = f"_scale{agm_scale}" if case.optimizer == "AGM_AdamW" and agm_scale != "step" else ""
+    run.name = f"{case.optimizer}{scale_suffix}_lr{case.learning_rate:g}_wd{case.weight_decay:g}_tok{token_budget}_s{seed}"
 
     device = torch.device("cuda")
     torch.backends.cuda.matmul.fp32_precision = args.float32_precision
@@ -424,7 +441,7 @@ def main() -> int:
     if tokenizer_size != model_config.vocab_size or tokenizer_size != metadata_vocab_size:
         raise RuntimeError(f"Tokenizer/model/data vocabulary mismatch: {tokenizer_size} != {model_config.vocab_size} != {metadata_vocab_size}")
 
-    optimizer = build_optimizer(case, model, beta1=args.beta1, beta2=args.beta2, epsilon=args.epsilon)
+    optimizer = build_optimizer(case, model, beta1=args.beta1, beta2=args.beta2, epsilon=args.epsilon, agm_scale=agm_scale)
     warmup_steps = round(args.max_steps * args.warmup_ratio)
     allocated_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", cpu_count()))
     num_workers = min(allocated_cpus, 8) if args.num_workers < 0 else args.num_workers
@@ -448,6 +465,10 @@ def main() -> int:
         "model_revision": MODEL_REVISION,
         "dataset_revision": DATASET_REVISION,
     }
+    # Preserve the checkpoint identity of the already-running step-scaled
+    # benchmark while preventing the paired no-scaling runs from sharing it.
+    if case.optimizer == "AGM_AdamW" and agm_scale != "step":
+        resume_identity["agm_scale"] = agm_scale
     checkpoint_dir = args.output_dir.expanduser().resolve() / config_fingerprint(resume_identity)
     last_checkpoint = checkpoint_dir / "checkpoint-last.pt"
     best_checkpoint = checkpoint_dir / "checkpoint-best-model.pt"
