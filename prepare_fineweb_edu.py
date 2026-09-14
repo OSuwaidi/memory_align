@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -132,6 +133,12 @@ def main() -> int:
     parser.add_argument("--eval_tokens", "--eval-tokens", type=int, default=DEFAULT_EVAL_TOKENS)
     parser.add_argument("--tokenizer_batch_size", "--tokenizer-batch-size", type=int, default=128)
     parser.add_argument("--cache_dir", "--cache-dir", type=Path)
+    parser.add_argument(
+        "--hard_exit_after_success",
+        "--hard-exit-after-success",
+        action="store_true",
+        help="Exit without waiting for third-party streaming cleanup threads after every output has been fsynced.",
+    )
     args = parser.parse_args()
     if args.train_tokens <= 0 or args.eval_tokens <= 0:
         parser.error("token counts must be positive")
@@ -214,7 +221,13 @@ def main() -> int:
     finally:
         progress.close()
 
-    print(json.dumps(metadata, indent=2, sort_keys=True))
+    print(json.dumps(metadata, indent=2, sort_keys=True), flush=True)
+    if args.hard_exit_after_success:
+        # On the AUS Python 3.14 stack, datasets/fsspec can leave a helper
+        # thread blocked after a streaming iterator reaches its target. All
+        # payloads and metadata are already fsynced and atomically renamed.
+        sys.stderr.flush()
+        os._exit(0)
     return 0
 
 

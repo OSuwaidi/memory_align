@@ -142,7 +142,8 @@ export TOKENIZERS_PARALLELISM=true
 "$CLUSTER_PYTHON" prepare_fineweb_edu.py \
     --output_dir "$TOKEN_DATA_DIR" \
     --train_tokens 1499463680 \
-    --eval_tokens 8388608
+    --eval_tokens 8388608 \
+    --hard_exit_after_success
 
 # Calibrate only memory capacity. The effective batch remains 262,144 tokens
 # under either branch, so this fallback cannot change the scientific recipe.
