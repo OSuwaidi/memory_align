@@ -101,6 +101,8 @@ def build_sweep(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "1e-8",
             "--max_grad_norm",
             "1.0",
+            "--num_workers",
+            "0",
             "--eval_every",
             str(eval_every),
             "--checkpoint_every",

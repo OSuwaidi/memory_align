@@ -32,6 +32,7 @@ for optimizer_name in AdamW AM_AdamW AdaTAMW AGM_AdamW; do
         --warmup_ratio 0 \
         --eval_every 1 \
         --eval_max_sequences 2 \
+        --num_workers 0 \
         --checkpoint_every 0 \
         --evaluate_test false \
         --wandb_mode disabled \
