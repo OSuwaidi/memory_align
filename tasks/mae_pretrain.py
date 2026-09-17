@@ -47,7 +47,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from optims.am_opt import AM_MSGD, AM_AdamW
 from optims.cautious_opt import C_SGDM, C_AdamW
-from optims.mal_opt import MAL_SGDM, AdaMAL, MAL_AdamW
+from optims.agam_opt import AGAM_SGD, AdaAGAM, AGAM_AdamW
 from optims.tam_opt import TAM_SGDM, AdaTAMW
 from tasks.wandb_metadata import task_metadata
 
@@ -570,7 +570,7 @@ def build_optimizer(
             if sgdm_mal_config["scale"] == "moment":
                 raise ValueError('MAL-SGDM does not support scale="moment".')
             sgdm_mal_config["scale"] = sgdm_mal_config["scale"] == "step"
-        return MAL_SGDM(
+        return AGAM_SGD(
             parameters,
             lr=lr,
             beta=momentum,
@@ -595,7 +595,7 @@ def build_optimizer(
     if name == "AdaTAMW":
         return AdaTAMW(parameters, lr=lr, betas=(momentum, beta2), weight_decay=weight_decay)
     if name == "MAL_AdamW":
-        return MAL_AdamW(
+        return AGAM_AdamW(
             parameters,
             lr=lr,
             betas=(momentum, beta2),
@@ -604,7 +604,7 @@ def build_optimizer(
             **mal_config,
         )
     if name == "AdaMAL":
-        return AdaMAL(
+        return AdaAGAM(
             parameters,
             lr=lr,
             betas=(momentum, beta2),
@@ -1252,7 +1252,7 @@ def main() -> int:
                 assert optimizer.last_beta_min is not None and optimizer.last_beta_max is not None
                 metrics["diagnostic/am_beta_min"] = float(optimizer.last_beta_min)
                 metrics["diagnostic/am_beta_max"] = float(optimizer.last_beta_max)
-            elif isinstance(optimizer, AdaMAL) and optimizer.last_gate_mean is not None:
+            elif isinstance(optimizer, AdaAGAM) and optimizer.last_gate_mean is not None:
                 metrics["diagnostic/adamal_gate_mean"] = float(optimizer.last_gate_mean)
                 assert optimizer.last_gate_min is not None and optimizer.last_gate_max is not None
                 assert optimizer.last_beta_eff_mean is not None

@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from optims.mal_opt import AdaMAL
+from optims.agam_opt import AdaAGAM
 
 
 class AdaMALAlignmentChecks(unittest.TestCase):
@@ -28,8 +28,8 @@ class AdaMALAlignmentChecks(unittest.TestCase):
             with self.subTest(align=align, unbias=unbias, recursive=recursive, scale=scale, power=power, gate=gate):
                 eps = 1e-8
                 p = torch.nn.Parameter(torch.zeros(2, dtype=torch.float64))
-                opt = AdaMAL([p], lr=1., betas=(.5, .5), eps=eps, align=align,
-                             unbias=unbias, in_place=recursive, scale=scale, pwr=power, gate_mode=gate)
+                opt = AdaAGAM([p], lr=1., betas=(.5, .5), eps=eps, align=align,
+                              unbias=unbias, in_place=recursive, scale=scale, pwr=power, gate_mode=gate)
                 opt.state[p].update(step=3, momentum_buffer=torch.tensor([2., -1.], dtype=p.dtype),
                                     exp_avg_sq=torch.tensor([1., 31.], dtype=p.dtype))
                 correction = 1-.5**4 if unbias else 1.
@@ -66,15 +66,15 @@ class AdaMALAlignmentChecks(unittest.TestCase):
         for align, unbias, recursive, scale in itertools.product(("moment", "update", "metric"), (False, True), (False, True), ("none", "moment", "step")):
             with self.subTest(align=align, unbias=unbias, recursive=recursive, scale=scale):
                 params = [torch.nn.Parameter(torch.ones(shape, dtype=torch.float64)) for shape in ((2, 2), (2,))]
-                opt = AdaMAL(params, lr=.03, betas=(.8, .9), weight_decay=.1, align=align,
-                             unbias=unbias, in_place=recursive, scale=scale)
+                opt = AdaAGAM(params, lr=.03, betas=(.8, .9), weight_decay=.1, align=align,
+                              unbias=unbias, in_place=recursive, scale=scale)
                 for p in params:
                     p.grad = torch.arange(1, p.numel()+1, dtype=p.dtype).reshape_as(p)
                 opt.step()
                 saved = copy.deepcopy(opt.state_dict())
                 restored_params = [torch.nn.Parameter(p.detach().clone()) for p in params]
                 other_align = "metric" if align != "metric" else "moment"
-                restored = AdaMAL(restored_params, weight_decay=.1, align=other_align, unbias=not unbias)
+                restored = AdaAGAM(restored_params, weight_decay=.1, align=other_align, unbias=not unbias)
                 restored.load_state_dict(saved)
                 self.assertTrue(all(group["align"] == align for group in restored.param_groups))
                 for p, r in zip(params, restored_params, strict=True):
@@ -89,7 +89,7 @@ class AdaMALAlignmentChecks(unittest.TestCase):
 
     def test_pre_alignment_checkpoint_keeps_historical_moment_mode(self):
         p = torch.nn.Parameter(torch.ones(2, dtype=torch.float64))
-        opt = AdaMAL([p], unbias=True)
+        opt = AdaAGAM([p], unbias=True)
         self.assertEqual(opt.param_groups[0]["align"], "moment")
         p.grad = torch.tensor([1., 3.], dtype=p.dtype)
         opt.step()
@@ -97,7 +97,7 @@ class AdaMALAlignmentChecks(unittest.TestCase):
         for group in saved["param_groups"]:
             group.pop("align")
         r = torch.nn.Parameter(p.detach().clone())
-        restored = AdaMAL([r], align="update")
+        restored = AdaAGAM([r], align="update")
         restored.load_state_dict(saved)
         self.assertEqual(restored.param_groups[0]["align"], "moment")
         self.assertNotIn("align", saved["param_groups"][0])
@@ -112,16 +112,16 @@ class AdaMALAlignmentChecks(unittest.TestCase):
             with self.subTest(align=align):
                 p = torch.nn.Parameter(torch.ones(2))
                 with self.assertRaisesRegex(ValueError, "align"):
-                    AdaMAL([p], align=align)
-                saved = copy.deepcopy(AdaMAL([p]).state_dict())
+                    AdaAGAM([p], align=align)
+                saved = copy.deepcopy(AdaAGAM([p]).state_dict())
                 saved["param_groups"][0]["align"] = align
                 with self.assertRaisesRegex(ValueError, "align"):
-                    AdaMAL([p]).load_state_dict(saved)
+                    AdaAGAM([p]).load_state_dict(saved)
 
     def test_zero_gradient_uses_base_memory_coefficient_in_both_modes(self):
         for align in ("moment", "update", "metric"):
             p = torch.nn.Parameter(torch.ones(2, dtype=torch.float64))
-            opt = AdaMAL([p], align=align, in_place=True)
+            opt = AdaAGAM([p], align=align, in_place=True)
             p.grad = torch.tensor([1., -2.], dtype=p.dtype)
             opt.step()
             before = opt.state[p]["momentum_buffer"].clone()
@@ -133,7 +133,7 @@ class AdaMALAlignmentChecks(unittest.TestCase):
     def test_latest_step_diagnostics_are_parameter_count_weighted(self):
         first = torch.nn.Parameter(torch.zeros(2, dtype=torch.float64))
         second = torch.nn.Parameter(torch.zeros(6, dtype=torch.float64))
-        opt = AdaMAL((first, second), betas=(.8, .9), align="moment")
+        opt = AdaAGAM((first, second), betas=(.8, .9), align="moment")
         opt.state[first].update(
             step=1,
             momentum_buffer=torch.tensor([-2., 0.], dtype=first.dtype),
@@ -163,8 +163,8 @@ class AdaMALAlignmentChecks(unittest.TestCase):
             with self.subTest(align=align, unbias=unbias, recursive=recursive, scale=scale):
                 cpu = torch.nn.Parameter(torch.ones((2, 2)))
                 mps = torch.nn.Parameter(cpu.detach().to("mps"))
-                opts = [AdaMAL([p], lr=.03, weight_decay=.1, eps=1e-7, align=align,
-                               unbias=unbias, in_place=recursive, scale=scale) for p in (cpu, mps)]
+                opts = [AdaAGAM([p], lr=.03, weight_decay=.1, eps=1e-7, align=align,
+                                unbias=unbias, in_place=recursive, scale=scale) for p in (cpu, mps)]
                 for values in ([1., 2., -.5, .3], [-.4, .1, .5, -.2], [0., 0., 0., 0.]):
                     g = torch.tensor(values).reshape(2, 2)
                     cpu.grad, mps.grad = g.clone(), g.to("mps")

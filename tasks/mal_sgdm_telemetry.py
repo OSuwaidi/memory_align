@@ -1,4 +1,4 @@
-"""Exact per-step, per-tensor MAL-SGDM telemetry on a CIFAR ResNet18.
+"""Exact per-step, per-tensor AGAM-SGD / SGDM telemetry on a CIFAR ResNet18.
 
 Usage and file schema: tasks/mal_sgdm_telemetry.md. W&B logging is optional.
 The train command automatically analyzes the completed measurements.
@@ -33,7 +33,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from optims.mal_opt import MAL_SGDM
+from optims.agam_opt import AGAM_SGD
+from tasks.agam_sgd_diagnostics import ALIGNMENT_FEATURES, ObservedSGDM, alignment_scalars
 from tasks.wandb_metadata import task_metadata
 
 FEATURES = ("cosine", "gate_q", "beta_eff", "gradient_norm", "probe_norm")
@@ -83,7 +84,7 @@ def build_model(norm: str = "group") -> nn.Module:
     return model
 
 
-def tensor_metadata(model: nn.Module, optimizer: MAL_SGDM) -> list[dict[str, Any]]:
+def tensor_metadata(model: nn.Module, optimizer: torch.optim.Optimizer) -> list[dict[str, Any]]:
     modules = dict(model.named_modules())
     groups = {id(p): (i, group) for i, group in enumerate(optimizer.param_groups) for p in group["params"]}
     rows = []
@@ -135,9 +136,9 @@ def tensor_metadata(model: nn.Module, optimizer: MAL_SGDM) -> list[dict[str, Any
                 "branch": "shortcut" if "downsample" in parts else "main",
                 "optimizer_group": group_id,
                 "weight_decay": group["weight_decay"],
-                "beta": group["beta"],
-                "pwr": group["pwr"],
-                "gate_mode": group["gate_mode"],
+                "beta": group.get("beta", group.get("momentum")),
+                "pwr": group.get("pwr", 1.0),
+                "gate_mode": group.get("gate_mode", "disabled"),
             }
         )
     return rows
@@ -150,7 +151,8 @@ class GateRecorder:
     A shard preserves every completed step; compression is lossless.
     """
 
-    def __init__(self, directory: Path, model: nn.Module, metadata: list[dict[str, Any]], flush_steps: int = 256):
+    def __init__(self, directory: Path, model: nn.Module, metadata: list[dict[str, Any]], flush_steps: int = 256,
+                 *, alignment: bool = False):
         if flush_steps < 1:
             raise ValueError("flush_steps must be positive")
         self.directory = directory
@@ -168,11 +170,16 @@ class GateRecorder:
         self.numel_weights = np.asarray([row["numel"] for row in metadata], dtype=np.int64)
         self.tensor_steps = np.zeros(self.tensor_count, dtype=np.int64)
         self.active = False
+        self.alignment = alignment
         self.pending: list[torch.Tensor] = []
+        self.pending_alignment: list[torch.Tensor] = []
         self.seen = np.zeros(self.tensor_count, dtype=bool)
         self.buffer: list[tuple[torch.Tensor, dict[str, Any]]] = []
         self.epoch_statistics: dict[int, Statistics] = {}
-        self.index: dict[str, Any] = {"schema_version": 2, "features": list(FEATURES), "chunks": [], "completed_steps": 0}
+        self.epoch_alignment: dict[int, dict[str, np.ndarray]] = {}
+        self.index: dict[str, Any] = {"schema_version": 3 if alignment else 2, "features": list(FEATURES), "chunks": [], "completed_steps": 0}
+        if alignment:
+            self.index["alignment_features"] = list(ALIGNMENT_FEATURES)
         write_json(directory / "index.json", self.index)
 
     @property
@@ -183,6 +190,8 @@ class GateRecorder:
         if self.active:
             raise RuntimeError("Previous telemetry step was not completed or aborted")
         self.pending = [self.nan] * (self.tensor_count * len(FEATURES))
+        self.pending_alignment = [self.nan] * (self.tensor_count * len(ALIGNMENT_FEATURES)) if self.alignment else []
+        self.alignment_seen = np.zeros(self.tensor_count, dtype=bool)
         self.seen = np.zeros(self.tensor_count, dtype=bool)
         self.active = True
 
@@ -204,10 +213,24 @@ class GateRecorder:
         offset = tensor_id * len(FEATURES)
         self.pending[offset : offset + len(FEATURES)] = [value.detach() for value in (cosine, gate, coefficient, gradient_norm, probe_norm)]
 
+    def observe_alignment(self, parameter, gradient, history, probe, applied) -> None:
+        if not self.active or not self.alignment:
+            raise RuntimeError("Extended alignment recording is not active")
+        tensor_id = self.ids[id(parameter)]
+        if self.alignment_seen[tensor_id]:
+            raise RuntimeError("Duplicate alignment observation")
+        self.alignment_seen[tensor_id] = True
+        offset = tensor_id * len(ALIGNMENT_FEATURES)
+        self.pending_alignment[offset:offset + len(ALIGNMENT_FEATURES)] = [
+            value.detach() for value in alignment_scalars(parameter, gradient, history, probe, applied)
+        ]
+
     def end_step(self, *, epoch: int, batch: int, batch_size: int, samples_seen: int, learning_rates: list[float], loss: torch.Tensor) -> None:
         if not self.active:
             raise RuntimeError("No telemetry step is active")
-        packed = torch.stack([*self.pending, loss.detach()])
+        if self.alignment and not np.array_equal(self.seen, self.alignment_seen):
+            raise RuntimeError("Gate/alignment coverage differs within this step")
+        packed = torch.stack([*self.pending, *self.pending_alignment, loss.detach()])
         record = {
             "step": self.completed_steps + 1,
             "epoch": epoch,
@@ -228,6 +251,7 @@ class GateRecorder:
     def abort_step(self) -> None:
         self.active = False
         self.pending = []
+        self.pending_alignment = []
 
     def flush(self) -> None:
         if not self.buffer:
@@ -236,11 +260,22 @@ class GateRecorder:
         packed = torch.stack([value for value, _ in self.buffer]).cpu().numpy()
         records = [record for _, record in self.buffer]
         arrays = {key: np.asarray([record[key] for record in records]) for key in records[0]}
-        arrays["values"] = packed[:, :-1].reshape(len(self.buffer), self.tensor_count, len(FEATURES))
+        boundary = self.tensor_count * len(FEATURES)
+        arrays["values"] = packed[:, :boundary].reshape(len(self.buffer), self.tensor_count, len(FEATURES))
+        if self.alignment:
+            arrays["alignment_values"] = packed[:, boundary:-1].reshape(len(self.buffer), self.tensor_count, len(ALIGNMENT_FEATURES))
         arrays["loss"] = packed[:, -1]
         for epoch in np.unique(arrays["epoch"]):
             mask = arrays["epoch"] == epoch
             self.epoch_statistics.setdefault(int(epoch), Statistics(self.tensor_count)).add(arrays["values"][mask], arrays["observed"][mask])
+            from analysis.agam_alignment_analysis import signals_from_arrays, valid_alignment
+            signals = signals_from_arrays(arrays["values"][mask], arrays["alignment_values"][mask] if self.alignment else None)
+            counts = self.epoch_alignment.setdefault(int(epoch), {})
+            for signal, (cosine, gn, dn) in signals.items():
+                valid = valid_alignment(cosine, gn, dn, arrays["observed"][mask])
+                totals = counts.setdefault(signal, np.zeros((2, self.tensor_count), dtype=np.int64))
+                totals[0] += valid.sum(axis=0)
+                totals[1] += (valid & (cosine < 0)).sum(axis=0)
         first, last = int(arrays["step"][0]), int(arrays["step"][-1])
         filename = f"steps_{first:08d}_{last:08d}.npz"
         write_npz(self.directory / filename, **arrays)
@@ -276,6 +311,12 @@ class GateRecorder:
                 result[f"{prefix}/pct_lt_0_5"] = row["pct_lt_0_5"]
                 result[f"{prefix}/pct_0_5_to_0_7"] = row["pct_0_5_to_0_7"]
                 result[f"{prefix}/pct_gt_0_7"] = row["pct_gt_0_7"]
+        for signal, (valid, negative) in self.epoch_alignment.pop(epoch).items():
+            for weighting, weights in (("equal_tensor", np.ones(self.tensor_count, dtype=np.int64)), ("numel_weighted", self.numel_weights)):
+                n, k = int(valid @ weights), int(negative @ weights)
+                prefix = f"telemetry/alignment/{signal}/{weighting}"
+                result[f"{prefix}/weighted_valid"] = n
+                result[f"{prefix}/pct_negative"] = 100 * k / n if n else float("nan")
         return result
 
 
@@ -578,13 +619,13 @@ def plot_results(
         finish(fig, f"{metric}_tensor_summary", f"Tensor-level summary of {labels[metric].lower()}")
 
 
-def analyze_run(directory: Path, late_fraction: float = 0.2, plots: bool = True) -> Path:
+def analyze_run(directory: Path, late_fraction: float = 0.2, plots: bool = True, alignment_window: int = 100) -> Path:
     if not 0.0 < late_fraction <= 1.0:
         raise ValueError("late_fraction must be in (0, 1]")
     metadata = json.loads((directory / "tensor_metadata.json").read_text())
     run = json.loads((directory / "run.json").read_text())
     index = json.loads((directory / "telemetry" / "index.json").read_text())
-    if index["features"] != list(FEATURES) or index["schema_version"] != 2:
+    if index["features"] != list(FEATURES) or index["schema_version"] not in (2, 3):
         raise ValueError("Unsupported telemetry schema")
     total_steps = index["completed_steps"]
     if not total_steps:
@@ -623,10 +664,12 @@ def analyze_run(directory: Path, late_fraction: float = 0.2, plots: bool = True)
             expected_gate = ((1.0 + cosine.astype(np.float64)) * 0.5) ** powers[None, :]
             expected_coefficient = expected_gate * betas[None, :]
             expected_coefficient = np.where(gradient_norm == 0.0, betas[None, :], expected_coefficient)
+            if run.get("optimizer") == "SGDM":
+                expected_coefficient = np.broadcast_to(betas[None, :], coefficient.shape)
             if not np.allclose(gate[relation_valid], expected_gate[relation_valid], rtol=2e-6, atol=2e-7):
                 raise ValueError("Recorded q is inconsistent with the recorded cosine and pwr")
             if not np.allclose(coefficient[relation_valid], expected_coefficient[relation_valid], rtol=2e-6, atol=2e-7):
-                raise ValueError("Recorded coefficient is inconsistent with attenuation and the zero-gradient fallback")
+                raise ValueError("Recorded coefficient is inconsistent with the selected optimizer")
             previous_step, previous_tensor_steps = int(steps[-1]), shard["tensor_step"][-1].copy()
             full.add(values, observed)
             late.add(values[steps >= late_start], observed[steps >= late_start])
@@ -782,7 +825,8 @@ def analyze_run(directory: Path, late_fraction: float = 0.2, plots: bool = True)
         },
     )
     if plots:
-        label = f"{'SYNTHETIC CHECK' if run['synthetic'] else 'CIFAR-10'} · ResNet18 · {run['norm']} norm · {total_steps:,} steps · {run['status']}"
+        optimizer_label = "SGDM (q is hypothetical)" if run.get("optimizer") == "SGDM" else "AGAM-SGD"
+        label = f"{optimizer_label} · {'SYNTHETIC CHECK' if run['synthetic'] else 'CIFAR-10'} · ResNet18 · {run['norm']} norm · {total_steps:,} steps · {run['status']}"
         plot_results(
             destination / "plots",
             metadata,
@@ -792,6 +836,8 @@ def analyze_run(directory: Path, late_fraction: float = 0.2, plots: bool = True)
             epoch_distribution_rows,
             label,
         )
+    from analysis.agam_alignment_analysis import analyze_alignment
+    analyze_alignment(directory, window_steps=alignment_window, late_fraction=late_fraction, plots=plots)
     return destination
 
 
@@ -933,7 +979,8 @@ def train(args: argparse.Namespace) -> Path:
     if args.cpu_threads:
         torch.set_num_threads(args.cpu_threads)
     sources = {}
-    for path in (Path(__file__), ROOT / "optims/mal_opt.py"):
+    for path in (Path(__file__), ROOT / "optims/agam_opt.py", ROOT / "tasks/agam_sgd_diagnostics.py",
+                 ROOT / "analysis/agam_alignment_analysis.py", ROOT / "tasks/agam_sgd_telemetry.py"):
         content = path.read_bytes()
         relative_path = path.relative_to(ROOT)
         sources[str(relative_path)] = hashlib.sha256(content).hexdigest()
@@ -945,7 +992,9 @@ def train(args: argparse.Namespace) -> Path:
     except OSError, subprocess.CalledProcessError:
         commit = None
     run = {
-        "schema_version": 2,
+        "schema_version": 3,
+        "optimizer": "AGAM-SGD" if args.optimizer == "agam" else "SGDM",
+        "gate_interpretation": "applied" if args.optimizer == "agam" else "hypothetical diagnostic only; SGDM never applies q",
         "started_at": utc_now(),
         "status": "initializing",
         "synthetic": args.synthetic,
@@ -962,6 +1011,7 @@ def train(args: argparse.Namespace) -> Path:
         "git_commit": commit,
         "source_sha256": sources,
         "coefficient_features": list(FEATURES),
+        "alignment_features": list(ALIGNMENT_FEATURES),
         "architecture": "torchvision ResNet18; 3x3 stride-1 stem; no maxpool; 10-class head",
         "depth_definition": "stem=0; residual blocks layer1.0 through layer4.1=1..8; head=9; shortcuts share block depth",
         "dataset": (
@@ -981,11 +1031,11 @@ def train(args: argparse.Namespace) -> Path:
             project=args.wandb_project,
             mode=args.wandb_mode,
             job_type="optimizer-diagnostics",
-            tags=("optimizer-telemetry", "cifar", "mal-sgdm"),
-            name=args.wandb_name or f"MAL_SGDM_gate_telemetry_seed:{args.seed}",
+            tags=("optimizer-telemetry", "cifar", args.optimizer),
+            name=args.wandb_name or f"{run['optimizer']}_alignment_telemetry_seed:{args.seed}",
             config={
                 **task_metadata(
-                    task="mal_sgdm_gate_telemetry",
+                    task="agam_sgd_alignment_telemetry",
                     task_type="optimizer_diagnostics",
                     model_name="resnet18",
                     model_source="torchvision",
@@ -994,12 +1044,12 @@ def train(args: argparse.Namespace) -> Path:
                     dataset_source="torchvision" if not args.synthetic else "generated",
                     training_regime="supervised_from_scratch",
                 ),
-                "optimizer": "MAL_SGDM",
-                "MAL_config": "False,1.0,False,attenuate",
+                "optimizer": run["optimizer"],
+                "AGAM_config": "False,1.0,False,attenuate" if args.optimizer == "agam" else None,
                 "in_place": False,
                 "pwr": 1.0,
                 "scale": False,
-                "gate_mode": "attenuate",
+                "gate_mode": "attenuate" if args.optimizer == "agam" else "disabled",
                 "beta": 0.9,
                 "batch_size": args.batch_size,
                 "lr": args.lr,
@@ -1012,7 +1062,8 @@ def train(args: argparse.Namespace) -> Path:
                 "split_seed": args.split_seed,
                 "amp_dtype": args.amp_dtype,
                 "float32_precision": args.float32_precision,
-                "telemetry_schema_version": 2,
+                "telemetry_schema_version": 3,
+                "alignment_features": list(ALIGNMENT_FEATURES),
                 "telemetry_features": list(FEATURES),
                 "telemetry_weightings": ["equal_tensor", "numel_weighted"],
             },
@@ -1028,13 +1079,20 @@ def train(args: argparse.Namespace) -> Path:
     started = time.monotonic()
     try:
         model = build_model(args.norm).to(device)
-        # All structural defaults come directly from MAL_SGDM; no copied optimizer recurrence.
-        optimizer = MAL_SGDM(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        # Record initialization so matched comparisons can verify actual equality.
+        initial_hash = hashlib.sha256()
+        for name, value in model.state_dict().items():
+            initial_hash.update(name.encode())
+            initial_hash.update(value.detach().cpu().contiguous().numpy().tobytes())
+        run["initial_model_sha256"] = initial_hash.hexdigest()
+        optimizer_class = AGAM_SGD if args.optimizer == "agam" else ObservedSGDM
+        optimizer = optimizer_class(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
         metadata = tensor_metadata(model, optimizer)
         write_json(directory / "tensor_metadata.json", metadata)
         write_csv(directory / "tensor_metadata.csv", [{**row, "shape": json.dumps(row["shape"])} for row in metadata])
-        recorder = GateRecorder(directory / "telemetry", model, metadata, args.flush_steps)
+        recorder = GateRecorder(directory / "telemetry", model, metadata, args.flush_steps, alignment=True)
         optimizer.gate_observer = recorder
+        optimizer.alignment_observer = recorder.observe_alignment
         train_loader, val_loader, test_loader = make_loaders(args, directory, device)
         if not len(train_loader):
             raise ValueError("Batch size exceeds the training split (drop_last=True)")
@@ -1211,7 +1269,7 @@ def train(args: argparse.Namespace) -> Path:
             run["persisted_steps"] = recorder.index["completed_steps"]
         run.update(finished_at=utc_now(), elapsed_seconds=time.monotonic() - started)
         write_json(directory / "run.json", run)
-    analysis_directory = analyze_run(directory, args.late_fraction, not args.no_plots)
+    analysis_directory = analyze_run(directory, args.late_fraction, not args.no_plots, args.alignment_window)
     if wb_run is not None:
         with (analysis_directory / "summary.csv").open(newline="") as handle:
             summary_rows = list(csv.DictReader(handle))
@@ -1228,11 +1286,11 @@ def train(args: argparse.Namespace) -> Path:
         wb_run.summary["telemetry_status"] = run["status"]
         wb_run.summary["telemetry_persisted_steps"] = run["persisted_steps"]
         artifact = wandb.Artifact(
-            name=f"mal-sgdm-gate-telemetry-{wb_run.id}",
+            name=f"{args.optimizer}-sgd-alignment-telemetry-{wb_run.id}",
             type="optimizer-telemetry",
-            description="Lossless per-step, per-parameter-tensor MAL-SGDM alignment telemetry and reproducible analysis outputs.",
+            description=f"Lossless per-step, per-tensor {run['optimizer']} alignment telemetry and reproducible analysis outputs.",
             metadata={
-                "schema_version": 2,
+                "schema_version": 3,
                 "features": list(FEATURES),
                 "tensor_count": len(metadata),
                 "optimizer_steps": run["persisted_steps"],
@@ -1255,7 +1313,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     training = commands.add_parser("train", help="Train and record every tensor on every optimizer step")
-    training.add_argument("--output", type=Path, default=ROOT / "analysis" / f"mal_sgdm_telemetry_{datetime.now(UTC):%Y%m%d_%H%M%S}")
+    training.add_argument("--output", type=Path, default=ROOT / "analysis" / f"agam_sgd_telemetry_{datetime.now(UTC):%Y%m%d_%H%M%S}")
+    training.add_argument("--optimizer", choices=("agam", "sgdm"), default="agam", help="AGAM-SGD or native PyTorch SGDM, both beta=0.9")
     training.add_argument("--data-dir", type=Path, default=ROOT / "data")
     training.add_argument("--download", action="store_true", help="Allow torchvision to download CIFAR-10")
     training.add_argument("--device", choices=("auto", "cpu", "mps", "cuda"), default="auto")
@@ -1285,11 +1344,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     analysis = commands.add_parser("analyze", help="Reanalyze persisted telemetry, including interrupted runs")
     analysis.add_argument("run_dir", type=Path)
     for command in (training, analysis):
+        command.add_argument("--alignment-window", type=int, default=100, help="Nonoverlapping step windows for grouped conflict summaries; every raw step is retained")
         command.add_argument("--late-fraction", type=float, default=0.2, help="Final fraction of observed steps used for a steady-state estimate")
         command.add_argument("--no-plots", action="store_true", help="Write numeric analysis only (matplotlib not required)")
     args = parser.parse_args(argv)
     if not 0 < args.late_fraction <= 1:
         parser.error("--late-fraction must be in (0, 1]")
+    if args.alignment_window < 1:
+        parser.error("--alignment-window must be positive")
     if args.command == "train":
         if any(getattr(args, name) < 1 for name in ("epochs", "batch_size", "flush_steps", "log_every")):
             parser.error("epochs, batch size, flush steps, and log interval must be positive")
@@ -1315,7 +1377,7 @@ def main() -> None:
     if args.command == "train":
         destination = train(args)
     else:
-        destination = analyze_run(args.run_dir.resolve(), args.late_fraction, not args.no_plots)
+        destination = analyze_run(args.run_dir.resolve(), args.late_fraction, not args.no_plots, args.alignment_window)
     print(f"Saved: {destination}", flush=True)
 
 

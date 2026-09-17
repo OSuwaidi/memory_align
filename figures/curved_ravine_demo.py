@@ -44,7 +44,7 @@ import torch
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from optims.mal_opt import MAL_SGDM
+from optims.agam_opt import AGAM_SGD
 
 
 @dataclass(frozen=True)
@@ -253,7 +253,7 @@ def run_experiment(config: ExperimentConfig) -> list[OptimizationRun]:
         ),
         run_optimizer(
             "MAL momentum",
-            lambda parameters: MAL_SGDM(
+            lambda parameters: AGAM_SGD(
                 parameters,
                 lr=config.learning_rate,
                 beta=config.momentum,

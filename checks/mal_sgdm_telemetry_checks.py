@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from optims.mal_opt import MAL_SGDM
+from optims.agam_opt import AGAM_SGD
 from tasks.mal_sgdm_telemetry import (
     GateRecorder,
     Statistics,
@@ -74,8 +74,8 @@ class MALTelemetryChecks(unittest.TestCase):
                 model = TinyModel().double()
                 control = copy.deepcopy(model)
                 observations = []
-                optimizer = MAL_SGDM(model.parameters(), gate_observer=lambda *data, sink=observations: sink.append(data), **options)
-                baseline = MAL_SGDM(control.parameters(), **options)
+                optimizer = AGAM_SGD(model.parameters(), gate_observer=lambda *data, sink=observations: sink.append(data), **options)
+                baseline = AGAM_SGD(control.parameters(), **options)
                 generator = torch.Generator().manual_seed(91)
                 for step in range(5):
                     for i, (p, q) in enumerate(zip(model.parameters(), control.parameters(), strict=True)):
@@ -100,7 +100,7 @@ class MALTelemetryChecks(unittest.TestCase):
     def test_known_alignment_cases_and_applied_update(self):
         parameter = nn.Parameter(torch.tensor([2.0], dtype=torch.float64))
         observations = []
-        optimizer = MAL_SGDM([parameter], gate_observer=lambda _, *values: observations.append(torch.stack(values)))
+        optimizer = AGAM_SGD([parameter], gate_observer=lambda _, *values: observations.append(torch.stack(values)))
         # First-step self-alignment, then conflict, then no alignment evidence.
         for gradient, expected_cosine, expected_q, expected_c in (
             (1.0, 1.0, 1.0, 0.9),
@@ -120,7 +120,7 @@ class MALTelemetryChecks(unittest.TestCase):
 
     def test_metadata_keeps_module_kind_role_depth_and_optimizer_group(self):
         model = build_model("group")
-        optimizer = MAL_SGDM(model.parameters(), weight_decay=0.01)
+        optimizer = AGAM_SGD(model.parameters(), weight_decay=0.01)
         rows = tensor_metadata(model, optimizer)
         by_name = {row["name"]: row for row in rows}
         self.assertEqual(len(rows), 62)
@@ -202,7 +202,7 @@ class MALTelemetryChecks(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             model = TinyModel()
-            optimizer = MAL_SGDM(model.parameters())
+            optimizer = AGAM_SGD(model.parameters())
             metadata = tensor_metadata(model, optimizer)
             recorder = GateRecorder(directory, model, metadata, flush_steps=10)
             optimizer.gate_observer = recorder
@@ -236,7 +236,7 @@ class MALTelemetryChecks(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             model = TinyModel().double()
-            optimizer = MAL_SGDM(model.parameters(), weight_decay=0.01)
+            optimizer = AGAM_SGD(model.parameters(), weight_decay=0.01)
             metadata = tensor_metadata(model, optimizer)
             recorder = GateRecorder(directory / "telemetry", model, metadata, flush_steps=2)
             optimizer.gate_observer = recorder

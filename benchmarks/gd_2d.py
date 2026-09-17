@@ -30,7 +30,7 @@ from torch.optim import Optimizer
 
 from optims.am_opt import AM_MSGD
 from optims.cautious_opt import C_SGDM
-from optims.mal_opt import MAL_SGDM
+from optims.agam_opt import AGAM_SGD
 from optims.tam_opt import TAM_SGDM
 
 
@@ -254,7 +254,7 @@ def optimizer_specs() -> tuple[OptimizerSpec, ...]:
         return AM_MSGD(params, lr=lr, beta_max=MOMENTUM, model_lambda=0.1, weight_decay=0.0)
 
     def mal_unscaled(params: Iterable[torch.nn.Parameter], lr: float) -> Optimizer:
-        return MAL_SGDM(
+        return AGAM_SGD(
             params,
             lr=lr,
             beta=MOMENTUM,
@@ -267,7 +267,7 @@ def optimizer_specs() -> tuple[OptimizerSpec, ...]:
         )
 
     def mal_scaled(params: Iterable[torch.nn.Parameter], lr: float) -> Optimizer:
-        return MAL_SGDM(
+        return AGAM_SGD(
             params,
             lr=lr,
             beta=MOMENTUM,

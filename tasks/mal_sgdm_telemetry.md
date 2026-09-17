@@ -1,4 +1,10 @@
-# MAL-SGDM tensor telemetry
+# AGAM-SGD tensor telemetry (historical schema-2 guide)
+
+**Current guide: [AGAM-SGD and SGDM telemetry](agam_sgd_telemetry.md).**
+The canonical command is now `tasks/agam_sgd_telemetry.py`; this historical
+entry point remains compatible. New runs use schema 3, add history/applied
+direction signals, and support `--optimizer sgdm`. The guide below describes
+the original five-feature recording and six-run AGAM-only suite.
 
 `mal_sgdm_telemetry.py` trains a CIFAR-sized ResNet18 and records the **actual scalar computed by MAL for every trainable tensor on every optimizer step**. It produces numeric source tables and paper-ready PNG/PDF/SVG figures. It runs locally on CPU, Apple MPS or CUDA; W&B logging and artifact upload are optional.
 
@@ -14,7 +20,7 @@ From the repository root, with its Python environment:
 
 This starts a **200-epoch CIFAR-10 run**. `--download` permits torchvision to fetch the dataset; omit it if the dataset is already in `--data-dir` (default: `data/`). On another machine, use `--device cuda` or `--device auto`. Choose an empty output directory for each run.
 
-The optimizer's structural defaults come directly from `MAL_SGDM`: `beta=0.9`, `pwr=1`, `in_place=False`, `scale=False`, `nesterov=False`, `gate_mode="attenuate"`. The default learning rate is `0.1`, **constant**, with **zero weight decay** and no warmup. `--lr`, `--weight-decay`, `--schedule cosine`, and `--warmup-epochs` are explicit training-recipe overrides; each is recorded. Cosine scheduling uses the benchmark's `1e-5` floor (configurable with `--min-lr`); an early `--max-steps` stop does not compress that schedule. Warmup, if enabled, follows the benchmark's step-wise linear schedule from 1% of the base rate.
+The optimizer's structural defaults come directly from `AGAM_SGD`: `beta=0.9`, `pwr=1`, `in_place=False`, `scale=False`, `nesterov=False`, `gate_mode="attenuate"`. The default learning rate is `0.1`, **constant**, with **zero weight decay** and no warmup. `--lr`, `--weight-decay`, `--schedule cosine`, and `--warmup-epochs` are explicit training-recipe overrides; each is recorded. Cosine scheduling uses the benchmark's `1e-5` floor (configurable with `--min-lr`); an early `--max-steps` stop does not compress that schedule. Warmup, if enabled, follows the benchmark's step-wise linear schedule from 1% of the base rate.
 
 The canonical diagnostics run matching the repository's ResNet18/CIFAR-10 benchmark cell is:
 

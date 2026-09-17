@@ -13,7 +13,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from optims.mal_opt import MAL_SGDM
+from optims.agam_opt import AGAM_SGD
 
 
 class MALSGDMQHMChecks(unittest.TestCase):
@@ -27,7 +27,7 @@ class MALSGDMQHMChecks(unittest.TestCase):
         for unbias in ("none", "buffer", "estimator"):
             with self.subTest(unbias=unbias):
                 parameter = torch.nn.Parameter(torch.tensor([0.3, -0.2], dtype=torch.float64))
-                optimizer = MAL_SGDM(
+                optimizer = AGAM_SGD(
                     [parameter],
                     lr=lr,
                     beta=beta,
@@ -70,7 +70,7 @@ class MALSGDMQHMChecks(unittest.TestCase):
 
     def test_estimator_zero_gradient_uses_the_effective_fallback_coefficient(self) -> None:
         parameter = torch.nn.Parameter(torch.tensor([1.0, -1.0], dtype=torch.float64))
-        optimizer = MAL_SGDM(
+        optimizer = AGAM_SGD(
             [parameter],
             lr=0.1,
             beta=0.8,
@@ -89,7 +89,7 @@ class MALSGDMQHMChecks(unittest.TestCase):
 
     def test_default_fixed_mode_retains_heavy_ball_recurrence(self) -> None:
         parameter = torch.nn.Parameter(torch.tensor([0.5, -0.5], dtype=torch.float64))
-        optimizer = MAL_SGDM([parameter], lr=0.1, beta=0.9)
+        optimizer = AGAM_SGD([parameter], lr=0.1, beta=0.9)
         for gradient in (
             torch.tensor([1.0, 2.0], dtype=torch.float64),
             torch.tensor([-0.5, 0.25], dtype=torch.float64),
@@ -118,11 +118,11 @@ class MALSGDMQHMChecks(unittest.TestCase):
         )
         for options in invalid:
             with self.subTest(options=options), self.assertRaises(ValueError):
-                MAL_SGDM([parameter], **options)
+                AGAM_SGD([parameter], **options)
 
     def test_checkpoint_round_trip_preserves_new_state(self) -> None:
         parameter = torch.nn.Parameter(torch.tensor([1.0, 2.0], dtype=torch.float64))
-        optimizer = MAL_SGDM(
+        optimizer = AGAM_SGD(
             [parameter],
             beta=0.7,
             gradient_weight_mode="complement",
@@ -133,7 +133,7 @@ class MALSGDMQHMChecks(unittest.TestCase):
         checkpoint = copy.deepcopy(optimizer.state_dict())
 
         restored_parameter = torch.nn.Parameter(parameter.detach().clone())
-        restored = MAL_SGDM(
+        restored = AGAM_SGD(
             [restored_parameter],
             beta=0.7,
             gradient_weight_mode="complement",

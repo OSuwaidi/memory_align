@@ -40,7 +40,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from optims.am_opt import AM_AdamW
-from optims.mal_opt import MAL_AdamW
+from optims.agam_opt import AGAM_AdamW
 from optims.tam_opt import AdaTAMW
 from tasks.wandb_metadata import task_metadata
 
@@ -53,10 +53,10 @@ OPTIMIZERS = ("AdamW", "AM_AdamW", "AdaTAMW", "AGM_AdamW")
 AGM_SCALES = ("none", "step")
 
 
-def agm_config_name(scale: str) -> str:
+def agm_config_name(scale: str, in_place: bool = False) -> str:
     if scale not in AGM_SCALES:
         raise ValueError(f"Unknown AGM scale {scale!r}; choose one of {AGM_SCALES}.")
-    return f"False,1.0,{scale},attenuate,update,complement"
+    return f"{in_place},1.0,{scale},attenuate,update,complement"
 
 
 def parse_bool(value: str | bool) -> bool:
@@ -181,6 +181,7 @@ def build_optimizer(
     beta2: float,
     epsilon: float,
     agm_scale: str = "step",
+    agm_in_place: bool = False,
 ) -> Optimizer:
     parameters: Iterable[nn.Parameter] = model.parameters()
     if case.optimizer == "AdamW":
@@ -210,7 +211,7 @@ def build_optimizer(
             weight_decay=case.weight_decay,
         )
     if case.optimizer == "AGM_AdamW":
-        return MAL_AdamW(
+        return AGAM_AdamW(
             parameters,
             lr=case.learning_rate,
             betas=(beta1, beta2),
@@ -218,7 +219,7 @@ def build_optimizer(
             weight_decay=case.weight_decay,
             pwr=1.0,
             align="update",
-            in_place=False,
+            in_place=agm_in_place,
             scale=agm_scale,
             gate_mode="attenuate",
             gradient_weight_mode="complement",
@@ -351,6 +352,13 @@ def main() -> int:
         default="step",
         help="AGM-AdamW norm scaling; 'step' is the active benchmark setting and 'none' is the paired ablation.",
     )
+    parser.add_argument(
+        "--agm_in_place",
+        "--agm-in-place",
+        type=parse_bool,
+        default=False,
+        help="Whether AGM-AdamW commits its gated first-moment estimate back to the persistent momentum buffer.",
+    )
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
@@ -395,8 +403,9 @@ def main() -> int:
         "optimizer": case.optimizer,
         "learning_rate": case.learning_rate,
         "weight_decay": case.weight_decay,
-        "AGM_config": agm_config_name(args.agm_scale) if case.optimizer == "AGM_AdamW" else None,
+        "AGM_config": agm_config_name(args.agm_scale, args.agm_in_place) if case.optimizer == "AGM_AdamW" else None,
         "agm_scale": args.agm_scale if case.optimizer == "AGM_AdamW" else None,
+        "agm_in_place": args.agm_in_place if case.optimizer == "AGM_AdamW" else None,
         "effective_batch_tokens": tokens_per_update,
         "training_token_budget": token_budget,
         "dev_tokens": metadata["dev_tokens"],
@@ -417,8 +426,9 @@ def main() -> int:
     case = OptimizerCase.parse(str(config["optimizer_case"]))
     seed = int(config["seed"])
     agm_scale = str(config["agm_scale"]) if case.optimizer == "AGM_AdamW" else "step"
-    scale_suffix = f"_scale{agm_scale}" if case.optimizer == "AGM_AdamW" and agm_scale != "step" else ""
-    run.name = f"{case.optimizer}{scale_suffix}_lr{case.learning_rate:g}_wd{case.weight_decay:g}_tok{token_budget}_s{seed}"
+    agm_in_place = parse_bool(config["agm_in_place"]) if case.optimizer == "AGM_AdamW" else False
+    structure_suffix = f"_scale{agm_scale}_{'inplace' if agm_in_place else 'outplace'}" if case.optimizer == "AGM_AdamW" else ""
+    run.name = f"{case.optimizer}{structure_suffix}_lr{case.learning_rate:g}_wd{case.weight_decay:g}_tok{token_budget}_s{seed}"
 
     device = torch.device("cuda")
     torch.backends.cuda.matmul.fp32_precision = args.float32_precision
@@ -441,7 +451,15 @@ def main() -> int:
     if tokenizer_size != model_config.vocab_size or tokenizer_size != metadata_vocab_size:
         raise RuntimeError(f"Tokenizer/model/data vocabulary mismatch: {tokenizer_size} != {model_config.vocab_size} != {metadata_vocab_size}")
 
-    optimizer = build_optimizer(case, model, beta1=args.beta1, beta2=args.beta2, epsilon=args.epsilon, agm_scale=agm_scale)
+    optimizer = build_optimizer(
+        case,
+        model,
+        beta1=args.beta1,
+        beta2=args.beta2,
+        epsilon=args.epsilon,
+        agm_scale=agm_scale,
+        agm_in_place=agm_in_place,
+    )
     warmup_steps = round(args.max_steps * args.warmup_ratio)
     allocated_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", cpu_count()))
     num_workers = min(allocated_cpus, 8) if args.num_workers < 0 else args.num_workers
@@ -465,10 +483,9 @@ def main() -> int:
         "model_revision": MODEL_REVISION,
         "dataset_revision": DATASET_REVISION,
     }
-    # Preserve the checkpoint identity of the already-running step-scaled
-    # benchmark while preventing the paired no-scaling runs from sharing it.
-    if case.optimizer == "AGM_AdamW" and agm_scale != "step":
+    if case.optimizer == "AGM_AdamW":
         resume_identity["agm_scale"] = agm_scale
+        resume_identity["agm_in_place"] = agm_in_place
     checkpoint_dir = args.output_dir.expanduser().resolve() / config_fingerprint(resume_identity)
     last_checkpoint = checkpoint_dir / "checkpoint-last.pt"
     best_checkpoint = checkpoint_dir / "checkpoint-best-model.pt"

@@ -30,7 +30,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from optims.am_opt import AM_MSGD, AM_AdamW
 from optims.cautious_opt import C_SGDM, C_AdamW
-from optims.mal_opt import MAL_SGDM, MAL_AdamW
+from optims.agam_opt import AGAM_SGD, AGAM_AdamW
 from optims.tam_opt import TAM_SGDM, AdaTAMW, TAMBaselineSGDM
 from sweeps.cifar_resnet_sweep import add_training_args
 from tasks.wandb_metadata import task_metadata
@@ -686,7 +686,7 @@ def main():
     )
 
     if optimizer == "MAL_SGDM":
-        optimizer = MAL_SGDM(
+        optimizer = AGAM_SGD(
             model.parameters(),
             lr=lr,
             beta=BETA,
@@ -696,7 +696,7 @@ def main():
         )
 
     elif optimizer == "MAL_AdamW":
-        optimizer = MAL_AdamW(
+        optimizer = AGAM_AdamW(
             model.parameters(),
             lr=lr,
             weight_decay=weight_decay,

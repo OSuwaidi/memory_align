@@ -46,7 +46,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from optims.am_opt import AM_MSGD, AM_AdamW
 from optims.cautious_opt import C_SGDM, C_AdamW
-from optims.mal_opt import MAL_SGDM, MAL_AdamW
+from optims.agam_opt import AGAM_SGD, AGAM_AdamW
 from optims.tam_opt import TAM_SGDM, AdaTAMW
 from tasks.wandb_metadata import task_metadata
 
@@ -307,7 +307,7 @@ def build_optimizer(
             if sgdm_mal_config["scale"] == "moment":
                 raise ValueError('MAL-SGDM does not support scale="moment".')
             sgdm_mal_config["scale"] = sgdm_mal_config["scale"] == "step"
-        return MAL_SGDM(
+        return AGAM_SGD(
             parameters,
             lr=lr,
             beta=momentum,
@@ -331,7 +331,7 @@ def build_optimizer(
         return C_AdamW(parameters, lr=lr, betas=(momentum, beta2), weight_decay=weight_decay)
     if name == "AdaTAMW":
         return AdaTAMW(parameters, lr=lr, betas=(momentum, beta2), weight_decay=weight_decay)
-    return MAL_AdamW(parameters, lr=lr, betas=(momentum, beta2), weight_decay=weight_decay, align=mal_align, **mal_config)
+    return AGAM_AdamW(parameters, lr=lr, betas=(momentum, beta2), weight_decay=weight_decay, align=mal_align, **mal_config)
 
 
 def scheduled_lr(step: int, *, total_steps: int, warmup_steps: int, peak_lr: float, use_scheduler: bool) -> float:
