@@ -28,7 +28,10 @@ import torch
 import torch.nn.functional as F
 import wandb
 from PIL import Image
+from timm.data import Mixup
+from timm.layers import DropPath
 from timm.layers.patch_embed import PatchEmbed
+from timm.loss import SoftTargetCrossEntropy
 from timm.models.vision_transformer import Block, VisionTransformer
 from timm.optim.lars import Lars
 from torch import nn
@@ -323,6 +326,47 @@ class MaskedAutoencoderViT(nn.Module):
         return self.forward_loss(images, prediction, mask), prediction, mask
 
 
+class MAEEncoderClassifier(nn.Module):
+    """MAE encoder adapted to the official global-pooling fine-tune protocol."""
+
+    def __init__(
+        self,
+        mae: MaskedAutoencoderViT,
+        *,
+        num_classes: int,
+        drop_path_rate: float,
+    ) -> None:
+        super().__init__()
+        self.patch_embed = mae.patch_embed
+        self.cls_token = mae.cls_token
+        self.pos_embed = mae.pos_embed
+        self.blocks = mae.blocks
+        self.fc_norm = nn.LayerNorm(mae.encoder_embed_dim, eps=1e-6)
+        self.head = nn.Linear(mae.encoder_embed_dim, num_classes)
+
+        # The MAE positional embedding is fixed during SSL pre-training but the
+        # complete ViT backbone is trainable during end-to-end fine-tuning.
+        self.pos_embed.requires_grad_(True)
+        drop_path_rates = torch.linspace(0.0, drop_path_rate, len(self.blocks)).tolist()
+        for block, rate in zip(self.blocks, drop_path_rates, strict=True):
+            block.drop_path1 = DropPath(rate) if rate > 0.0 else nn.Identity()
+            block.drop_path2 = DropPath(rate) if rate > 0.0 else nn.Identity()
+
+        nn.init.ones_(self.fc_norm.weight)
+        nn.init.zeros_(self.fc_norm.bias)
+        nn.init.trunc_normal_(self.head.weight, std=2e-5)
+        nn.init.zeros_(self.head.bias)
+        for parameter in self.parameters():
+            parameter.requires_grad_(True)
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        tokens = self.patch_embed(images) + self.pos_embed[:, 1:, :]
+        cls_token = (self.cls_token + self.pos_embed[:, :1, :]).expand(images.shape[0], -1, -1)
+        tokens = self.blocks(torch.cat((cls_token, tokens), dim=1))
+        pooled = tokens[:, 1:, :].mean(dim=1)
+        return self.head(self.fc_norm(pooled))
+
+
 class TransformView(Dataset):
     """Apply a transform while sharing the underlying image/label dataset."""
 
@@ -423,6 +467,293 @@ def build_datasets(data_dir: str | Path, image_size: int) -> tuple[Any, Any, Any
     probe_train = TransformView(raw_train, eval_transform)
     validation = TransformView(raw_val, eval_transform)
     return pretrain_train, probe_train, validation, len(raw_train.classes), root
+
+
+def build_finetune_transforms(image_size: int) -> tuple[Any, Any]:
+    """Strong train augmentation and deterministic evaluation for MAE fine-tuning."""
+    train_transform = v2.Compose(
+        (
+            v2.RandomResizedCrop(
+                (image_size, image_size),
+                scale=(0.08, 1.0),
+                interpolation=InterpolationMode.BICUBIC,
+                antialias=True,
+            ),
+            v2.RandomHorizontalFlip(),
+            v2.RandAugment(num_ops=2, magnitude=9, interpolation=InterpolationMode.BICUBIC),
+            v2.PILToTensor(),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+            v2.RandomErasing(p=0.25, scale=(0.02, 0.33), ratio=(0.3, 3.3)),
+        )
+    )
+    eval_transform = v2.Compose(
+        (
+            v2.Resize((image_size, image_size), interpolation=InterpolationMode.BICUBIC, antialias=True),
+            v2.PILToTensor(),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+        )
+    )
+    return train_transform, eval_transform
+
+
+def layerwise_finetune_param_groups(
+    model: MAEEncoderClassifier,
+    *,
+    weight_decay: float,
+    layer_decay: float,
+) -> list[dict[str, Any]]:
+    """Create MAE-style layer-wise AdamW groups, from embeddings to head."""
+    final_layer_id = len(model.blocks) + 1
+    grouped: dict[tuple[int, bool], dict[str, Any]] = {}
+
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        if name in {"cls_token", "pos_embed"} or name.startswith("patch_embed."):
+            layer_id = 0
+        elif name.startswith("blocks."):
+            block_index = int(name.split(".", 2)[1])
+            layer_id = block_index + 1
+        else:
+            layer_id = final_layer_id
+
+        no_decay = parameter.ndim <= 1 or name in {"cls_token", "pos_embed"}
+        key = (layer_id, no_decay)
+        if key not in grouped:
+            grouped[key] = {
+                "params": [],
+                "weight_decay": 0.0 if no_decay else weight_decay,
+                "lr_scale": layer_decay ** (final_layer_id - layer_id),
+            }
+        grouped[key]["params"].append(parameter)
+
+    groups = list(grouped.values())
+    grouped_parameters = sum(len(group["params"]) for group in groups)
+    trainable_parameters = sum(1 for parameter in model.parameters() if parameter.requires_grad)
+    if grouped_parameters != trainable_parameters:
+        raise RuntimeError("Fine-tune parameter grouping omitted or duplicated parameters.")
+    return groups
+
+
+@torch.inference_mode()
+def evaluate_classifier(
+    model: nn.Module,
+    loader: DataLoader,
+    *,
+    device: torch.device,
+    amp_dtype: torch.dtype,
+    amp_enabled: bool,
+) -> tuple[float, float, float]:
+    model.eval()
+    loss_sum = 0.0
+    top1_correct = 0
+    top5_correct = 0
+    examples = 0
+    for images, targets in tqdm(loader, desc="Fine-tune validation", unit="batch", leave=False):
+        images = images.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_enabled):
+            logits = model(images)
+            loss = F.cross_entropy(logits, targets)
+        topk = min(5, logits.shape[1])
+        predictions = logits.topk(topk, dim=1).indices
+        matches = predictions.eq(targets.unsqueeze(1))
+        batch_size = targets.shape[0]
+        loss_sum += loss.item() * batch_size
+        top1_correct += matches[:, :1].sum().item()
+        top5_correct += matches.sum().item()
+        examples += batch_size
+    return (
+        loss_sum / examples,
+        100.0 * top1_correct / examples,
+        100.0 * top5_correct / examples,
+    )
+
+
+def run_end_to_end_finetune(
+    mae: MaskedAutoencoderViT,
+    raw_train_dataset: Any,
+    raw_val_dataset: Any,
+    *,
+    num_classes: int,
+    image_size: int,
+    device: torch.device,
+    amp_dtype: torch.dtype,
+    amp_enabled: bool,
+    epochs: int,
+    batch_size: int,
+    max_micro_batch_size: int,
+    base_lr: float,
+    minimum_lr: float,
+    warmup_epochs: int,
+    weight_decay: float,
+    layer_decay: float,
+    drop_path_rate: float,
+    mixup_alpha: float,
+    cutmix_alpha: float,
+    label_smoothing: float,
+    num_workers: int,
+    seed: int,
+    run: Any,
+) -> dict[str, float | int]:
+    """Fine-tune the complete final MAE encoder with one fixed evaluator recipe."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if device.type == "cuda":
+        torch.cuda.manual_seed_all(seed)
+    classifier = MAEEncoderClassifier(
+        mae,
+        num_classes=num_classes,
+        drop_path_rate=drop_path_rate,
+    ).to(device)
+    train_transform, eval_transform = build_finetune_transforms(image_size)
+    train_dataset = TransformView(raw_train_dataset, train_transform)
+    val_dataset = TransformView(raw_val_dataset, eval_transform)
+
+    micro_batch_size = min(batch_size, max_micro_batch_size)
+    if batch_size % micro_batch_size:
+        raise ValueError("Fine-tune batch size must be divisible by its micro-batch size.")
+    accumulation_steps = batch_size // micro_batch_size
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=micro_batch_size,
+        shuffle=True,
+        drop_last=True,
+        num_workers=num_workers,
+        persistent_workers=num_workers > 0,
+        pin_memory=device.type == "cuda",
+        worker_init_fn=set_worker_seed,
+        generator=torch.Generator().manual_seed(seed),
+    )
+    eval_workers = min(num_workers, 6)
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=min(1024, batch_size),
+        shuffle=False,
+        drop_last=False,
+        num_workers=eval_workers,
+        persistent_workers=False,
+        pin_memory=device.type == "cuda",
+        worker_init_fn=set_worker_seed,
+        generator=torch.Generator().manual_seed(seed + 1),
+    )
+    steps_per_epoch = len(train_loader) // accumulation_steps
+    if steps_per_epoch <= 0:
+        raise ValueError("Fine-tune effective batch size exceeds the training set.")
+
+    peak_lr = base_lr * batch_size / 256.0
+    parameter_groups = layerwise_finetune_param_groups(
+        classifier,
+        weight_decay=weight_decay,
+        layer_decay=layer_decay,
+    )
+    optimizer = AdamW(parameter_groups, lr=peak_lr, betas=(0.9, 0.999))
+    mixup = Mixup(
+        mixup_alpha=mixup_alpha,
+        cutmix_alpha=cutmix_alpha,
+        prob=1.0,
+        switch_prob=0.5,
+        mode="batch",
+        label_smoothing=label_smoothing,
+        num_classes=num_classes,
+    )
+    criterion = SoftTargetCrossEntropy()
+    total_steps = steps_per_epoch * epochs
+    warmup_steps = steps_per_epoch * warmup_epochs
+    optimizer_step = 0
+    best_top1 = -math.inf
+    best_top5 = 0.0
+    best_loss = math.inf
+    best_epoch = 0
+    final_loss = math.inf
+    final_top1 = 0.0
+    final_top5 = 0.0
+
+    # Isolate all stochastic downstream choices from the completed SSL run.
+    cuda_devices = [device.index if device.index is not None else torch.cuda.current_device()] if device.type == "cuda" else []
+    with torch.random.fork_rng(devices=cuda_devices):
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if device.type == "cuda":
+            torch.cuda.manual_seed_all(seed)
+
+        for finetune_epoch in trange(1, epochs + 1, desc="End-to-end fine-tuning", unit="epoch"):
+            classifier.train()
+            optimizer.zero_grad(set_to_none=True)
+            train_loss_sum = 0.0
+            train_examples = 0
+            current_lr = 0.0
+            usable_micro_batches = steps_per_epoch * accumulation_steps
+
+            for micro_batch_index, (images, targets) in enumerate(train_loader, start=1):
+                if micro_batch_index > usable_micro_batches:
+                    break
+                images = images.to(device, non_blocking=True)
+                targets = targets.to(device, non_blocking=True)
+                images, soft_targets = mixup(images, targets)
+                with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_enabled):
+                    loss = criterion(classifier(images), soft_targets)
+                if not torch.isfinite(loss):
+                    raise FloatingPointError(
+                        f"Non-finite fine-tune loss at epoch {finetune_epoch}, batch {micro_batch_index}: {loss.item()}"
+                    )
+                (loss / accumulation_steps).backward()
+
+                if micro_batch_index % accumulation_steps == 0:
+                    current_lr = cosine_warmup_lr(
+                        optimizer_step,
+                        total_steps=total_steps,
+                        warmup_steps=warmup_steps,
+                        peak_lr=peak_lr,
+                        min_lr=minimum_lr,
+                    )
+                    set_optimizer_lr(optimizer, current_lr)
+                    optimizer.step()
+                    optimizer.zero_grad(set_to_none=True)
+                    optimizer_step += 1
+
+                micro_batch_examples = targets.shape[0]
+                train_loss_sum += loss.detach().item() * micro_batch_examples
+                train_examples += micro_batch_examples
+
+            train_loss = train_loss_sum / train_examples
+            final_loss, final_top1, final_top5 = evaluate_classifier(
+                classifier,
+                val_loader,
+                device=device,
+                amp_dtype=amp_dtype,
+                amp_enabled=amp_enabled,
+            )
+            if final_top1 > best_top1 or (final_top1 == best_top1 and final_loss < best_loss):
+                best_top1 = final_top1
+                best_top5 = final_top5
+                best_loss = final_loss
+                best_epoch = finetune_epoch
+
+            run.log(
+                {
+                    "finetune/epoch": finetune_epoch,
+                    "finetune/train_loss": train_loss,
+                    "finetune/val_loss": final_loss,
+                    "finetune/val_top1_pct": final_top1,
+                    "finetune/val_top5_pct": final_top5,
+                    "finetune/lr": current_lr,
+                }
+            )
+
+    return {
+        "finetune/final_val_loss": final_loss,
+        "finetune/final_val_top1_pct": final_top1,
+        "finetune/final_val_top5_pct": final_top5,
+        "finetune/best_val_loss_at_best_top1": best_loss,
+        "finetune/best_val_top1_pct": best_top1,
+        "finetune/best_val_top5_pct_at_best_top1": best_top5,
+        "finetune/best_epoch": best_epoch,
+    }
 
 
 def split_weight_decay_params(model: nn.Module, weight_decay: float) -> list[dict[str, Any]]:
@@ -897,6 +1228,20 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--probe_base_lr", "--probe-base-lr", type=float, default=0.1)
     parser.add_argument("--probe_warmup_epochs", "--probe-warmup-epochs", type=int, default=10)
 
+    parser.add_argument("--run_finetune", "--run-finetune", type=parse_bool, nargs="?", const=True, default=False)
+    parser.add_argument("--finetune_epochs", "--finetune-epochs", type=int, default=100)
+    parser.add_argument("--finetune_batch_size", "--finetune-batch-size", type=int, default=1024)
+    parser.add_argument("--finetune_max_micro_batch_size", "--finetune-max-micro-batch-size", type=int, default=256)
+    parser.add_argument("--finetune_base_lr", "--finetune-base-lr", type=float, default=5e-4)
+    parser.add_argument("--finetune_min_lr", "--finetune-min-lr", type=float, default=1e-6)
+    parser.add_argument("--finetune_warmup_epochs", "--finetune-warmup-epochs", type=int, default=5)
+    parser.add_argument("--finetune_weight_decay", "--finetune-weight-decay", type=float, default=0.05)
+    parser.add_argument("--finetune_layer_decay", "--finetune-layer-decay", type=float, default=0.65)
+    parser.add_argument("--finetune_drop_path", "--finetune-drop-path", type=float, default=0.1)
+    parser.add_argument("--finetune_mixup", "--finetune-mixup", type=float, default=0.8)
+    parser.add_argument("--finetune_cutmix", "--finetune-cutmix", type=float, default=1.0)
+    parser.add_argument("--finetune_label_smoothing", "--finetune-label-smoothing", type=float, default=0.1)
+
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--num_workers", "--num-workers", type=int, default=-1)
     parser.add_argument("--eval_batch_size", "--eval-batch-size", type=int, default=1024)
@@ -935,6 +1280,22 @@ def validate_config(args: argparse.Namespace, config: Any, parser: argparse.Argu
         parser.error("--probe_every must be non-negative (zero disables the periodic probe).")
     if args.probe_warmup_epochs < 0:
         parser.error("--probe_warmup_epochs must be non-negative.")
+    if args.run_finetune:
+        if args.finetune_epochs <= 0 or args.finetune_batch_size <= 0 or args.finetune_max_micro_batch_size <= 0:
+            parser.error("Fine-tune epochs and batch sizes must be positive.")
+        finetune_micro_batch_size = min(args.finetune_batch_size, args.finetune_max_micro_batch_size)
+        if args.finetune_batch_size % finetune_micro_batch_size:
+            parser.error("--finetune_batch_size must be divisible by its selected micro-batch size.")
+        if not 0 <= args.finetune_warmup_epochs < args.finetune_epochs:
+            parser.error("--finetune_warmup_epochs must be non-negative and smaller than --finetune_epochs.")
+        if min(args.finetune_base_lr, args.finetune_min_lr, args.finetune_weight_decay) < 0.0:
+            parser.error("Fine-tune learning rates and weight decay must be non-negative.")
+        if not 0.0 < args.finetune_layer_decay <= 1.0:
+            parser.error("--finetune_layer_decay must be in (0, 1].")
+        if not 0.0 <= args.finetune_drop_path < 1.0:
+            parser.error("--finetune_drop_path must be in [0, 1).")
+        if min(args.finetune_mixup, args.finetune_cutmix, args.finetune_label_smoothing) < 0.0:
+            parser.error("Fine-tune augmentation and smoothing coefficients must be non-negative.")
     if args.save_every < 0:
         parser.error("--save_every must be non-negative (zero saves only the final checkpoint).")
     if config.base_lr < 0.0 or args.min_lr < 0.0 or args.probe_base_lr < 0.0 or config.weight_decay < 0.0:
@@ -984,6 +1345,8 @@ def main() -> int:
     set_seed(seed)
 
     pretrain_dataset, probe_train_dataset, val_dataset, num_classes, data_root = build_datasets(args.data_dir, args.image_size)
+    raw_train_dataset = probe_train_dataset.dataset
+    raw_val_dataset = val_dataset.dataset
     allocated_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", cpu_count()))
     num_workers = min(allocated_cpus, 16) if args.num_workers < 0 else args.num_workers
     micro_batch_size = min(batch_size, args.max_micro_batch_size)
@@ -1106,6 +1469,19 @@ def main() -> int:
             "base_learning_rate": base_lr,
             "learning_rate": actual_lr,
             "resolved_data_dir": str(data_root),
+            "downstream_evaluation": "linear_probe_and_end_to_end_finetune" if args.run_finetune else "linear_probe",
+            "downstream_accuracy_unit": "percent",
+            **(
+                {
+                    "finetune_optimizer": "AdamW",
+                    "finetune_actual_lr": args.finetune_base_lr * args.finetune_batch_size / 256.0,
+                    "finetune_global_pool": True,
+                    "finetune_backbone_trainable": True,
+                    "finetune_initialization": "final_epoch_mae_encoder",
+                }
+                if args.run_finetune
+                else {}
+            ),
             **optimizer_metadata,
             **(
                 {
@@ -1135,6 +1511,9 @@ def main() -> int:
     run.define_metric("train/*", step_metric="epoch")
     run.define_metric("val/*", step_metric="epoch")
     run.define_metric("probe/*", step_metric="epoch")
+    run.define_metric("linear_probe/*", step_metric="epoch")
+    run.define_metric("finetune/epoch")
+    run.define_metric("finetune/*", step_metric="finetune/epoch")
     run.define_metric("diagnostic/*", step_metric="epoch")
     run.define_metric("lr", step_metric="epoch")
 
@@ -1149,6 +1528,7 @@ def main() -> int:
     checkpoint_path = Path(args.output_dir).expanduser().resolve() / run.id / "checkpoint-last.pt" if args.output_dir else None
     best_val_loss = math.inf
     best_probe_accuracy = 0.0
+    best_probe_epoch = 0
     exit_code = 0
     try:
         for epoch in trange(1, args.epochs + 1, desc="MAE pre-training", unit="epoch"):
@@ -1205,10 +1585,20 @@ def main() -> int:
                     amp_dtype=amp_dtype,
                     amp_enabled=amp_enabled,
                 )
-                best_probe_accuracy = max(best_probe_accuracy, probe_accuracy)
-                metrics.update({"probe/train_loss": probe_train_loss, "probe/val_acc": probe_accuracy})
+                if probe_accuracy > best_probe_accuracy:
+                    best_probe_accuracy = probe_accuracy
+                    best_probe_epoch = epoch
+                metrics.update(
+                    {
+                        "probe/train_loss": probe_train_loss,
+                        "probe/val_acc": probe_accuracy,
+                        "linear_probe/train_loss": probe_train_loss,
+                        "linear_probe/val_top1_pct": probe_accuracy,
+                    }
+                )
                 if epoch == args.epochs:
                     run.summary["final_probe_val_acc"] = probe_accuracy
+                    run.summary["linear_probe/final_val_top1_pct"] = probe_accuracy
 
             if isinstance(optimizer, AM_MSGD) and optimizer.last_beta is not None:
                 metrics["diagnostic/am_beta"] = float(optimizer.last_beta)
@@ -1224,6 +1614,8 @@ def main() -> int:
             run.summary["best_probe_val_acc"] = best_probe_accuracy
             run.summary["best/val_loss"] = best_val_loss
             run.summary["best/probe_val_acc"] = best_probe_accuracy
+            run.summary["linear_probe/best_val_top1_pct"] = best_probe_accuracy
+            run.summary["linear_probe/best_pretrain_epoch"] = best_probe_epoch
             if epoch == args.epochs and probe_accuracy is not None:
                 run.summary["final/probe_val_acc"] = probe_accuracy
 
@@ -1237,6 +1629,34 @@ def main() -> int:
                     config=dict(run.config),
                 )
                 run.summary["checkpoint"] = str(checkpoint_path)
+
+        if args.run_finetune:
+            finetune_summary = run_end_to_end_finetune(
+                model,
+                raw_train_dataset,
+                raw_val_dataset,
+                num_classes=num_classes,
+                image_size=args.image_size,
+                device=device,
+                amp_dtype=amp_dtype,
+                amp_enabled=amp_enabled,
+                epochs=args.finetune_epochs,
+                batch_size=args.finetune_batch_size,
+                max_micro_batch_size=args.finetune_max_micro_batch_size,
+                base_lr=args.finetune_base_lr,
+                minimum_lr=args.finetune_min_lr,
+                warmup_epochs=args.finetune_warmup_epochs,
+                weight_decay=args.finetune_weight_decay,
+                layer_decay=args.finetune_layer_decay,
+                drop_path_rate=args.finetune_drop_path,
+                mixup_alpha=args.finetune_mixup,
+                cutmix_alpha=args.finetune_cutmix,
+                label_smoothing=args.finetune_label_smoothing,
+                num_workers=num_workers,
+                seed=seed + 30_000,
+                run=run,
+            )
+            run.summary.update(finetune_summary)
     except BaseException:
         exit_code = 1
         raise
