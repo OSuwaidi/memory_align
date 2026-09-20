@@ -14,6 +14,12 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from sweeps.agam_lion_mae_extended_sweep import EXPECTED_RUNS, build_sweep
+from sweeps.mae_lion_finetune_confirmation_sweep import (
+    EXPECTED_CONFIRMATION_RUNS,
+)
+from sweeps.mae_lion_finetune_confirmation_sweep import (
+    build_sweep as build_finetune_sweep,
+)
 from tasks.mae_pretrain import MAEEncoderClassifier, MaskedAutoencoderViT, layerwise_finetune_param_groups
 
 
@@ -84,6 +90,26 @@ class MAEDownstreamChecks(unittest.TestCase):
         self.assertEqual(sweep["parameters"]["base_lr"]["values"], (2e-4, 1.5e-4, 5e-5))
         self.assertEqual(sweep["parameters"]["weight_decay"]["values"], (0.5, 0.25, 0.15))
         self.assertEqual(sweep["parameters"]["seed"]["values"], (42, 1337))
+        self.assertEqual(sweep["metric"]["name"], "linear_probe/final_val_top1_pct")
+        self.assertNotIn("--run_finetune", sweep["command"])
+
+    def test_finetune_sweep_has_one_run_per_selected_checkpoint(self) -> None:
+        source_ids = ["lion42", "lion1337", "agam42", "agam1337"]
+        args = argparse.Namespace(
+            program="tasks/mae_finetune_eval.py",
+            sweep_name="structural-check",
+            source_revision="test-revision",
+            data_dir="/tmp/tiny-imagenet-200",
+            project_name="MAL_benchmark",
+        )
+        sweep = build_finetune_sweep(args, source_ids)
+        cardinality = 1
+        for parameter in sweep["parameters"].values():
+            cardinality *= len(parameter["values"])
+
+        self.assertEqual(EXPECTED_CONFIRMATION_RUNS, 4)
+        self.assertEqual(cardinality, EXPECTED_CONFIRMATION_RUNS)
+        self.assertEqual(sweep["parameters"]["source_run_id"]["values"], source_ids)
         self.assertEqual(sweep["metric"]["name"], "finetune/final_val_top1_pct")
 
 

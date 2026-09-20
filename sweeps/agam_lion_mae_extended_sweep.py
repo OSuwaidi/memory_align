@@ -1,4 +1,4 @@
-"""Create the 18-run AGAM-Lion MAE hyperparameter expansion sweep."""
+"""Create the 18-run, linear-probe-only AGAM-Lion MAE screen."""
 
 from __future__ import annotations
 
@@ -24,19 +24,7 @@ WARMUP_EPOCHS = 15
 PROBE_EVERY = 50
 LION_BETAS = (0.9, 0.99)
 
-FINETUNE_EPOCHS = 100
-FINETUNE_BATCH_SIZE = 1024
-FINETUNE_BASE_LR = 5e-4
-FINETUNE_MIN_LR = 1e-6
-FINETUNE_WARMUP_EPOCHS = 5
-FINETUNE_WEIGHT_DECAY = 0.05
-FINETUNE_LAYER_DECAY = 0.65
-FINETUNE_DROP_PATH = 0.1
-FINETUNE_MIXUP = 0.8
-FINETUNE_CUTMIX = 1.0
-FINETUNE_LABEL_SMOOTHING = 0.1
-
-COMPARISON_GROUP = "agam_lion_mae_hparam_expansion_v1"
+COMPARISON_GROUP = "agam_lion_mae_probe_screen_v2"
 EXPECTED_RUNS = len(BASE_LRS) * len(WEIGHT_DECAYS) * len(SEEDS)
 
 
@@ -54,7 +42,7 @@ def build_sweep(args: argparse.Namespace) -> dict[str, Any]:
         "program": args.program,
         "name": args.sweep_name,
         "method": "grid",
-        "metric": {"name": "finetune/final_val_top1_pct", "goal": "maximize"},
+        "metric": {"name": "linear_probe/final_val_top1_pct", "goal": "maximize"},
         "parameters": {
             "optimizer": {"values": ("AGAM_Lion",)},
             "batch_size": {"values": (BATCH_SIZE,)},
@@ -63,9 +51,9 @@ def build_sweep(args: argparse.Namespace) -> dict[str, Any]:
             "seed": {"values": SEEDS},
             "use_scheduler": {"values": (True,)},
             "comparison_group": {"values": (COMPARISON_GROUP,)},
-            "study_stage": {"values": ("agam_lion_mae_hyperparameter_expansion",)},
-            "selection_metric": {"values": ("finetune/final_val_top1_pct",)},
-            "evaluation_protocol": {"values": ("periodic_linear_probe_plus_final_encoder_end_to_end_finetune",)},
+            "study_stage": {"values": ("agam_lion_mae_probe_screen",)},
+            "selection_metric": {"values": ("linear_probe/final_val_top1_pct",)},
+            "evaluation_protocol": {"values": ("periodic_linear_probe_only_then_selected_checkpoint_finetune",)},
             "source_revision": {"values": (args.source_revision,)},
         },
         "command": [
@@ -94,32 +82,6 @@ def build_sweep(args: argparse.Namespace) -> dict[str, Any]:
             "0.1",
             "--probe_warmup_epochs",
             "10",
-            "--run_finetune",
-            "True",
-            "--finetune_epochs",
-            str(FINETUNE_EPOCHS),
-            "--finetune_batch_size",
-            str(FINETUNE_BATCH_SIZE),
-            "--finetune_max_micro_batch_size",
-            "256",
-            "--finetune_base_lr",
-            str(FINETUNE_BASE_LR),
-            "--finetune_min_lr",
-            str(FINETUNE_MIN_LR),
-            "--finetune_warmup_epochs",
-            str(FINETUNE_WARMUP_EPOCHS),
-            "--finetune_weight_decay",
-            str(FINETUNE_WEIGHT_DECAY),
-            "--finetune_layer_decay",
-            str(FINETUNE_LAYER_DECAY),
-            "--finetune_drop_path",
-            str(FINETUNE_DROP_PATH),
-            "--finetune_mixup",
-            str(FINETUNE_MIXUP),
-            "--finetune_cutmix",
-            str(FINETUNE_CUTMIX),
-            "--finetune_label_smoothing",
-            str(FINETUNE_LABEL_SMOOTHING),
             "--max_micro_batch_size",
             "256",
             "--num_workers",
