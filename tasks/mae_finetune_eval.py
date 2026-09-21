@@ -139,9 +139,13 @@ def main() -> int:
     amp_dtype, amp_enabled = configure_precision(device, args.amp_dtype, args.float32_precision)
     model.to(device)
 
-    source_final_probe = source.summary.get("linear_probe/final_val_top1_pct")
+    # Use the historical field shared by every MAE screening run. Newer runs
+    # also expose the equivalent, more descriptive linear_probe alias.
+    source_final_probe = source.summary.get("final/probe_val_acc")
     if source_final_probe is None:
-        source_final_probe = source.summary.get("final/probe_val_acc", source.summary.get("final_probe_val_acc"))
+        source_final_probe = source.summary.get(
+            "linear_probe/final_val_top1_pct", source.summary.get("final_probe_val_acc")
+        )
     source_sweep_id = source.sweep.id if source.sweep is not None else None
     run.config.update(
         {
