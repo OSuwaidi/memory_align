@@ -49,7 +49,12 @@ def require_final_checkpoint(run: Any) -> Path:
     return checkpoint
 
 
-def select_agam_sources(runs: list[Any], *, expected_runs: int) -> tuple[list[Any], list[dict[str, Any]]]:
+def select_agam_sources(
+    runs: list[Any],
+    *,
+    expected_runs: int,
+    expected_seeds: tuple[int, ...] = EXPECTED_SEEDS,
+) -> tuple[list[Any], list[dict[str, Any]]]:
     # Recovery sweeps may coexist with interrupted source runs.  Only fully
     # completed runs are eligible, and the distinct completed-cell count must
     # still match the preregistered design exactly.
@@ -78,7 +83,7 @@ def select_agam_sources(runs: list[Any], *, expected_runs: int) -> tuple[list[An
     ranking: list[dict[str, Any]] = []
     for (base_lr, weight_decay), group_runs in grouped.items():
         seeds = tuple(sorted(int(run.config["seed"]) for run in group_runs))
-        if seeds != EXPECTED_SEEDS:
+        if seeds != expected_seeds:
             print(
                 "EXCLUDED_INCOMPLETE_AGAM_CELL="
                 f"base_lr={base_lr},weight_decay={weight_decay},"
@@ -118,11 +123,16 @@ def select_agam_sources(runs: list[Any], *, expected_runs: int) -> tuple[list[An
     return list(selected["runs"]), ranking
 
 
-def validate_lion_sources(api: wandb.Api) -> list[Any]:
-    sources = [api.run(f"{ENTITY_NAME}/{PROJECT_NAME}/{run_id}") for run_id in LION_SOURCE_RUN_IDS]
+def validate_lion_sources(
+    api: wandb.Api,
+    *,
+    source_run_ids: tuple[str, ...] = LION_SOURCE_RUN_IDS,
+    expected_seeds: tuple[int, ...] = EXPECTED_SEEDS,
+) -> list[Any]:
+    sources = [api.run(f"{ENTITY_NAME}/{PROJECT_NAME}/{run_id}") for run_id in source_run_ids]
     seeds = tuple(sorted(int(run.config["seed"]) for run in sources))
-    if seeds != EXPECTED_SEEDS:
-        raise ValueError(f"Lion sources have seeds {seeds}; expected {EXPECTED_SEEDS}.")
+    if seeds != expected_seeds:
+        raise ValueError(f"Lion sources have seeds {seeds}; expected {expected_seeds}.")
     for run in sources:
         if run.state != "finished":
             raise ValueError(f"Lion source {run.id} is not finished: {run.state}.")
@@ -135,6 +145,8 @@ def validate_lion_sources(api: wandb.Api) -> list[Any]:
 
 
 def build_sweep(args: argparse.Namespace, source_run_ids: list[str]) -> dict[str, Any]:
+    comparison_group = getattr(args, "comparison_group", "lion_vs_agam_lion_selected_mae_finetune_v1")
+    study_stage = getattr(args, "study_stage", "selected_checkpoint_end_to_end_finetune")
     return {
         "program": args.program,
         "name": args.sweep_name,
@@ -142,8 +154,8 @@ def build_sweep(args: argparse.Namespace, source_run_ids: list[str]) -> dict[str
         "metric": {"name": "finetune/final_val_top1_pct", "goal": "maximize"},
         "parameters": {
             "source_run_id": {"values": source_run_ids},
-            "comparison_group": {"values": ("lion_vs_agam_lion_selected_mae_finetune_v1",)},
-            "study_stage": {"values": ("selected_checkpoint_end_to_end_finetune",)},
+            "comparison_group": {"values": (comparison_group,)},
+            "study_stage": {"values": (study_stage,)},
             "selection_metric": {"values": ("finetune/final_val_top1_pct",)},
             "source_revision": {"values": (args.source_revision,)},
         },
@@ -201,18 +213,36 @@ def main() -> int:
     parser.add_argument("--project_name", "--project-name", default=PROJECT_NAME)
     parser.add_argument("--data_dir", "--data-dir", required=True)
     parser.add_argument("--source_revision", "--source-revision", default=current_commit())
+    parser.add_argument("--expected_seeds", "--expected-seeds", type=int, nargs="+", default=EXPECTED_SEEDS)
+    parser.add_argument("--lion_source_run_id", "--lion-source-run-id", action="append")
     args = parser.parse_args()
+
+    expected_seeds = tuple(sorted(args.expected_seeds))
+    if not expected_seeds or len(set(expected_seeds)) != len(expected_seeds):
+        parser.error("--expected_seeds must contain distinct seed values.")
+    lion_source_run_ids = tuple(args.lion_source_run_id or LION_SOURCE_RUN_IDS)
+    if len(lion_source_run_ids) != len(expected_seeds):
+        parser.error("Provide exactly one Lion source run for every expected seed.")
 
     api = wandb.Api(timeout=180)
     screen_runs: list[Any] = []
     for screen_path in args.screen_path:
         screen_runs.extend(list(api.sweep(screen_path).runs))
-    agam_sources, ranking = select_agam_sources(screen_runs, expected_runs=args.expected_screen_runs)
-    lion_sources = validate_lion_sources(api)
+    agam_sources, ranking = select_agam_sources(
+        screen_runs,
+        expected_runs=args.expected_screen_runs,
+        expected_seeds=expected_seeds,
+    )
+    lion_sources = validate_lion_sources(
+        api,
+        source_run_ids=lion_source_run_ids,
+        expected_seeds=expected_seeds,
+    )
     sources = lion_sources + agam_sources
     source_ids = [run.id for run in sources]
-    if len(source_ids) != EXPECTED_CONFIRMATION_RUNS or len(set(source_ids)) != EXPECTED_CONFIRMATION_RUNS:
-        raise RuntimeError(f"Expected four distinct fine-tune sources, got {source_ids}.")
+    expected_confirmation_runs = 2 * len(expected_seeds)
+    if len(source_ids) != expected_confirmation_runs or len(set(source_ids)) != expected_confirmation_runs:
+        raise RuntimeError(f"Expected {expected_confirmation_runs} distinct fine-tune sources, got {source_ids}.")
 
     winner = ranking[0]
     print(
@@ -237,7 +267,7 @@ def main() -> int:
         sweep=build_sweep(args, source_ids),
     )
     print(f"SWEEP_PATH={ENTITY_NAME}/{args.project_name}/{sweep_id}")
-    print(f"EXPECTED_RUNS={EXPECTED_CONFIRMATION_RUNS}")
+    print(f"EXPECTED_RUNS={expected_confirmation_runs}")
     return 0
 
 

@@ -26,6 +26,17 @@ from tasks.mae_pretrain import (
 from tasks.wandb_metadata import task_metadata
 
 
+SUPPORTED_SOURCE_OPTIMIZERS = {
+    "AdamW",
+    "AM_AdamW",
+    "AdaTAMW",
+    "MAL_AdamW",
+    "AdaMAL",
+    "Lion",
+    "AGAM_Lion",
+}
+
+
 def require_number(value: Any, name: str) -> float:
     number = float(value)
     if not math.isfinite(number):
@@ -109,8 +120,11 @@ def main() -> int:
 
     source_config = dict(source.config)
     source_optimizer = str(source_config.get("optimizer", ""))
-    if source_optimizer not in {"Lion", "AGAM_Lion"}:
-        raise ValueError(f"Expected a Lion-family source checkpoint, got {source_optimizer!r}.")
+    if source_optimizer not in SUPPORTED_SOURCE_OPTIMIZERS:
+        raise ValueError(
+            f"Unsupported MAE source optimizer {source_optimizer!r}; "
+            f"expected one of {sorted(SUPPORTED_SOURCE_OPTIMIZERS)}."
+        )
     source_seed = int(source_config["seed"])
     source_epochs = int(source_config.get("epochs", 300))
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)

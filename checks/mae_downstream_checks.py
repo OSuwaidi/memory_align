@@ -24,6 +24,7 @@ from sweeps.mae_lion_finetune_confirmation_sweep import (
     build_sweep as build_finetune_sweep,
 )
 from tasks.mae_pretrain import MAEEncoderClassifier, MaskedAutoencoderViT, layerwise_finetune_param_groups
+from tasks.mae_finetune_eval import SUPPORTED_SOURCE_OPTIMIZERS
 
 
 class MAEDownstreamChecks(unittest.TestCase):
@@ -261,6 +262,51 @@ class MAEDownstreamChecks(unittest.TestCase):
 
         self.assertEqual(len(ranking), 1)
         self.assertEqual([run.config["seed"] for run in selected], [42, 1337])
+
+    def test_three_seed_agam_selection(self) -> None:
+        runs = []
+        with TemporaryDirectory() as temporary_directory:
+            cells = (
+                (0.3, (28.98, 28.98, 29.10)),
+                (0.5, (28.28, 30.00, 30.20)),
+            )
+            for cell_index, (weight_decay, accuracies) in enumerate(cells):
+                for seed, accuracy in zip((42, 1337, 2026), accuracies, strict=True):
+                    checkpoint = Path(temporary_directory) / f"{cell_index}-{seed}.pt"
+                    checkpoint.touch()
+                    runs.append(
+                        SimpleNamespace(
+                            id=f"run-{cell_index}-{seed}",
+                            state="finished",
+                            config={
+                                "optimizer": "AGAM_Lion",
+                                "base_lr": 1e-4,
+                                "weight_decay": weight_decay,
+                                "seed": seed,
+                                "epochs": 300,
+                            },
+                            summary={
+                                "final/probe_val_acc": accuracy,
+                                "checkpoint": str(checkpoint),
+                                "epoch": 300,
+                            },
+                        )
+                    )
+
+            selected, ranking = select_agam_sources(
+                runs,
+                expected_runs=6,
+                expected_seeds=(42, 1337, 2026),
+            )
+
+        self.assertEqual(ranking[0]["weight_decay"], 0.5)
+        self.assertEqual([run.config["seed"] for run in selected], [42, 1337, 2026])
+
+    def test_finetune_accepts_all_selected_mae_optimizers(self) -> None:
+        self.assertEqual(
+            SUPPORTED_SOURCE_OPTIMIZERS,
+            {"AdamW", "AM_AdamW", "AdaTAMW", "MAL_AdamW", "AdaMAL", "Lion", "AGAM_Lion"},
+        )
 
 
 if __name__ == "__main__":
