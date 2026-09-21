@@ -146,6 +146,7 @@ if [[ "$HAS_FINISHED_050" != 1 ]]; then
     RECOVERY_050_SUBMISSION=$(sbatch \
         --parsable \
         --array=1-1 \
+        --time=24:00:00 \
         --job-name=agam-lion-rec-wd050 \
         "$MEMORY_ALIGN_PROJECT/wb-agents.sh" \
         "$BASE_RECOVERY_050_PATH" \
@@ -196,6 +197,7 @@ printf '%s\n' "$FINETUNE_OUTPUT" | sed -n '/^SELECTED_AGAM_CONFIG=/p;/^SOURCE_RU
 FINETUNE_SUBMISSION=$(sbatch \
     --parsable \
     --array="1-${FINETUNE_EXPECTED_RUNS}" \
+    --time=24:00:00 \
     --job-name=lion-agam-lion-mae-ft \
     "$MEMORY_ALIGN_PROJECT/wb-agents.sh" \
     "$FINETUNE_PATH" \
