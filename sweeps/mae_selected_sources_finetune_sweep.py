@@ -41,6 +41,7 @@ def validate_sources(
     source_run_ids: list[str],
     expected_optimizers: tuple[str, ...],
     expected_seeds: tuple[int, ...],
+    expected_batch_size: int,
     project_name: str,
 ) -> list[Any]:
     if len(source_run_ids) != len(set(source_run_ids)):
@@ -58,6 +59,12 @@ def validate_sources(
             raise ValueError(f"Source run {run.id} is not a Tiny-ImageNet MAE pretraining run.")
         if int(config.get("epochs", 0)) != 300:
             raise ValueError(f"Source run {run.id} was not trained for 300 epochs.")
+        observed_batch_size = int(config.get("batch_size", 0))
+        if observed_batch_size != expected_batch_size:
+            raise ValueError(
+                f"Source run {run.id} has pretraining batch size {observed_batch_size}; "
+                f"the comparison requires batch size {expected_batch_size}."
+            )
         if int(config.get("image_size", 0)) != 64 or int(config.get("patch_size", 0)) != 8:
             raise ValueError(f"Source run {run.id} does not use the common 64px/patch-8 protocol.")
         checkpoint = Path(str(run.summary.get("checkpoint", ""))).expanduser().resolve()
@@ -108,6 +115,7 @@ def main() -> int:
     parser.add_argument("--source_run_id", "--source-run-id", action="append", required=True)
     parser.add_argument("--expected_optimizer", "--expected-optimizer", action="append", required=True)
     parser.add_argument("--expected_seeds", "--expected-seeds", type=int, nargs="+", default=EXPECTED_SEEDS)
+    parser.add_argument("--expected_batch_size", "--expected-batch-size", type=int, default=1024)
     parser.add_argument("--sweep_name", "--sweep-name", required=True)
     parser.add_argument("--project_name", "--project-name", default=PROJECT_NAME)
     parser.add_argument("--data_dir", "--data-dir", required=True)
@@ -127,6 +135,8 @@ def main() -> int:
     expected_seeds = tuple(sorted(args.expected_seeds))
     if len(expected_seeds) != len(set(expected_seeds)):
         parser.error("--expected_seeds must contain distinct values.")
+    if args.expected_batch_size <= 0:
+        parser.error("--expected_batch_size must be positive.")
     expected_optimizers = tuple(sorted(set(args.expected_optimizer)))
     expected_runs = len(expected_seeds) * len(expected_optimizers)
     if len(args.source_run_id) != expected_runs:
@@ -137,8 +147,10 @@ def main() -> int:
         source_run_ids=args.source_run_id,
         expected_optimizers=expected_optimizers,
         expected_seeds=expected_seeds,
+        expected_batch_size=args.expected_batch_size,
         project_name=args.project_name,
     )
+    print(f"EXPECTED_PRETRAIN_BATCH_SIZE={args.expected_batch_size}")
     source_ids = [run.id for run in sources]
     print(f"SOURCE_RUN_IDS={','.join(source_ids)}")
     sweep_id = wandb.sweep(

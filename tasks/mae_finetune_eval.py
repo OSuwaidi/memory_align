@@ -171,6 +171,7 @@ def main() -> int:
             "source_checkpoint_epoch": checkpoint_epoch,
             "source_seed": source_seed,
             "seed": source_seed,
+            "source_batch_size": int(source_config["batch_size"]),
             "source_base_lr": require_number(source_config["base_lr"], "source_base_lr"),
             "source_weight_decay": require_number(source_config["weight_decay"], "source_weight_decay"),
             "source_final_linear_probe_val_top1_pct": require_number(source_final_probe, "source final probe"),
