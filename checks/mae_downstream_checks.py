@@ -6,6 +6,8 @@ import argparse
 import sys
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 import torch
 
@@ -16,6 +18,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 from sweeps.agam_lion_mae_extended_sweep import EXPECTED_RUNS, build_sweep
 from sweeps.mae_lion_finetune_confirmation_sweep import (
     EXPECTED_CONFIRMATION_RUNS,
+    select_agam_sources,
 )
 from sweeps.mae_lion_finetune_confirmation_sweep import (
     build_sweep as build_finetune_sweep,
@@ -111,6 +114,77 @@ class MAEDownstreamChecks(unittest.TestCase):
         self.assertEqual(cardinality, EXPECTED_CONFIRMATION_RUNS)
         self.assertEqual(sweep["parameters"]["source_run_id"]["values"], source_ids)
         self.assertEqual(sweep["metric"]["name"], "finetune/final_val_top1_pct")
+
+    def test_final_screen_grid_is_exactly_six_runs(self) -> None:
+        args = argparse.Namespace(
+            program="tasks/mae_pretrain.py",
+            sweep_name="final-screen-check",
+            source_revision="test-revision",
+            data_dir="/tmp/tiny-imagenet-200",
+            output_dir="/tmp/agam-lion-mae-final-screen",
+            epochs=300,
+            warmup_epochs=15,
+            probe_every=50,
+            base_lrs=(1e-4,),
+            weight_decays=(0.3, 0.5, 0.75),
+            seeds=(42, 1337),
+            comparison_group="agam_lion_mae_final_probe_screen_v1",
+            study_stage="agam_lion_mae_final_probe_screen",
+        )
+        sweep = build_sweep(args)
+        cardinality = 1
+        for parameter in sweep["parameters"].values():
+            cardinality *= len(parameter["values"])
+
+        self.assertEqual(cardinality, 6)
+        self.assertEqual(sweep["parameters"]["base_lr"]["values"], (1e-4,))
+        self.assertEqual(sweep["parameters"]["weight_decay"]["values"], (0.3, 0.5, 0.75))
+        self.assertEqual(sweep["parameters"]["seed"]["values"], (42, 1337))
+
+    def test_combined_screens_select_paired_seed_mean(self) -> None:
+        cells = (
+            (2e-4, 0.5, (20.0, 21.0)),
+            (2e-4, 0.25, (22.0, 23.0)),
+            (2e-4, 0.15, (24.0, 25.0)),
+            (1.5e-4, 0.5, (26.0, 27.0)),
+            (1.5e-4, 0.25, (28.0, 29.0)),
+            (1.5e-4, 0.15, (27.0, 28.0)),
+            (5e-5, 0.5, (25.0, 26.0)),
+            (5e-5, 0.25, (24.0, 25.0)),
+            (5e-5, 0.15, (23.0, 24.0)),
+            (1e-4, 0.3, (29.0, 30.0)),
+            (1e-4, 0.5, (31.0, 32.0)),
+            (1e-4, 0.75, (30.0, 31.0)),
+        )
+        runs = []
+        with TemporaryDirectory() as temporary_directory:
+            for cell_index, (base_lr, weight_decay, accuracies) in enumerate(cells):
+                for seed, accuracy in zip((42, 1337), accuracies, strict=True):
+                    checkpoint = Path(temporary_directory) / f"{cell_index}-{seed}.pt"
+                    checkpoint.touch()
+                    runs.append(
+                        SimpleNamespace(
+                            id=f"run-{cell_index}-{seed}",
+                            state="finished",
+                            config={
+                                "optimizer": "AGAM_Lion",
+                                "base_lr": base_lr,
+                                "weight_decay": weight_decay,
+                                "seed": seed,
+                                "epochs": 300,
+                            },
+                            summary={
+                                "linear_probe/final_val_top1_pct": accuracy,
+                                "checkpoint": str(checkpoint),
+                                "epoch": 300,
+                            },
+                        )
+                    )
+
+            selected, ranking = select_agam_sources(runs, expected_runs=24)
+
+        self.assertEqual((ranking[0]["base_lr"], ranking[0]["weight_decay"]), (1e-4, 0.5))
+        self.assertEqual([run.config["seed"] for run in selected], [42, 1337])
 
 
 if __name__ == "__main__":

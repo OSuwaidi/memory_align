@@ -38,6 +38,11 @@ def current_commit() -> str:
 
 
 def build_sweep(args: argparse.Namespace) -> dict[str, Any]:
+    base_lrs = tuple(getattr(args, "base_lrs", BASE_LRS))
+    weight_decays = tuple(getattr(args, "weight_decays", WEIGHT_DECAYS))
+    seeds = tuple(getattr(args, "seeds", SEEDS))
+    comparison_group = str(getattr(args, "comparison_group", COMPARISON_GROUP))
+    study_stage = str(getattr(args, "study_stage", "agam_lion_mae_probe_screen"))
     return {
         "program": args.program,
         "name": args.sweep_name,
@@ -46,12 +51,12 @@ def build_sweep(args: argparse.Namespace) -> dict[str, Any]:
         "parameters": {
             "optimizer": {"values": ("AGAM_Lion",)},
             "batch_size": {"values": (BATCH_SIZE,)},
-            "base_lr": {"values": BASE_LRS},
-            "weight_decay": {"values": WEIGHT_DECAYS},
-            "seed": {"values": SEEDS},
+            "base_lr": {"values": base_lrs},
+            "weight_decay": {"values": weight_decays},
+            "seed": {"values": seeds},
             "use_scheduler": {"values": (True,)},
-            "comparison_group": {"values": (COMPARISON_GROUP,)},
-            "study_stage": {"values": ("agam_lion_mae_probe_screen",)},
+            "comparison_group": {"values": (comparison_group,)},
+            "study_stage": {"values": (study_stage,)},
             "selection_metric": {"values": ("linear_probe/final_val_top1_pct",)},
             "evaluation_protocol": {"values": ("periodic_linear_probe_only_then_selected_checkpoint_finetune",)},
             "source_revision": {"values": (args.source_revision,)},
@@ -113,8 +118,18 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=EPOCHS)
     parser.add_argument("--warmup_epochs", "--warmup-epochs", type=int, default=WARMUP_EPOCHS)
     parser.add_argument("--probe_every", "--probe-every", type=int, default=PROBE_EVERY)
+    parser.add_argument("--base_lrs", "--base-lrs", type=float, nargs="+", default=BASE_LRS)
+    parser.add_argument("--weight_decays", "--weight-decays", type=float, nargs="+", default=WEIGHT_DECAYS)
+    parser.add_argument("--seeds", type=int, nargs="+", default=SEEDS)
+    parser.add_argument("--comparison_group", "--comparison-group", default=COMPARISON_GROUP)
+    parser.add_argument("--study_stage", "--study-stage", default="agam_lion_mae_probe_screen")
     parser.add_argument("--source_revision", "--source-revision", default=current_commit())
     args = parser.parse_args()
+
+    if not args.base_lrs or not args.weight_decays or not args.seeds:
+        parser.error("The LR, weight-decay, and seed grids must be non-empty.")
+    if min(args.base_lrs) <= 0.0 or min(args.weight_decays) < 0.0:
+        parser.error("Base learning rates must be positive and weight decays non-negative.")
 
     sweep_id = wandb.sweep(
         entity=ENTITY_NAME,
@@ -122,7 +137,7 @@ def main() -> int:
         sweep=build_sweep(args),
     )
     print(f"SWEEP_PATH={ENTITY_NAME}/{args.project_name}/{sweep_id}")
-    print(f"EXPECTED_RUNS={EXPECTED_RUNS}")
+    print(f"EXPECTED_RUNS={len(args.base_lrs) * len(args.weight_decays) * len(args.seeds)}")
     return 0
 
 

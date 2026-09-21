@@ -13,7 +13,7 @@ import wandb
 
 ENTITY_NAME = "osuwaidi-khalifa-university"
 PROJECT_NAME = "MAL_benchmark"
-EXPECTED_SCREEN_RUNS = 18
+EXPECTED_SCREEN_RUNS = 24
 EXPECTED_SEEDS = (42, 1337)
 LION_SOURCE_RUN_IDS = ("pcqfobwq", "ajqbhr9a")
 EXPECTED_CONFIRMATION_RUNS = 4
@@ -47,19 +47,26 @@ def require_final_checkpoint(run: Any) -> Path:
     return checkpoint
 
 
-def select_agam_sources(screen: Any) -> tuple[list[Any], list[dict[str, Any]]]:
-    runs = list(screen.runs)
-    if len(runs) != EXPECTED_SCREEN_RUNS:
-        raise ValueError(f"Expected {EXPECTED_SCREEN_RUNS} screen runs, found {len(runs)}.")
+def select_agam_sources(runs: list[Any], *, expected_runs: int) -> tuple[list[Any], list[dict[str, Any]]]:
+    if len(runs) != expected_runs:
+        raise ValueError(f"Expected {expected_runs} screen runs, found {len(runs)}.")
     if any(run.state != "finished" for run in runs):
         states = {run.id: run.state for run in runs if run.state != "finished"}
         raise ValueError(f"The AGAM-Lion screen is not completely finished: {states}")
 
     grouped: dict[tuple[float, float], list[Any]] = defaultdict(list)
+    observed_cells: set[tuple[float, float, int]] = set()
     for run in runs:
         if str(run.config.get("optimizer")) != "AGAM_Lion":
             raise ValueError(f"Unexpected optimizer in AGAM-Lion screen: {run.config.get('optimizer')!r}.")
-        grouped[(float(run.config["base_lr"]), float(run.config["weight_decay"]))].append(run)
+        base_lr = float(run.config["base_lr"])
+        weight_decay = float(run.config["weight_decay"])
+        seed = int(run.config["seed"])
+        cell = (base_lr, weight_decay, seed)
+        if cell in observed_cells:
+            raise ValueError(f"Duplicate AGAM-Lion screen cell across input sweeps: {cell}.")
+        observed_cells.add(cell)
+        grouped[(base_lr, weight_decay)].append(run)
 
     ranking: list[dict[str, Any]] = []
     for (base_lr, weight_decay), group_runs in grouped.items():
@@ -173,7 +180,8 @@ def build_sweep(args: argparse.Namespace, source_run_ids: list[str]) -> dict[str
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("program", help="Fine-tune entry point (normally tasks/mae_finetune_eval.py)")
-    parser.add_argument("--screen_path", "--screen-path", required=True)
+    parser.add_argument("--screen_path", "--screen-path", action="append", required=True)
+    parser.add_argument("--expected_screen_runs", "--expected-screen-runs", type=int, default=EXPECTED_SCREEN_RUNS)
     parser.add_argument("--sweep_name", "--sweep-name", required=True)
     parser.add_argument("--project_name", "--project-name", default=PROJECT_NAME)
     parser.add_argument("--data_dir", "--data-dir", required=True)
@@ -181,8 +189,10 @@ def main() -> int:
     args = parser.parse_args()
 
     api = wandb.Api(timeout=180)
-    screen = api.sweep(args.screen_path)
-    agam_sources, ranking = select_agam_sources(screen)
+    screen_runs: list[Any] = []
+    for screen_path in args.screen_path:
+        screen_runs.extend(list(api.sweep(screen_path).runs))
+    agam_sources, ranking = select_agam_sources(screen_runs, expected_runs=args.expected_screen_runs)
     lion_sources = validate_lion_sources(api)
     sources = lion_sources + agam_sources
     source_ids = [run.id for run in sources]
@@ -198,6 +208,7 @@ def main() -> int:
         f"std_final_probe={winner['std_final_probe']:.6f}"
     )
     print(f"SOURCE_RUN_IDS={','.join(source_ids)}")
+    print(f"SCREEN_PATHS={','.join(args.screen_path)}")
     for rank, row in enumerate(ranking, start=1):
         print(
             f"AGAM_RANK_{rank}=base_lr={row['base_lr']},weight_decay={row['weight_decay']},"
