@@ -29,9 +29,11 @@ def current_commit() -> str:
 
 
 def final_probe_accuracy(run: Any) -> float:
-    value = run.summary.get("linear_probe/final_val_top1_pct")
+    # ``final/probe_val_acc`` is the common historical field shared by the
+    # original Lion screen and the newer AGAM-Lion screens.
+    value = run.summary.get("final/probe_val_acc")
     if value is None:
-        value = run.summary.get("final/probe_val_acc", run.summary.get("final_probe_val_acc"))
+        value = run.summary.get("linear_probe/final_val_top1_pct", run.summary.get("final_probe_val_acc"))
     if value is None:
         raise ValueError(f"Run {run.id} does not contain a final linear-probe accuracy.")
     return float(value)
@@ -77,7 +79,12 @@ def select_agam_sources(runs: list[Any], *, expected_runs: int) -> tuple[list[An
     for (base_lr, weight_decay), group_runs in grouped.items():
         seeds = tuple(sorted(int(run.config["seed"]) for run in group_runs))
         if seeds != EXPECTED_SEEDS:
-            raise ValueError(f"Cell {(base_lr, weight_decay)} has seeds {seeds}; expected {EXPECTED_SEEDS}.")
+            print(
+                "EXCLUDED_INCOMPLETE_AGAM_CELL="
+                f"base_lr={base_lr},weight_decay={weight_decay},"
+                f"observed_seeds={','.join(map(str, seeds))}"
+            )
+            continue
         accuracies = [final_probe_accuracy(run) for run in group_runs]
         ranking.append(
             {
@@ -89,6 +96,9 @@ def select_agam_sources(runs: list[Any], *, expected_runs: int) -> tuple[list[An
                 "runs": sorted(group_runs, key=lambda run: int(run.config["seed"])),
             }
         )
+
+    if not ranking:
+        raise ValueError("No AGAM-Lion LR/WD cell has both required seeds.")
 
     # Primary selection is the paired-seed mean. Worst-seed performance and
     # lower variability are deterministic robustness tie-breakers.

@@ -231,6 +231,37 @@ class MAEDownstreamChecks(unittest.TestCase):
         self.assertEqual(len(ranking), 12)
         self.assertEqual([run.config["seed"] for run in selected], [42, 1337])
 
+    def test_selection_excludes_an_incomplete_cell(self) -> None:
+        runs = []
+        with TemporaryDirectory() as temporary_directory:
+            for cell_index, seeds in enumerate(((42, 1337), (42,))):
+                for seed in seeds:
+                    checkpoint = Path(temporary_directory) / f"{cell_index}-{seed}.pt"
+                    checkpoint.touch()
+                    runs.append(
+                        SimpleNamespace(
+                            id=f"run-{cell_index}-{seed}",
+                            state="finished",
+                            config={
+                                "optimizer": "AGAM_Lion",
+                                "base_lr": 1e-4 + cell_index * 1e-4,
+                                "weight_decay": 0.5,
+                                "seed": seed,
+                                "epochs": 300,
+                            },
+                            summary={
+                                "final/probe_val_acc": 25.0 + cell_index,
+                                "checkpoint": str(checkpoint),
+                                "epoch": 300,
+                            },
+                        )
+                    )
+
+            selected, ranking = select_agam_sources(runs, expected_runs=3)
+
+        self.assertEqual(len(ranking), 1)
+        self.assertEqual([run.config["seed"] for run in selected], [42, 1337])
+
 
 if __name__ == "__main__":
     unittest.main()
