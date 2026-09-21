@@ -15,6 +15,7 @@ ENTITY_NAME = "osuwaidi-khalifa-university"
 PROJECT_NAME = "MAL_benchmark"
 EXPECTED_SCREEN_RUNS = 24
 EXPECTED_SEEDS = (42, 1337)
+EXPECTED_PRETRAIN_BATCH_SIZE = 1024
 LION_SOURCE_RUN_IDS = ("pcqfobwq", "ajqbhr9a")
 EXPECTED_CONFIRMATION_RUNS = 4
 
@@ -54,6 +55,7 @@ def select_agam_sources(
     *,
     expected_runs: int,
     expected_seeds: tuple[int, ...] = EXPECTED_SEEDS,
+    expected_batch_size: int = EXPECTED_PRETRAIN_BATCH_SIZE,
 ) -> tuple[list[Any], list[dict[str, Any]]]:
     # Recovery sweeps may coexist with interrupted source runs.  Only fully
     # completed runs are eligible, and the distinct completed-cell count must
@@ -71,6 +73,12 @@ def select_agam_sources(
     for run in finished_runs:
         if str(run.config.get("optimizer")) != "AGAM_Lion":
             raise ValueError(f"Unexpected optimizer in AGAM-Lion screen: {run.config.get('optimizer')!r}.")
+        observed_batch_size = int(run.config.get("batch_size", 0))
+        if observed_batch_size != expected_batch_size:
+            raise ValueError(
+                f"AGAM-Lion source {run.id} has pretraining batch size {observed_batch_size}; "
+                f"expected {expected_batch_size}."
+            )
         base_lr = float(run.config["base_lr"])
         weight_decay = float(run.config["weight_decay"])
         seed = int(run.config["seed"])
@@ -128,6 +136,7 @@ def validate_lion_sources(
     *,
     source_run_ids: tuple[str, ...] = LION_SOURCE_RUN_IDS,
     expected_seeds: tuple[int, ...] = EXPECTED_SEEDS,
+    expected_batch_size: int = EXPECTED_PRETRAIN_BATCH_SIZE,
 ) -> list[Any]:
     sources = [api.run(f"{ENTITY_NAME}/{PROJECT_NAME}/{run_id}") for run_id in source_run_ids]
     seeds = tuple(sorted(int(run.config["seed"]) for run in sources))
@@ -138,6 +147,12 @@ def validate_lion_sources(
             raise ValueError(f"Lion source {run.id} is not finished: {run.state}.")
         if str(run.config.get("optimizer")) != "Lion":
             raise ValueError(f"Lion source {run.id} has optimizer {run.config.get('optimizer')!r}.")
+        observed_batch_size = int(run.config.get("batch_size", 0))
+        if observed_batch_size != expected_batch_size:
+            raise ValueError(
+                f"Lion source {run.id} has pretraining batch size {observed_batch_size}; "
+                f"expected {expected_batch_size}."
+            )
         if float(run.config["base_lr"]) != 1e-4 or float(run.config["weight_decay"]) != 0.5:
             raise ValueError(f"Lion source {run.id} is not the selected LR=1e-4, WD=0.5 configuration.")
         require_final_checkpoint(run)

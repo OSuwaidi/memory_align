@@ -173,6 +173,7 @@ class MAEDownstreamChecks(unittest.TestCase):
                                 "weight_decay": weight_decay,
                                 "seed": seed,
                                 "epochs": 300,
+                                "batch_size": 1024,
                             },
                             summary={
                                 "linear_probe/final_val_top1_pct": accuracy,
@@ -205,6 +206,7 @@ class MAEDownstreamChecks(unittest.TestCase):
                                 "weight_decay": 0.5,
                                 "seed": seed,
                                 "epochs": 300,
+                                "batch_size": 1024,
                             },
                             summary={
                                 "linear_probe/final_val_top1_pct": float(cell_index),
@@ -249,6 +251,7 @@ class MAEDownstreamChecks(unittest.TestCase):
                                 "weight_decay": 0.5,
                                 "seed": seed,
                                 "epochs": 300,
+                                "batch_size": 1024,
                             },
                             summary={
                                 "final/probe_val_acc": 25.0 + cell_index,
@@ -284,6 +287,7 @@ class MAEDownstreamChecks(unittest.TestCase):
                                 "weight_decay": weight_decay,
                                 "seed": seed,
                                 "epochs": 300,
+                                "batch_size": 1024,
                             },
                             summary={
                                 "final/probe_val_acc": accuracy,
@@ -307,6 +311,35 @@ class MAEDownstreamChecks(unittest.TestCase):
             SUPPORTED_SOURCE_OPTIMIZERS,
             {"AdamW", "AM_AdamW", "AdaTAMW", "MAL_AdamW", "AdaMAL", "Lion", "AGAM_Lion"},
         )
+
+    def test_agam_selection_rejects_mixed_pretraining_batch_sizes(self) -> None:
+        runs = []
+        with TemporaryDirectory() as temporary_directory:
+            for seed, batch_size in ((42, 1024), (1337, 256)):
+                checkpoint = Path(temporary_directory) / f"{seed}.pt"
+                checkpoint.touch()
+                runs.append(
+                    SimpleNamespace(
+                        id=f"run-{seed}",
+                        state="finished",
+                        config={
+                            "optimizer": "AGAM_Lion",
+                            "base_lr": 1e-4,
+                            "weight_decay": 0.5,
+                            "seed": seed,
+                            "epochs": 300,
+                            "batch_size": batch_size,
+                        },
+                        summary={
+                            "final/probe_val_acc": 30.0,
+                            "checkpoint": str(checkpoint),
+                            "epoch": 300,
+                        },
+                    )
+                )
+
+            with self.assertRaisesRegex(ValueError, "pretraining batch size"):
+                select_agam_sources(runs, expected_runs=2)
 
 
 if __name__ == "__main__":
