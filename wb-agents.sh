@@ -15,7 +15,8 @@ set -euo pipefail
 
 MEMORY_ALIGN_PROJECT=/shared/b00090279/memory_align
 EXPECTED_SWEEP_PREFIX=osuwaidi-khalifa-university/MAL_benchmark/
-SWEEP_PATH=${1:?"usage: sbatch --array=1-15 wb-agents.sh <entity/project/sweep-id>"}
+SWEEP_PATH=${1:?"usage: sbatch --array=1-15 wb-agents.sh <entity/project/sweep-id> [run-count]"}
+RUN_COUNT=${2:-}
 
 case "$SWEEP_PATH" in
     "$EXPECTED_SWEEP_PREFIX"*) ;;
@@ -25,6 +26,11 @@ case "$SWEEP_PATH" in
         exit 2
         ;;
 esac
+
+if [[ -n "$RUN_COUNT" ]] && ! [[ "$RUN_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Run count must be a positive integer, got: $RUN_COUNT" >&2
+    exit 2
+fi
 
 # Every path capable of receiving job-created files is redirected beneath the
 # user's explicitly authorized /shared directory.
@@ -59,4 +65,8 @@ print(
 PY
 
 echo "[$(hostname)] array task ${SLURM_ARRAY_TASK_ID:-single} starting W&B agent for $SWEEP_PATH"
-exec "$CLUSTER_PYTHON" -m wandb agent --forward-signals "$SWEEP_PATH"
+AGENT_ARGS=(--forward-signals)
+if [[ -n "$RUN_COUNT" ]]; then
+    AGENT_ARGS+=(--count "$RUN_COUNT")
+fi
+exec "$CLUSTER_PYTHON" -m wandb agent "${AGENT_ARGS[@]}" "$SWEEP_PATH"

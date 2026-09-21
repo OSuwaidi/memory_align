@@ -186,6 +186,51 @@ class MAEDownstreamChecks(unittest.TestCase):
         self.assertEqual((ranking[0]["base_lr"], ranking[0]["weight_decay"]), (1e-4, 0.5))
         self.assertEqual([run.config["seed"] for run in selected], [42, 1337])
 
+    def test_selection_ignores_interrupted_runs_when_recovered(self) -> None:
+        runs = []
+        with TemporaryDirectory() as temporary_directory:
+            for cell_index in range(12):
+                base_lr = 1e-4 + cell_index * 1e-6
+                for seed in (42, 1337):
+                    checkpoint = Path(temporary_directory) / f"{cell_index}-{seed}.pt"
+                    checkpoint.touch()
+                    runs.append(
+                        SimpleNamespace(
+                            id=f"finished-{cell_index}-{seed}",
+                            state="finished",
+                            config={
+                                "optimizer": "AGAM_Lion",
+                                "base_lr": base_lr,
+                                "weight_decay": 0.5,
+                                "seed": seed,
+                                "epochs": 300,
+                            },
+                            summary={
+                                "linear_probe/final_val_top1_pct": float(cell_index),
+                                "checkpoint": str(checkpoint),
+                                "epoch": 300,
+                            },
+                        )
+                    )
+            runs.append(
+                SimpleNamespace(
+                    id="interrupted-source",
+                    state="crashed",
+                    config={
+                        "optimizer": "AGAM_Lion",
+                        "base_lr": 5e-5,
+                        "weight_decay": 0.15,
+                        "seed": 42,
+                    },
+                    summary={},
+                )
+            )
+
+            selected, ranking = select_agam_sources(runs, expected_runs=24)
+
+        self.assertEqual(len(ranking), 12)
+        self.assertEqual([run.config["seed"] for run in selected], [42, 1337])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -48,15 +48,20 @@ def require_final_checkpoint(run: Any) -> Path:
 
 
 def select_agam_sources(runs: list[Any], *, expected_runs: int) -> tuple[list[Any], list[dict[str, Any]]]:
-    if len(runs) != expected_runs:
-        raise ValueError(f"Expected {expected_runs} screen runs, found {len(runs)}.")
-    if any(run.state != "finished" for run in runs):
+    # Recovery sweeps may coexist with interrupted source runs.  Only fully
+    # completed runs are eligible, and the distinct completed-cell count must
+    # still match the preregistered design exactly.
+    finished_runs = [run for run in runs if run.state == "finished"]
+    if len(finished_runs) != expected_runs:
         states = {run.id: run.state for run in runs if run.state != "finished"}
-        raise ValueError(f"The AGAM-Lion screen is not completely finished: {states}")
+        raise ValueError(
+            f"Expected {expected_runs} finished screen runs, found {len(finished_runs)}; "
+            f"ineligible runs: {states}."
+        )
 
     grouped: dict[tuple[float, float], list[Any]] = defaultdict(list)
     observed_cells: set[tuple[float, float, int]] = set()
-    for run in runs:
+    for run in finished_runs:
         if str(run.config.get("optimizer")) != "AGAM_Lion":
             raise ValueError(f"Unexpected optimizer in AGAM-Lion screen: {run.config.get('optimizer')!r}.")
         base_lr = float(run.config["base_lr"])
