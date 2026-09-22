@@ -1421,6 +1421,10 @@ def main() -> int:
         mal_align = str(mal_config.pop("align", config.get("mal_align", MAL_ALIGN))).lower()
         if mal_align not in MAL_ALIGN_CHOICES:
             parser.error(f"MAL align must be one of {sorted(MAL_ALIGN_CHOICES)}.")
+        if optimizer_name == "MAL_AdamW":
+            mal_config["first_moment_correction"] = str(
+                config.get("agam_first_moment_correction", "adaptive")
+            ).lower()
     optimizer = build_optimizer(
         optimizer_name,
         model,
@@ -1505,6 +1509,7 @@ def main() -> int:
             f"_inp{int(mal_config['in_place'])}_p{mal_config['pwr']:g}"
             f"_scl{str(mal_config['scale']).lower()}_g{mal_config['gate_mode']}"
             f"_a{mal_align}_gw{mal_config['gradient_weight_mode']}"
+            f"_bc{mal_config.get('first_moment_correction', 'adaptive')}"
         )
     run.name = f"{optimizer_name}{mal_suffix}_bs{batch_size}_blr{base_lr:g}_wd{weight_decay:g}_s{seed}"
     run.define_metric("epoch")

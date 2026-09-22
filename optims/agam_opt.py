@@ -432,6 +432,13 @@ class AGAM_AdamW(Optimizer):
     (under the norm-matching modes :math:`r^{eff}` cancels algebraically and only
     :math:`r^{probe}` matters; :math:`r^{eff}` is load-bearing for ``"none"``).
 
+    ``first_moment_correction="adaptive"`` applies this exact realized
+    coefficient mass.  For the default transient complementary update it is
+    :math:`r_t^{eff}=1-q_t\beta_1^t`.  The explicit ablation
+    ``first_moment_correction="standard"`` instead divides by AdamW's fixed
+    :math:`1-\beta_1^t`.  It is restricted to ``scale="none"`` because scalar
+    correction is canceled by either norm-matching mode.
+
     With ``in_place=False`` (original MAL) the stored buffer advances with the
     fixed :math:`\beta_1` and the gate is transient -- the stored state is then
     *exactly* vanilla-AdamW state. Under attenuation, this is also the
@@ -477,6 +484,7 @@ class AGAM_AdamW(Optimizer):
         scale: bool | str = False,
         gate_mode: str = "attenuate",
         gradient_weight_mode="complement",
+        first_moment_correction: str = "adaptive",
     ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -502,6 +510,10 @@ class AGAM_AdamW(Optimizer):
             raise ValueError(f"Invalid gradient_weight_mode value: {gradient_weight_mode}")
         if gradient_weight_mode == "complement" and gate_mode != "attenuate":
             raise ValueError('gradient_weight_mode="complement" requires gate_mode="attenuate"')
+        if first_moment_correction not in ("adaptive", "standard"):
+            raise ValueError(f"Invalid first_moment_correction value: {first_moment_correction}")
+        if first_moment_correction == "standard" and scale != "none":
+            raise ValueError('first_moment_correction="standard" requires scale="none"')
 
         decay_params: list[torch.nn.Parameter] = []
         no_decay_params: list[torch.nn.Parameter] = []
@@ -540,6 +552,7 @@ class AGAM_AdamW(Optimizer):
             "scale": scale,
             "gate_mode": gate_mode,
             "gradient_weight_mode": gradient_weight_mode,
+            "first_moment_correction": first_moment_correction,
         }
         super().__init__(optim_groups, defaults)
 
@@ -585,6 +598,16 @@ class AGAM_AdamW(Optimizer):
                 group["scale"] = "step" if scale else "none"
             elif scale not in ("step", "moment", "none"):
                 raise ValueError(f"Unsupported MAL-AdamW scale in checkpoint: {scale}")
+            first_moment_correction = group.get(
+                "first_moment_correction", self.defaults["first_moment_correction"]
+            )
+            if first_moment_correction not in ("adaptive", "standard"):
+                raise ValueError(
+                    "Checkpoint has unsupported first_moment_correction: "
+                    f"{first_moment_correction}"
+                )
+            if first_moment_correction == "standard" and group["scale"] != "none":
+                raise ValueError('first_moment_correction="standard" requires scale="none"')
             if group.get("align", self.defaults["align"]) not in ("update", "metric", "white", "moment"):
                 raise ValueError(f"Unsupported MAL-AdamW align in checkpoint: {group.get('align')}")
 
@@ -610,6 +633,7 @@ class AGAM_AdamW(Optimizer):
             scale = group["scale"]
             gate_mode = group["gate_mode"]
             gradient_weight_mode = group["gradient_weight_mode"]
+            first_moment_correction = group["first_moment_correction"]
             eps = group["eps"]
 
             for p in group["params"]:
@@ -680,7 +704,12 @@ class AGAM_AdamW(Optimizer):
                     u_eff = m_eff_unbias.div_(denominator)
 
                 else:
-                    u_eff = (m_eff / r_eff).div_(denominator)
+                    first_moment_divisor = (
+                        r_eff
+                        if first_moment_correction == "adaptive"
+                        else 1.0 - beta1**step
+                    )
+                    u_eff = (m_eff / first_moment_divisor).div_(denominator)
                     if scale == "step":
                         # ||u|| must come from the probe *step*, not the align pair (b is not u under "moment"/"metric")
                         u_probe_norm = b_norm if align in ("update", "white") else torch.linalg.vector_norm(u)

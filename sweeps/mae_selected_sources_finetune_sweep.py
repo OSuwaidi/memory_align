@@ -28,11 +28,19 @@ EXPECTED_SEEDS = (42, 1337, 2026)
 
 
 def structure_label(config: dict[str, Any]) -> str:
+    correction = (
+        config.get(
+            "agam_first_moment_correction",
+            config.get("mal_first_moment_correction", "adaptive"),
+        )
+        if config.get("optimizer") == "MAL_AdamW"
+        else "not_applicable"
+    )
     for key in ("MAL_config", "optimizer_config", "AdaMAL_config"):
         value = config.get(key)
         if value not in (None, ""):
-            return str(value)
-    return "base"
+            return f"{value};first_moment_correction={correction}"
+    return f"base;first_moment_correction={correction}"
 
 
 def validate_sources(

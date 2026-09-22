@@ -174,6 +174,17 @@ def main() -> int:
             "source_batch_size": int(source_config["batch_size"]),
             "source_base_lr": require_number(source_config["base_lr"], "source_base_lr"),
             "source_weight_decay": require_number(source_config["weight_decay"], "source_weight_decay"),
+            "source_optimizer_config": str(
+                source_config.get("MAL_config", source_config.get("optimizer_config", "base"))
+            ),
+            "source_first_moment_correction": str(
+                source_config.get(
+                    "agam_first_moment_correction",
+                    source_config.get("mal_first_moment_correction", "adaptive"),
+                )
+                if source_optimizer == "MAL_AdamW"
+                else "not_applicable"
+            ),
             "source_final_linear_probe_val_top1_pct": require_number(source_final_probe, "source final probe"),
             "resolved_data_dir": str(data_root),
             "finetune_optimizer": "AdamW",
