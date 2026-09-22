@@ -74,7 +74,7 @@ printf '%s\n' "$PRETRAIN_OUTPUT"
 PRETRAIN_PATH=$(extract_value SWEEP_PATH "$PRETRAIN_OUTPUT")
 [[ "$(extract_value EXPECTED_RUNS "$PRETRAIN_OUTPUT")" == "$PRETRAIN_EXPECTED_RUNS" ]]
 
-PRETRAIN_SUBMISSION=$(sbatch --parsable --array="1-${PRETRAIN_EXPECTED_RUNS}" --time=72:00:00 \
+PRETRAIN_SUBMISSION=$(sbatch --parsable --array="1-${PRETRAIN_EXPECTED_RUNS}" --time=12:00:00 \
     --job-name=agam-adamw-bias-pretrain "$MEMORY_ALIGN_PROJECT/wb-agents.sh" "$PRETRAIN_PATH" 1)
 ACTIVE_AGENT_JOB_ID=${PRETRAIN_SUBMISSION%%;*}
 echo "Submitted pretraining array $ACTIVE_AGENT_JOB_ID for $PRETRAIN_PATH."
