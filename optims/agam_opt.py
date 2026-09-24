@@ -650,6 +650,11 @@ class AGAM_AdamW(Optimizer):
     A zero gradient carries no alignment evidence: :math:`c_t` falls back to
     :math:`\beta_1`. The cosine's numerical floor is pinned at 1e-8 independently
     of ``eps``, matching MAL-SGDM.
+
+    ``gate_observer``, when supplied, receives ``(parameter, cosine, q_t,
+    beta1_eff, gradient_norm, alignment_reference_norm)`` immediately before
+    the moment update. The callback is runtime-only, must treat its tensors as
+    read-only, and is excluded from optimizer checkpoints.
     """
 
     def __init__(
@@ -666,6 +671,12 @@ class AGAM_AdamW(Optimizer):
         gate_mode: str = "attenuate",
         gradient_weight_mode="complement",
         first_moment_correction: str = "adaptive",
+        *,
+        gate_observer: Callable[
+            [torch.nn.Parameter, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+            None,
+        ]
+        | None = None,
     ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -736,6 +747,13 @@ class AGAM_AdamW(Optimizer):
             "first_moment_correction": first_moment_correction,
         }
         super().__init__(optim_groups, defaults)
+        # Read-only runtime telemetry hook. It is deliberately kept out of
+        # ``defaults`` and optimizer state so enabling observation cannot alter
+        # checkpoints or the update recurrence. The callback receives
+        # (parameter, cosine, gate, effective_beta1, gradient_norm,
+        # alignment_reference_norm) before any persistent first-moment state is
+        # mutated.
+        self.gate_observer = gate_observer
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
         """Load current checkpoints and migrate the former group-list layout."""
@@ -857,13 +875,15 @@ class AGAM_AdamW(Optimizer):
                 else:  # align == "moment":
                     grad, base_step = g, m_probe
 
-                a_norm, b_norm, beta1_eff = get_norms_and_eff_beta(
+                a_norm, b_norm, cosine_sim, gate = get_alignment_stats(
                     grad,
                     base_step,
                     pwr,
                 )
-                beta1_eff = _apply_gate(beta1, beta1_eff, gate_mode)
+                beta1_eff = _apply_gate(beta1, gate, gate_mode)
                 beta1_eff = torch.where(a_norm > 0.0, beta1_eff, beta1)
+                if self.gate_observer is not None:
+                    self.gate_observer(p, cosine_sim, gate, beta1_eff, a_norm, b_norm)
 
                 gradient_weight = 1.0 - beta1_eff if gradient_weight_mode == "complement" else 1.0 - beta1
                 m_eff = m.mul(beta1_eff).add_(g * gradient_weight)

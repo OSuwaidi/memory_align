@@ -12,6 +12,7 @@ Populate the default data path first with
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import random
@@ -53,6 +54,9 @@ from optims.am_opt import AM_MSGD, AM_AdamW
 from optims.cautious_opt import C_SGDM, C_AdamW
 from optims.lion_opt import AGAM_Lion, Lion
 from optims.tam_opt import TAM_SGDM, AdaTAMW
+from tasks.agam_adamw_mae_telemetry import ViTGateRecorder, telemetry_manifest, vit_tensor_metadata
+from tasks.mal_sgdm_telemetry import write_csv as write_telemetry_csv
+from tasks.mal_sgdm_telemetry import write_json as write_telemetry_json
 from tasks.wandb_metadata import task_metadata
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
@@ -957,6 +961,7 @@ def train_one_epoch(
     use_scheduler: bool,
     amp_dtype: torch.dtype,
     amp_enabled: bool,
+    telemetry_recorder: ViTGateRecorder | None = None,
 ) -> tuple[float, float]:
     model.train()
     optimizer.zero_grad(set_to_none=True)
@@ -967,6 +972,8 @@ def train_one_epoch(
     total_steps = steps_per_epoch * epochs
     warmup_steps = steps_per_epoch * warmup_epochs
     update_in_epoch = 0
+    step_loss_sum: torch.Tensor | None = None
+    step_samples = 0
 
     progress = tqdm(loader, desc=f"Epoch {epoch}", unit="batch", leave=False, total=usable_micro_batches)
     for micro_batch_index, (images, _labels) in enumerate(progress, start=1):
@@ -978,6 +985,10 @@ def train_one_epoch(
         if not torch.isfinite(loss):
             raise FloatingPointError(f"Non-finite training loss at epoch {epoch}, batch {micro_batch_index}: {loss.item()}")
         (loss / accumulation_steps).backward()
+        batch_size = images.shape[0]
+        detached_weighted_loss = loss.detach() * batch_size
+        step_loss_sum = detached_weighted_loss if step_loss_sum is None else step_loss_sum + detached_weighted_loss
+        step_samples += batch_size
 
         if micro_batch_index % accumulation_steps == 0:
             global_step = (epoch - 1) * steps_per_epoch + update_in_epoch
@@ -992,11 +1003,30 @@ def train_one_epoch(
             else:
                 last_lr = peak_lr
             set_optimizer_lr(optimizer, last_lr)
-            optimizer.step()
+            if telemetry_recorder is not None:
+                telemetry_recorder.begin_step()
+            try:
+                optimizer.step()
+            except BaseException:
+                if telemetry_recorder is not None:
+                    telemetry_recorder.abort_step()
+                raise
+            if telemetry_recorder is not None:
+                if step_loss_sum is None or step_samples <= 0:
+                    raise RuntimeError("Telemetry step loss was not accumulated before optimizer.step().")
+                telemetry_recorder.end_step(
+                    epoch=epoch,
+                    batch=update_in_epoch + 1,
+                    batch_size=step_samples,
+                    samples_seen=((epoch - 1) * steps_per_epoch + update_in_epoch) * step_samples + step_samples,
+                    learning_rates=[float(group["lr"]) for group in optimizer.param_groups],
+                    loss=step_loss_sum / step_samples,
+                )
             optimizer.zero_grad(set_to_none=True)
             update_in_epoch += 1
+            step_loss_sum = None
+            step_samples = 0
 
-        batch_size = images.shape[0]
         total_loss += loss.detach().item() * batch_size
         total_samples += batch_size
         progress.set_postfix(loss=f"{total_loss / total_samples:.4f}", lr=f"{last_lr:.2e}")
@@ -1252,6 +1282,25 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--wandb_project", "--wandb-project", default=None)
     parser.add_argument("--wandb_entity", "--wandb-entity", default=None)
     parser.add_argument("--wandb_mode", "--wandb-mode", choices=("online", "offline", "disabled"), default=None)
+    parser.add_argument(
+        "--telemetry_output_dir",
+        "--telemetry-output-dir",
+        default=None,
+        help="Optional root for lossless AGAM-AdamW per-step/per-tensor telemetry; the W&B run ID is appended.",
+    )
+    parser.add_argument(
+        "--telemetry_flush_steps",
+        "--telemetry-flush-steps",
+        type=int,
+        default=128,
+        help="Number of optimizer steps per compressed telemetry shard.",
+    )
+    parser.add_argument(
+        "--telemetry_no_plots",
+        "--telemetry-no-plots",
+        action="store_true",
+        help="Persist and summarize telemetry without rendering static figures.",
+    )
 
 
 def validate_config(args: argparse.Namespace, config: Any, parser: argparse.ArgumentParser) -> None:
@@ -1298,6 +1347,10 @@ def validate_config(args: argparse.Namespace, config: Any, parser: argparse.Argu
             parser.error("Fine-tune augmentation and smoothing coefficients must be non-negative.")
     if args.save_every < 0:
         parser.error("--save_every must be non-negative (zero saves only the final checkpoint).")
+    if args.telemetry_flush_steps <= 0:
+        parser.error("--telemetry_flush_steps must be positive.")
+    if args.telemetry_output_dir and optimizer_name != "MAL_AdamW":
+        parser.error("MAE gate telemetry currently requires optimizer=MAL_AdamW (the AGAM-AdamW implementation).")
     if config.base_lr < 0.0 or args.min_lr < 0.0 or args.probe_base_lr < 0.0 or config.weight_decay < 0.0:
         parser.error("Learning rates and weight decay must be non-negative.")
 
@@ -1314,7 +1367,7 @@ def main() -> int:
         project=args.wandb_project,
         entity=args.wandb_entity,
         mode=args.wandb_mode,
-        job_type="mae-pretrain",
+        job_type="optimizer-telemetry" if args.telemetry_output_dir else "mae-pretrain",
         config={
             **vars(args),
             **task_metadata(
@@ -1328,7 +1381,8 @@ def main() -> int:
                 training_regime="self_supervised_from_scratch",
             ),
         },
-        tags=("mae", "tiny-imagenet", "vit-tiny", "patch8"),
+        tags=("mae", "tiny-imagenet", "vit-tiny", "patch8")
+        + (("telemetry", "agam-adamw", "per-tensor") if args.telemetry_output_dir else ()),
     )
     config = run.config
     validate_config(args, config, parser)
@@ -1437,6 +1491,58 @@ def main() -> int:
         mal_align=mal_align,
     )
 
+    telemetry_recorder: ViTGateRecorder | None = None
+    telemetry_directory: Path | None = None
+    telemetry_run_record: dict[str, Any] | None = None
+    telemetry_metadata: list[dict[str, Any]] = []
+    if args.telemetry_output_dir:
+        if not isinstance(optimizer, AGAM_AdamW):
+            parser.error("Telemetry requested, but the resolved optimizer is not AGAM_AdamW.")
+        telemetry_directory = Path(args.telemetry_output_dir).expanduser().resolve() / run.id
+        if telemetry_directory.exists():
+            raise FileExistsError(f"Refusing to overwrite telemetry run directory: {telemetry_directory}")
+        telemetry_directory.mkdir(parents=True)
+        telemetry_metadata = vit_tensor_metadata(model, optimizer)
+        write_telemetry_json(telemetry_directory / "tensor_metadata.json", telemetry_metadata)
+        write_telemetry_csv(
+            telemetry_directory / "tensor_metadata.csv",
+            [{**row, "shape": json.dumps(row["shape"])} for row in telemetry_metadata],
+        )
+        write_telemetry_json(
+            telemetry_directory / "telemetry_manifest.json",
+            telemetry_manifest(telemetry_metadata),
+        )
+        telemetry_recorder = ViTGateRecorder(
+            telemetry_directory / "telemetry",
+            model,
+            telemetry_metadata,
+            flush_steps=args.telemetry_flush_steps,
+        )
+        optimizer.gate_observer = telemetry_recorder
+        telemetry_run_record = {
+            "status": "running",
+            "wandb": {"entity": run.entity, "project": run.project, "run_id": run.id, "url": run.url},
+            "task": "tiny_imagenet_mae_pretraining",
+            "optimizer": "AGAM_AdamW",
+            "optimizer_config": raw_mal_config,
+            "align": mal_align,
+            "batch_size": batch_size,
+            "base_lr": base_lr,
+            "actual_lr": actual_lr,
+            "weight_decay": weight_decay,
+            "beta1": args.momentum,
+            "beta2": args.beta2,
+            "epochs": args.epochs,
+            "warmup_epochs": args.warmup_epochs,
+            "use_scheduler": use_scheduler,
+            "seed": seed,
+            "steps_per_epoch": steps_per_epoch,
+            "planned_steps": steps_per_epoch * args.epochs,
+            "tensor_count": len(telemetry_metadata),
+            "trainable_parameters": sum(int(row["numel"]) for row in telemetry_metadata),
+        }
+        write_telemetry_json(telemetry_directory / "run.json", telemetry_run_record)
+
     parameter_count = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     encoder_parameter_count = (
         sum(parameter.numel() for module in (model.patch_embed, model.blocks, model.norm) for parameter in module.parameters() if parameter.requires_grad)
@@ -1472,6 +1578,7 @@ def main() -> int:
             "gradient_accumulation_steps": accumulation_steps,
             "base_learning_rate": base_lr,
             "learning_rate": actual_lr,
+            "optimizer_display_name": "AGAM_AdamW" if optimizer_name == "MAL_AdamW" else optimizer_name,
             "resolved_data_dir": str(data_root),
             "downstream_evaluation": "linear_probe_and_end_to_end_finetune" if args.run_finetune else "linear_probe",
             "downstream_accuracy_unit": "percent",
@@ -1487,6 +1594,20 @@ def main() -> int:
                 else {}
             ),
             **optimizer_metadata,
+            **(
+                {
+                    "telemetry_enabled": True,
+                    "telemetry_schema_version": 1,
+                    "telemetry_taxonomy_version": "mae-vit-v1",
+                    "telemetry_grain": "per_completed_optimizer_step_per_trainable_tensor",
+                    "telemetry_misalignment_definition": "gate_q_lt_0.5",
+                    "telemetry_primary_weighting": "equal_tensor",
+                    "telemetry_output_directory": str(telemetry_directory),
+                    "telemetry_tensor_count": len(telemetry_metadata),
+                }
+                if telemetry_recorder is not None
+                else {}
+            ),
             **(
                 {
                     "AGAM_config": "False,1.0,none,attenuate,lion_sign_update,complement",
@@ -1511,7 +1632,11 @@ def main() -> int:
             f"_a{mal_align}_gw{mal_config['gradient_weight_mode']}"
             f"_bc{mal_config.get('first_moment_correction', 'adaptive')}"
         )
-    run.name = f"{optimizer_name}{mal_suffix}_bs{batch_size}_blr{base_lr:g}_wd{weight_decay:g}_s{seed}"
+    run.name = (
+        f"AGAM-AdamW gate telemetry · bs{batch_size} · blr{base_lr:g} · wd{weight_decay:g} · seed{seed}"
+        if telemetry_recorder is not None
+        else f"{optimizer_name}{mal_suffix}_bs{batch_size}_blr{base_lr:g}_wd{weight_decay:g}_s{seed}"
+    )
     run.define_metric("epoch")
     run.define_metric("train/*", step_metric="epoch")
     run.define_metric("val/*", step_metric="epoch")
@@ -1520,6 +1645,7 @@ def main() -> int:
     run.define_metric("finetune/epoch")
     run.define_metric("finetune/*", step_metric="finetune/epoch")
     run.define_metric("diagnostic/*", step_metric="epoch")
+    run.define_metric("telemetry/*", step_metric="epoch")
     run.define_metric("lr", step_metric="epoch")
 
     print(
@@ -1553,7 +1679,14 @@ def main() -> int:
                 use_scheduler=use_scheduler,
                 amp_dtype=amp_dtype,
                 amp_enabled=amp_enabled,
+                telemetry_recorder=telemetry_recorder,
             )
+            telemetry_epoch_metrics: dict[str, float] = {}
+            if telemetry_recorder is not None:
+                # Publish every completed optimizer step before the much longer
+                # validation/probe phase, then release epoch accumulators.
+                telemetry_recorder.flush()
+                telemetry_epoch_metrics = telemetry_recorder.pop_epoch_aggregates(epoch)
             val_loss = evaluate_reconstruction_loss(
                 model,
                 val_loader,
@@ -1569,6 +1702,7 @@ def main() -> int:
                 "train/loss": train_loss,
                 "val/loss": val_loss,
                 "lr": current_lr,
+                **telemetry_epoch_metrics,
             }
 
             should_probe = args.probe_every and (epoch % args.probe_every == 0 or epoch == args.epochs)
@@ -1635,6 +1769,76 @@ def main() -> int:
                 )
                 run.summary["checkpoint"] = str(checkpoint_path)
 
+        if telemetry_recorder is not None:
+            assert telemetry_directory is not None and telemetry_run_record is not None
+            telemetry_recorder.flush()
+            planned_steps = steps_per_epoch * args.epochs
+            if telemetry_recorder.completed_steps != planned_steps:
+                raise RuntimeError(
+                    f"Incomplete telemetry: {telemetry_recorder.completed_steps} of {planned_steps} optimizer steps persisted."
+                )
+            from analysis.analyze_agam_adamw_mae_telemetry import analyze as analyze_agam_adamw_telemetry
+
+            analysis_directory = analyze_agam_adamw_telemetry(
+                telemetry_directory,
+                telemetry_directory / "analysis",
+                plots=not args.telemetry_no_plots,
+            )
+            telemetry_summary = json.loads((analysis_directory / "summary.json").read_text())
+            run.summary["telemetry/completed_steps"] = telemetry_summary["completed_steps"]
+            run.summary["telemetry/tensor_count"] = telemetry_summary["tensor_count"]
+            run.summary["telemetry/valid_tensor_step_observations"] = telemetry_summary[
+                "valid_tensor_step_observations"
+            ]
+            run.summary["telemetry/late/gate_mean/equal_tensor"] = telemetry_summary[
+                "late_equal_tensor_gate_mean"
+            ]
+            run.summary["telemetry/late/gate_median/equal_tensor"] = telemetry_summary[
+                "late_equal_tensor_gate_median"
+            ]
+            run.summary["telemetry/late/gate_std/equal_tensor"] = telemetry_summary[
+                "late_equal_tensor_gate_std"
+            ]
+            run.summary["telemetry/late/misalignment_pct/equal_tensor"] = telemetry_summary[
+                "late_equal_tensor_misalignment_pct"
+            ]
+            run.summary["telemetry/late/tensor_global_decision_disagreement_pct"] = telemetry_summary[
+                "late_tensor_global_decision_disagreement_pct"
+            ]
+            run.summary["telemetry/late/conflicts_masked_by_global_gate_pct"] = telemetry_summary[
+                "late_conflicts_masked_by_global_gate_pct"
+            ]
+            telemetry_run_record.update(
+                status="completed",
+                completed_steps=telemetry_recorder.completed_steps,
+                analysis_directory=str(analysis_directory),
+                summary=telemetry_summary,
+            )
+            write_telemetry_json(telemetry_directory / "run.json", telemetry_run_record)
+            artifact = wandb.Artifact(
+                name=f"agam-adamw-mae-gate-telemetry-{run.id}",
+                type="optimizer-telemetry",
+                description=(
+                    "Lossless per-step, per-tensor AGAM-AdamW gate telemetry for ViT-Tiny MAE pre-training, "
+                    "including ViT kind/depth metadata and reproducible paper figures."
+                ),
+                metadata={
+                    "schema_version": 1,
+                    "taxonomy_version": "mae-vit-v1",
+                    "optimizer_steps": telemetry_summary["completed_steps"],
+                    "tensor_count": telemetry_summary["tensor_count"],
+                    "seed": seed,
+                    "batch_size": batch_size,
+                    "base_lr": base_lr,
+                    "weight_decay": weight_decay,
+                },
+            )
+            for filename in ("run.json", "telemetry_manifest.json", "tensor_metadata.json", "tensor_metadata.csv"):
+                artifact.add_file(str(telemetry_directory / filename), name=filename)
+            artifact.add_dir(str(telemetry_directory / "telemetry"), name="telemetry")
+            artifact.add_dir(str(analysis_directory), name="analysis")
+            run.log_artifact(artifact, aliases=["latest", "canonical", f"seed-{seed}"])
+
         if args.run_finetune:
             finetune_summary = run_end_to_end_finetune(
                 model,
@@ -1662,10 +1866,18 @@ def main() -> int:
                 run=run,
             )
             run.summary.update(finetune_summary)
-    except BaseException:
+    except BaseException as error:
         exit_code = 1
+        if telemetry_run_record is not None:
+            telemetry_run_record.update(status="failed", error=f"{type(error).__name__}: {error}")
         raise
     finally:
+        if telemetry_recorder is not None:
+            telemetry_recorder.abort_step()
+            telemetry_recorder.flush()
+            if telemetry_run_record is not None and telemetry_directory is not None:
+                telemetry_run_record["completed_steps"] = telemetry_recorder.completed_steps
+                write_telemetry_json(telemetry_directory / "run.json", telemetry_run_record)
         run.finish(exit_code=exit_code)
     return 0
 
