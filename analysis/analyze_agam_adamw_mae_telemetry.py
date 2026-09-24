@@ -20,7 +20,7 @@ from typing import Any
 
 import numpy as np
 
-from tasks.mal_sgdm_telemetry import FEATURE_INDEX, FEATURES, NORM_EPS
+from tasks.agam_adamw_mae_telemetry import FEATURE_INDEX, FEATURES, NORM_EPS
 
 PERIODS = ("early", "middle", "late", "full")
 COLORS = (

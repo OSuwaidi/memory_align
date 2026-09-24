@@ -54,9 +54,17 @@ from optims.am_opt import AM_MSGD, AM_AdamW
 from optims.cautious_opt import C_SGDM, C_AdamW
 from optims.lion_opt import AGAM_Lion, Lion
 from optims.tam_opt import TAM_SGDM, AdaTAMW
-from tasks.agam_adamw_mae_telemetry import ViTGateRecorder, telemetry_manifest, vit_tensor_metadata
-from tasks.mal_sgdm_telemetry import write_csv as write_telemetry_csv
-from tasks.mal_sgdm_telemetry import write_json as write_telemetry_json
+from tasks.agam_adamw_mae_telemetry import (
+    ViTGateRecorder,
+    telemetry_manifest,
+    vit_tensor_metadata,
+)
+from tasks.agam_adamw_mae_telemetry import (
+    write_csv as write_telemetry_csv,
+)
+from tasks.agam_adamw_mae_telemetry import (
+    write_json as write_telemetry_json,
+)
 from tasks.wandb_metadata import task_metadata
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
