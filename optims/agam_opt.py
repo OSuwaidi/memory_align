@@ -192,9 +192,9 @@ class AGAM_SGD(Optimizer):
         if gradient_weight_mode == "fixed" and unbias != "none":
             raise ValueError('unbias requires gradient_weight_mode="complement"')
         if unbias != "none" and in_place:
-            raise ValueError('unbias requires in_place=False because the correction assumes transient base memory')
+            raise ValueError("unbias requires in_place=False because the correction assumes transient base memory")
         if unbias != "none" and scale:
-            raise ValueError('unbias requires scale=False; tensorwise norm matching would cancel its scalar correction')
+            raise ValueError("unbias requires scale=False; tensorwise norm matching would cancel its scalar correction")
 
         decay_params: list[torch.nn.Parameter] = []
         no_decay_params: list[torch.nn.Parameter] = []
@@ -285,9 +285,9 @@ class AGAM_SGD(Optimizer):
             if gradient_weight_mode == "fixed" and unbias != "none":
                 raise ValueError('unbias requires gradient_weight_mode="complement"')
             if unbias != "none" and group["in_place"]:
-                raise ValueError('unbias requires in_place=False because the correction assumes transient base memory')
+                raise ValueError("unbias requires in_place=False because the correction assumes transient base memory")
             if unbias != "none" and group["scale"]:
-                raise ValueError('unbias requires scale=False; tensorwise norm matching would cancel its scalar correction')
+                raise ValueError("unbias requires scale=False; tensorwise norm matching would cancel its scalar correction")
             if group["alignment_source"] not in ("probe", "memory"):
                 raise ValueError(f"Checkpoint has unsupported alignment_source: {group['alignment_source']}")
             if group["gate_scope"] not in ("tensor", "global"):
@@ -426,10 +426,7 @@ class AGAM_SGD(Optimizer):
         for group in self.param_groups[1:]:
             mismatched = [key for key in structural_keys if group[key] != reference_group[key]]
             if mismatched:
-                raise ValueError(
-                    "Global AGAM-SGD requires identical structural settings across parameter groups; "
-                    f"mismatched: {', '.join(mismatched)}"
-                )
+                raise ValueError(f"Global AGAM-SGD requires identical structural settings across parameter groups; mismatched: {', '.join(mismatched)}")
 
         records: list[tuple[dict[str, Any], torch.nn.Parameter, torch.Tensor, dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor, int]] = []
         dot = None
@@ -467,19 +464,9 @@ class AGAM_SGD(Optimizer):
                 local_gradient_squared_norm = gradient.square().sum()
                 local_reference_squared_norm = alignment_reference.square().sum()
                 dot = local_dot if dot is None else dot + local_dot
-                gradient_squared_norm = (
-                    local_gradient_squared_norm
-                    if gradient_squared_norm is None
-                    else gradient_squared_norm + local_gradient_squared_norm
-                )
-                reference_squared_norm = (
-                    local_reference_squared_norm
-                    if reference_squared_norm is None
-                    else reference_squared_norm + local_reference_squared_norm
-                )
-                records.append(
-                    (group, parameter, gradient, state, memory, probe_moment, probe_update, step)
-                )
+                gradient_squared_norm = local_gradient_squared_norm if gradient_squared_norm is None else gradient_squared_norm + local_gradient_squared_norm
+                reference_squared_norm = local_reference_squared_norm if reference_squared_norm is None else reference_squared_norm + local_reference_squared_norm
+                records.append((group, parameter, gradient, state, memory, probe_moment, probe_update, step))
 
         if not records:
             return loss
@@ -506,9 +493,7 @@ class AGAM_SGD(Optimizer):
                     gate,
                     beta_eff,
                     torch.linalg.vector_norm(gradient),
-                    torch.linalg.vector_norm(
-                        probe_update if group["alignment_source"] == "probe" else memory
-                    ),
+                    torch.linalg.vector_norm(probe_update if group["alignment_source"] == "probe" else memory),
                 )
 
             if gradient_weight_mode == "fixed":
@@ -522,9 +507,7 @@ class AGAM_SGD(Optimizer):
                 memory.copy_(effective_moment)
             else:
                 memory.copy_(probe_moment)
-            effective_update = (
-                gradient.addcmul(memory, beta_eff) if group["nesterov"] else effective_moment
-            )
+            effective_update = gradient.addcmul(memory, beta_eff) if group["nesterov"] else effective_moment
             if group["scale"]:
                 effective_update_norm = torch.linalg.vector_norm(effective_update) + 1e-8
                 probe_update_norm = torch.linalg.vector_norm(probe_update)
@@ -630,6 +613,14 @@ class AGAM_AdamW(Optimizer):
     everywhere empirically (gate-collapse feedback) and breaks that clean
     decomposition.
 
+    The paper ablations use three orthogonal controls while leaving all other
+    AdamW mechanics fixed. ``alignment_source="memory"`` scores the previous
+    first-moment buffer instead of the updated AdamW probe;
+    ``gate_scope="global"`` computes one cosine over the model-wide concatenated
+    AdamW-geometry vectors; and ``conflict_strategy="hard_reset"`` uses the soft
+    gate for nonnegative cosine but transiently removes historical momentum for
+    negative cosine. The latter does not erase the persistent base-AdamW state.
+
     ``scale`` selects where the applied magnitude comes from:
 
     - ``"step"`` (or ``True``, default): rescale the applied step to the probe
@@ -671,6 +662,9 @@ class AGAM_AdamW(Optimizer):
         gate_mode: str = "attenuate",
         gradient_weight_mode="complement",
         first_moment_correction: str = "adaptive",
+        alignment_source: str = "probe",
+        gate_scope: str = "tensor",
+        conflict_strategy: str = "soft",
         *,
         gate_observer: Callable[
             [torch.nn.Parameter, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
@@ -706,6 +700,12 @@ class AGAM_AdamW(Optimizer):
             raise ValueError(f"Invalid first_moment_correction value: {first_moment_correction}")
         if first_moment_correction == "standard" and scale != "none":
             raise ValueError('first_moment_correction="standard" requires scale="none"')
+        if alignment_source not in ("probe", "memory"):
+            raise ValueError(f"Invalid alignment_source value: {alignment_source}")
+        if gate_scope not in ("tensor", "global"):
+            raise ValueError(f"Invalid gate_scope value: {gate_scope}")
+        if conflict_strategy not in ("soft", "hard_reset"):
+            raise ValueError(f"Invalid conflict_strategy value: {conflict_strategy}")
 
         decay_params: list[torch.nn.Parameter] = []
         no_decay_params: list[torch.nn.Parameter] = []
@@ -745,6 +745,9 @@ class AGAM_AdamW(Optimizer):
             "gate_mode": gate_mode,
             "gradient_weight_mode": gradient_weight_mode,
             "first_moment_correction": first_moment_correction,
+            "alignment_source": alignment_source,
+            "gate_scope": gate_scope,
+            "conflict_strategy": conflict_strategy,
         }
         super().__init__(optim_groups, defaults)
         # Read-only runtime telemetry hook. It is deliberately kept out of
@@ -797,18 +800,25 @@ class AGAM_AdamW(Optimizer):
                 group["scale"] = "step" if scale else "none"
             elif scale not in ("step", "moment", "none"):
                 raise ValueError(f"Unsupported MAL-AdamW scale in checkpoint: {scale}")
-            first_moment_correction = group.get(
-                "first_moment_correction", self.defaults["first_moment_correction"]
-            )
+            first_moment_correction = group.get("first_moment_correction", self.defaults["first_moment_correction"])
             if first_moment_correction not in ("adaptive", "standard"):
-                raise ValueError(
-                    "Checkpoint has unsupported first_moment_correction: "
-                    f"{first_moment_correction}"
-                )
+                raise ValueError(f"Checkpoint has unsupported first_moment_correction: {first_moment_correction}")
             if first_moment_correction == "standard" and group["scale"] != "none":
                 raise ValueError('first_moment_correction="standard" requires scale="none"')
             if group.get("align", self.defaults["align"]) not in ("update", "metric", "white", "moment"):
                 raise ValueError(f"Unsupported MAL-AdamW align in checkpoint: {group.get('align')}")
+
+            # Older checkpoints predate the paper component controls and are
+            # therefore canonical tensor-wise, probe-aligned, soft-gating runs.
+            group.setdefault("alignment_source", "probe")
+            group.setdefault("gate_scope", "tensor")
+            group.setdefault("conflict_strategy", "soft")
+            if group["alignment_source"] not in ("probe", "memory"):
+                raise ValueError(f"Checkpoint has unsupported alignment_source: {group['alignment_source']}")
+            if group["gate_scope"] not in ("tensor", "global"):
+                raise ValueError(f"Checkpoint has unsupported gate_scope: {group['gate_scope']}")
+            if group["conflict_strategy"] not in ("soft", "hard_reset"):
+                raise ValueError(f"Checkpoint has unsupported conflict_strategy: {group['conflict_strategy']}")
 
             for key, default in self.defaults.items():
                 group.setdefault(key, default)
@@ -820,6 +830,12 @@ class AGAM_AdamW(Optimizer):
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
+
+        gate_scopes = {group["gate_scope"] for group in self.param_groups}
+        if gate_scopes == {"global"}:
+            return self._step_global(loss)
+        if gate_scopes != {"tensor"}:
+            raise ValueError("AGAM-AdamW cannot mix tensor and global gate scopes in one optimizer.")
 
         for group in self.param_groups:
             lr = group["lr"]
@@ -833,6 +849,8 @@ class AGAM_AdamW(Optimizer):
             gate_mode = group["gate_mode"]
             gradient_weight_mode = group["gradient_weight_mode"]
             first_moment_correction = group["first_moment_correction"]
+            alignment_source = group["alignment_source"]
+            conflict_strategy = group["conflict_strategy"]
             eps = group["eps"]
 
             for p in group["params"]:
@@ -863,17 +881,20 @@ class AGAM_AdamW(Optimizer):
 
                 u = (m_probe / r_probe).div_(denominator)
 
+                alignment_moment = m_probe if alignment_source == "probe" else m
                 if align == "update":
-                    grad, base_step = g, u
+                    grad = g
+                    base_step = u if alignment_source == "probe" else m / denominator
                 elif align == "metric":  # cosine in the D^{-1} inner product: numerator is the descent term g^T D^{-1} m, and m=0 is exactly self-aligned
                     d_sqrt = denominator.sqrt()
-                    grad, base_step = g / d_sqrt, m_probe / d_sqrt
+                    grad, base_step = g / d_sqrt, alignment_moment / d_sqrt
                 elif (
                     align == "white"
                 ):  # comparing \(D^{-1}g\) with \(D^{-1}m\), whose dot product can have the opposite sign from the actual descent term \(g^\top D^{-1}m\)
-                    grad, base_step = g / denominator, u
+                    grad = g / denominator
+                    base_step = u if alignment_source == "probe" else m / denominator
                 else:  # align == "moment":
-                    grad, base_step = g, m_probe
+                    grad, base_step = g, alignment_moment
 
                 a_norm, b_norm, cosine_sim, gate = get_alignment_stats(
                     grad,
@@ -882,6 +903,8 @@ class AGAM_AdamW(Optimizer):
                 )
                 beta1_eff = _apply_gate(beta1, gate, gate_mode)
                 beta1_eff = torch.where(a_norm > 0.0, beta1_eff, beta1)
+                if conflict_strategy == "hard_reset":
+                    beta1_eff = torch.where(cosine_sim < 0.0, torch.zeros_like(beta1_eff), beta1_eff)
                 if self.gate_observer is not None:
                     self.gate_observer(p, cosine_sim, gate, beta1_eff, a_norm, b_norm)
 
@@ -905,11 +928,7 @@ class AGAM_AdamW(Optimizer):
                     u_eff = m_eff_unbias.div_(denominator)
 
                 else:
-                    first_moment_divisor = (
-                        r_eff
-                        if first_moment_correction == "adaptive"
-                        else 1.0 - beta1**step
-                    )
+                    first_moment_divisor = r_eff if first_moment_correction == "adaptive" else 1.0 - beta1**step
                     u_eff = (m_eff / first_moment_divisor).div_(denominator)
                     if scale == "step":
                         # ||u|| must come from the probe *step*, not the align pair (b is not u under "moment"/"metric")
@@ -921,6 +940,170 @@ class AGAM_AdamW(Optimizer):
                     p.mul_(1.0 - lr * wd)  # decoupled decay
 
                 p.sub_(u_eff, alpha=lr)
+
+        return loss
+
+    def _step_global(self, loss: Any) -> Any:
+        """Apply one cosine gate computed over concatenated AdamW vectors."""
+        structural_keys = (
+            "beta1",
+            "beta2",
+            "pwr",
+            "eps",
+            "align",
+            "in_place",
+            "scale",
+            "gate_mode",
+            "gradient_weight_mode",
+            "first_moment_correction",
+            "alignment_source",
+            "conflict_strategy",
+        )
+        reference_group = self.param_groups[0]
+        for group in self.param_groups[1:]:
+            mismatched = [key for key in structural_keys if group[key] != reference_group[key]]
+            if mismatched:
+                raise ValueError(f"Global AGAM-AdamW requires identical structural settings across parameter groups; mismatched: {', '.join(mismatched)}")
+
+        records: list[dict[str, Any]] = []
+        dot: torch.Tensor | None = None
+        gradient_squared_norm: torch.Tensor | None = None
+        reference_squared_norm: torch.Tensor | None = None
+
+        for group in self.param_groups:
+            beta1 = group["beta1"]
+            beta2 = group["beta2"]
+            eps = group["eps"]
+            align = group["align"]
+            alignment_source = group["alignment_source"]
+            for parameter in group["params"]:
+                if parameter.grad is None:
+                    continue
+                gradient = parameter.grad
+                state = self.state[parameter]
+                if not state:
+                    state["step"] = 0
+                    state["exp_avg"] = torch.zeros_like(parameter)
+                    state["exp_avg_sq"] = torch.zeros_like(parameter)
+                    state["first_moment_weight"] = torch.zeros((), device=parameter.device, dtype=parameter.dtype)
+
+                state["step"] += 1
+                step = state["step"]
+                memory = state["exp_avg"]
+                second_moment = state["exp_avg_sq"]
+                coefficient_mass = state["first_moment_weight"]
+                probe_moment = memory.lerp(gradient, weight=(1.0 - beta1))
+                second_moment.lerp_(gradient**2, weight=(1.0 - beta2))
+                probe_mass = beta1 * coefficient_mass + (1.0 - beta1)
+                denominator = (second_moment / (1.0 - beta2**step)).sqrt_().add_(eps)
+                probe_update = (probe_moment / probe_mass).div_(denominator)
+
+                alignment_moment = probe_moment if alignment_source == "probe" else memory
+                if align == "update":
+                    alignment_gradient = gradient
+                    alignment_reference = probe_update if alignment_source == "probe" else memory / denominator
+                elif align == "metric":
+                    denominator_sqrt = denominator.sqrt()
+                    alignment_gradient = gradient / denominator_sqrt
+                    alignment_reference = alignment_moment / denominator_sqrt
+                elif align == "white":
+                    alignment_gradient = gradient / denominator
+                    alignment_reference = probe_update if alignment_source == "probe" else memory / denominator
+                else:  # align == "moment"
+                    alignment_gradient = gradient
+                    alignment_reference = alignment_moment
+
+                local_dot = (alignment_gradient * alignment_reference).sum()
+                local_gradient_squared_norm = alignment_gradient.square().sum()
+                local_reference_squared_norm = alignment_reference.square().sum()
+                dot = local_dot if dot is None else dot + local_dot
+                gradient_squared_norm = local_gradient_squared_norm if gradient_squared_norm is None else gradient_squared_norm + local_gradient_squared_norm
+                reference_squared_norm = local_reference_squared_norm if reference_squared_norm is None else reference_squared_norm + local_reference_squared_norm
+                records.append(
+                    {
+                        "group": group,
+                        "parameter": parameter,
+                        "gradient": gradient,
+                        "memory": memory,
+                        "coefficient_mass": coefficient_mass,
+                        "probe_moment": probe_moment,
+                        "probe_mass": probe_mass,
+                        "denominator": denominator,
+                        "probe_update": probe_update,
+                        "alignment_gradient": alignment_gradient,
+                        "alignment_reference": alignment_reference,
+                        "step": step,
+                    }
+                )
+
+        if not records:
+            return loss
+        assert dot is not None and gradient_squared_norm is not None and reference_squared_norm is not None
+
+        global_gradient_norm = gradient_squared_norm.sqrt()
+        global_reference_norm = reference_squared_norm.sqrt()
+        cosine_sim = (dot / (global_gradient_norm.clamp_min(1e-8) * global_reference_norm.clamp_min(1e-8))).clamp(-1.0, 1.0)
+        gate = ((1.0 + cosine_sim) * 0.5) ** reference_group["pwr"]
+        beta1_eff = _apply_gate(reference_group["beta1"], gate, reference_group["gate_mode"])
+        beta1_eff = torch.where(
+            global_gradient_norm > 0.0,
+            beta1_eff,
+            gradient_squared_norm.new_tensor(reference_group["beta1"]),
+        )
+        if reference_group["conflict_strategy"] == "hard_reset":
+            beta1_eff = torch.where(cosine_sim < 0.0, torch.zeros_like(beta1_eff), beta1_eff)
+
+        for record in records:
+            group = record["group"]
+            parameter = record["parameter"]
+            gradient = record["gradient"]
+            memory = record["memory"]
+            coefficient_mass = record["coefficient_mass"]
+            probe_moment = record["probe_moment"]
+            probe_mass = record["probe_mass"]
+            denominator = record["denominator"]
+            probe_update = record["probe_update"]
+            step = record["step"]
+            beta1 = group["beta1"]
+            eps = group["eps"]
+
+            if self.gate_observer is not None:
+                self.gate_observer(
+                    parameter,
+                    cosine_sim,
+                    gate,
+                    beta1_eff,
+                    torch.linalg.vector_norm(record["alignment_gradient"]),
+                    torch.linalg.vector_norm(record["alignment_reference"]),
+                )
+
+            gradient_weight = 1.0 - beta1_eff if group["gradient_weight_mode"] == "complement" else 1.0 - beta1
+            effective_moment = memory.mul(beta1_eff).add_(gradient * gradient_weight)
+            effective_mass = beta1_eff * coefficient_mass + gradient_weight
+            if group["in_place"]:
+                memory.copy_(effective_moment)
+                coefficient_mass.copy_(effective_mass)
+            else:
+                memory.copy_(probe_moment)
+                coefficient_mass.copy_(probe_mass)
+
+            if group["scale"] == "moment":
+                probe_moment_norm = torch.linalg.vector_norm(probe_moment)
+                effective_moment_norm = torch.linalg.vector_norm(effective_moment) + eps
+                effective_unbiased = (effective_moment / probe_mass) * (probe_moment_norm / effective_moment_norm)
+                effective_update = effective_unbiased.div_(denominator)
+            else:
+                first_moment_divisor = effective_mass if group["first_moment_correction"] == "adaptive" else 1.0 - beta1**step
+                effective_update = (effective_moment / first_moment_divisor).div_(denominator)
+                if group["scale"] == "step":
+                    probe_update_norm = torch.linalg.vector_norm(probe_update)
+                    effective_update_norm = torch.linalg.vector_norm(effective_update) + eps
+                    effective_update.mul_(probe_update_norm / effective_update_norm)
+
+            lr = group["lr"]
+            if group["weight_decay"] > 0.0:
+                parameter.mul_(1.0 - lr * group["weight_decay"])
+            parameter.sub_(effective_update, alpha=lr)
 
         return loss
 

@@ -78,6 +78,38 @@ MAL_ALIGN = "white"  # Backward-compatible fallback for five-field sweep configs
 MAL_ALIGN_CHOICES = frozenset(("update", "metric", "white", "moment"))
 REQUIRED_SWEEP_KEYS = frozenset(("optimizer", "batch_size", "base_lr", "weight_decay", "seed", "use_scheduler"))
 MAL_CONFIG_KEYS = ("MAL_config", "mal_config")
+AGAM_COMPONENT_VARIANTS: dict[str, dict[str, Any]] = {
+    "canonical": {
+        "alignment_source": "probe",
+        "gate_scope": "tensor",
+        "conflict_strategy": "soft",
+        "in_place": False,
+    },
+    "previous_memory": {
+        "alignment_source": "memory",
+        "gate_scope": "tensor",
+        "conflict_strategy": "soft",
+        "in_place": False,
+    },
+    "global_gate": {
+        "alignment_source": "probe",
+        "gate_scope": "global",
+        "conflict_strategy": "soft",
+        "in_place": False,
+    },
+    "writeback": {
+        "alignment_source": "probe",
+        "gate_scope": "tensor",
+        "conflict_strategy": "soft",
+        "in_place": True,
+    },
+    "hard_reset": {
+        "alignment_source": "probe",
+        "gate_scope": "tensor",
+        "conflict_strategy": "hard_reset",
+        "in_place": False,
+    },
+}
 
 
 def parse_bool(value: str | bool) -> bool:
@@ -89,6 +121,15 @@ def parse_bool(value: str | bool) -> bool:
     if normalized in {"0", "false", "no", "n", "off"}:
         return False
     raise argparse.ArgumentTypeError(f'expected a boolean value, got "{value}"')
+
+
+def resolve_agam_component_variant(value: str) -> dict[str, Any]:
+    """Resolve one registered, single-component AGAM ablation."""
+    normalized = value.strip().lower()
+    if normalized not in AGAM_COMPONENT_VARIANTS:
+        choices = ", ".join(AGAM_COMPONENT_VARIANTS)
+        raise ValueError(f"Unknown AGAM_variant {value!r}; expected one of: {choices}.")
+    return dict(AGAM_COMPONENT_VARIANTS[normalized])
 
 
 def set_seed(seed: int) -> None:
@@ -710,9 +751,7 @@ def run_end_to_end_finetune(
                 with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_enabled):
                     loss = criterion(classifier(images), soft_targets)
                 if not torch.isfinite(loss):
-                    raise FloatingPointError(
-                        f"Non-finite fine-tune loss at epoch {finetune_epoch}, batch {micro_batch_index}: {loss.item()}"
-                    )
+                    raise FloatingPointError(f"Non-finite fine-tune loss at epoch {finetune_epoch}, batch {micro_batch_index}: {loss.item()}")
                 (loss / accumulation_steps).backward()
 
                 if micro_batch_index % accumulation_steps == 0:
@@ -1389,8 +1428,7 @@ def main() -> int:
                 training_regime="self_supervised_from_scratch",
             ),
         },
-        tags=("mae", "tiny-imagenet", "vit-tiny", "patch8")
-        + (("telemetry", "agam-adamw", "per-tensor") if args.telemetry_output_dir else ()),
+        tags=("mae", "tiny-imagenet", "vit-tiny", "patch8") + (("telemetry", "agam-adamw", "per-tensor") if args.telemetry_output_dir else ()),
     )
     config = run.config
     validate_config(args, config, parser)
@@ -1477,6 +1515,9 @@ def main() -> int:
     raw_mal_config: str | None = None
     mal_config: dict[str, Any] = {}
     mal_align = MAL_ALIGN
+    agam_variant_requested = "AGAM_variant" in config
+    agam_variant = str(config.get("AGAM_variant", "canonical")).strip().lower()
+    agam_component_config: dict[str, Any] = {}
     if optimizer_name in {"MAL_SGDM", "MAL_AdamW"}:
         raw_mal_config = str(next(config[key] for key in MAL_CONFIG_KEYS if key in config))
         mal_config = parse_mal_config(raw_mal_config)
@@ -1484,9 +1525,33 @@ def main() -> int:
         if mal_align not in MAL_ALIGN_CHOICES:
             parser.error(f"MAL align must be one of {sorted(MAL_ALIGN_CHOICES)}.")
         if optimizer_name == "MAL_AdamW":
-            mal_config["first_moment_correction"] = str(
-                config.get("agam_first_moment_correction", "adaptive")
-            ).lower()
+            mal_config["first_moment_correction"] = str(config.get("agam_first_moment_correction", "adaptive")).lower()
+            if agam_variant_requested:
+                normalized_scale = "step" if mal_config["scale"] is True else ("none" if mal_config["scale"] is False else mal_config["scale"])
+                observed_base = {
+                    "in_place": mal_config["in_place"],
+                    "pwr": mal_config["pwr"],
+                    "scale": normalized_scale,
+                    "gate_mode": mal_config["gate_mode"],
+                    "gradient_weight_mode": mal_config["gradient_weight_mode"],
+                    "first_moment_correction": mal_config["first_moment_correction"],
+                    "align": mal_align,
+                }
+                expected_base = {
+                    "in_place": False,
+                    "pwr": 1.0,
+                    "scale": "none",
+                    "gate_mode": "attenuate",
+                    "gradient_weight_mode": "complement",
+                    "first_moment_correction": "adaptive",
+                    "align": "update",
+                }
+                if observed_base != expected_base:
+                    raise ValueError("AGAM-AdamW component ablations require canonical False,1.0,none,attenuate,update,complement with adaptive correction.")
+                agam_component_config = resolve_agam_component_variant(agam_variant)
+                mal_config.update(agam_component_config)
+    elif agam_variant_requested:
+        raise ValueError("AGAM_variant requires optimizer=MAL_AdamW in the MAE component ablation.")
     optimizer = build_optimizer(
         optimizer_name,
         model,
@@ -1567,6 +1632,25 @@ def main() -> int:
             "mal_align": mal_align,
             **{f"mal_{key}": value for key, value in mal_config.items()},
         }
+    if agam_variant_requested:
+        optimizer_metadata.update(
+            {
+                "AGAM_variant": agam_variant,
+                "AGAM_config": (
+                    f"source={agam_component_config['alignment_source']};"
+                    f"scope={agam_component_config['gate_scope']};"
+                    f"writeback={str(agam_component_config['in_place']).lower()};"
+                    f"conflict={agam_component_config['conflict_strategy']}"
+                ),
+                "method_name": "AGAM-AdamW",
+                "agam_alignment_source": agam_component_config["alignment_source"],
+                "agam_gate_scope": agam_component_config["gate_scope"],
+                "agam_conflict_strategy": agam_component_config["conflict_strategy"],
+                "agam_writeback": agam_component_config["in_place"],
+                "mal_in_place": agam_component_config["in_place"],
+                "in_place": agam_component_config["in_place"],
+            }
+        )
     run.config.update(
         {
             "actual_lr": actual_lr,
@@ -1579,9 +1663,7 @@ def main() -> int:
             "test_examples": 0,
             "trainable_parameters": parameter_count,
             "encoder_trainable_parameters": encoder_parameter_count,
-            "optimizer_family": (
-                "sgdm" if optimizer_name in SGD_OPTIMIZERS else "adamw" if optimizer_name in ADAMW_OPTIMIZERS else "lion"
-            ),
+            "optimizer_family": ("sgdm" if optimizer_name in SGD_OPTIMIZERS else "adamw" if optimizer_name in ADAMW_OPTIMIZERS else "lion"),
             "effective_batch_size": batch_size,
             "gradient_accumulation_steps": accumulation_steps,
             "base_learning_rate": base_lr,
@@ -1640,6 +1722,8 @@ def main() -> int:
             f"_a{mal_align}_gw{mal_config['gradient_weight_mode']}"
             f"_bc{mal_config.get('first_moment_correction', 'adaptive')}"
         )
+        if agam_variant_requested:
+            mal_suffix += f"_variant{agam_variant}"
     run.name = (
         f"AGAM-AdamW gate telemetry · bs{batch_size} · blr{base_lr:g} · wd{weight_decay:g} · seed{seed}"
         if telemetry_recorder is not None
@@ -1782,9 +1866,7 @@ def main() -> int:
             telemetry_recorder.flush()
             planned_steps = steps_per_epoch * args.epochs
             if telemetry_recorder.completed_steps != planned_steps:
-                raise RuntimeError(
-                    f"Incomplete telemetry: {telemetry_recorder.completed_steps} of {planned_steps} optimizer steps persisted."
-                )
+                raise RuntimeError(f"Incomplete telemetry: {telemetry_recorder.completed_steps} of {planned_steps} optimizer steps persisted.")
             from analysis.analyze_agam_adamw_mae_telemetry import analyze as analyze_agam_adamw_telemetry
 
             analysis_directory = analyze_agam_adamw_telemetry(
@@ -1795,27 +1877,13 @@ def main() -> int:
             telemetry_summary = json.loads((analysis_directory / "summary.json").read_text())
             run.summary["telemetry/completed_steps"] = telemetry_summary["completed_steps"]
             run.summary["telemetry/tensor_count"] = telemetry_summary["tensor_count"]
-            run.summary["telemetry/valid_tensor_step_observations"] = telemetry_summary[
-                "valid_tensor_step_observations"
-            ]
-            run.summary["telemetry/late/gate_mean/equal_tensor"] = telemetry_summary[
-                "late_equal_tensor_gate_mean"
-            ]
-            run.summary["telemetry/late/gate_median/equal_tensor"] = telemetry_summary[
-                "late_equal_tensor_gate_median"
-            ]
-            run.summary["telemetry/late/gate_std/equal_tensor"] = telemetry_summary[
-                "late_equal_tensor_gate_std"
-            ]
-            run.summary["telemetry/late/misalignment_pct/equal_tensor"] = telemetry_summary[
-                "late_equal_tensor_misalignment_pct"
-            ]
-            run.summary["telemetry/late/tensor_global_decision_disagreement_pct"] = telemetry_summary[
-                "late_tensor_global_decision_disagreement_pct"
-            ]
-            run.summary["telemetry/late/conflicts_masked_by_global_gate_pct"] = telemetry_summary[
-                "late_conflicts_masked_by_global_gate_pct"
-            ]
+            run.summary["telemetry/valid_tensor_step_observations"] = telemetry_summary["valid_tensor_step_observations"]
+            run.summary["telemetry/late/gate_mean/equal_tensor"] = telemetry_summary["late_equal_tensor_gate_mean"]
+            run.summary["telemetry/late/gate_median/equal_tensor"] = telemetry_summary["late_equal_tensor_gate_median"]
+            run.summary["telemetry/late/gate_std/equal_tensor"] = telemetry_summary["late_equal_tensor_gate_std"]
+            run.summary["telemetry/late/misalignment_pct/equal_tensor"] = telemetry_summary["late_equal_tensor_misalignment_pct"]
+            run.summary["telemetry/late/tensor_global_decision_disagreement_pct"] = telemetry_summary["late_tensor_global_decision_disagreement_pct"]
+            run.summary["telemetry/late/conflicts_masked_by_global_gate_pct"] = telemetry_summary["late_conflicts_masked_by_global_gate_pct"]
             telemetry_run_record.update(
                 status="completed",
                 completed_steps=telemetry_recorder.completed_steps,
