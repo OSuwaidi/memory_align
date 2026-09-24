@@ -91,6 +91,14 @@ class AGAM_SGD(Optimizer):
     the corresponding fixed-beta probe. This preserves the base optimizer's
     step magnitude while retaining MAL's change in direction.
 
+    Three backward-compatible controls expose the paper's component ablations.
+    ``alignment_source="memory"`` scores the previous buffer instead of the
+    updated base-optimizer probe. ``gate_scope="global"`` uses one cosine of
+    the concatenated model vectors rather than one cosine per parameter tensor.
+    ``conflict_strategy="hard_reset"`` retains the soft AGAM gate for a
+    nonnegative cosine and transiently sets the historical-memory coefficient
+    to zero for a negative cosine; it does not clear the persistent base buffer.
+
     ``gradient_weight_mode="complement"`` provides the QHM-like alternative
 
     :math:`m_t^{eff}=a_t m_{t-1}+(1-a_t)g_t`,
@@ -118,7 +126,8 @@ class AGAM_SGD(Optimizer):
     rather than treating an undefined direction as an artificial 0.5.
 
     Alignment is measured once over each complete parameter tensor, producing one
-    scalar gate per tensor and optimizer step.
+    scalar gate per tensor and optimizer step. The ``global`` ablation instead
+    produces one parameter-count-weighted model-wide cosine per optimizer step.
 
     ``gate_observer``, when supplied, receives ``(parameter, cosine, q_t, c_t,
     gradient_norm, probe_norm)`` immediately before the update. These are the
@@ -147,6 +156,9 @@ class AGAM_SGD(Optimizer):
         gate_mode: str = "attenuate",
         gradient_weight_mode: str = "fixed",
         unbias: str = "none",
+        alignment_source: str = "probe",
+        gate_scope: str = "tensor",
+        conflict_strategy: str = "soft",
         *,
         gate_observer: Callable[[torch.nn.Parameter, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], None] | None = None,
         alignment_observer: Callable[[torch.nn.Parameter, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], None] | None = None,
@@ -167,6 +179,12 @@ class AGAM_SGD(Optimizer):
             raise ValueError(f"Invalid gradient_weight_mode value: {gradient_weight_mode}")
         if unbias not in ("none", "buffer", "estimator"):
             raise ValueError(f"Invalid unbias value: {unbias}")
+        if alignment_source not in ("probe", "memory"):
+            raise ValueError(f"Invalid alignment_source value: {alignment_source}")
+        if gate_scope not in ("tensor", "global"):
+            raise ValueError(f"Invalid gate_scope value: {gate_scope}")
+        if conflict_strategy not in ("soft", "hard_reset"):
+            raise ValueError(f"Invalid conflict_strategy value: {conflict_strategy}")
         if gradient_weight_mode == "complement" and gate_mode != "attenuate":
             raise ValueError('gradient_weight_mode="complement" requires gate_mode="attenuate"')
         if gradient_weight_mode == "complement" and nesterov:
@@ -214,6 +232,9 @@ class AGAM_SGD(Optimizer):
             "gate_mode": gate_mode,
             "gradient_weight_mode": gradient_weight_mode,
             "unbias": unbias,
+            "alignment_source": alignment_source,
+            "gate_scope": gate_scope,
+            "conflict_strategy": conflict_strategy,
         }  # shared across all optim/param groups
         super().__init__(optim_groups, defaults)  # exposes "self.param_groups" attribute
         self.gate_observer = gate_observer
@@ -245,6 +266,9 @@ class AGAM_SGD(Optimizer):
             # was necessarily the historical fixed-gradient formulation.
             group.setdefault("gradient_weight_mode", "fixed")
             group.setdefault("unbias", "none")
+            group.setdefault("alignment_source", "probe")
+            group.setdefault("gate_scope", "tensor")
+            group.setdefault("conflict_strategy", "soft")
             for key, default in self.defaults.items():
                 group.setdefault(key, default)
 
@@ -264,6 +288,12 @@ class AGAM_SGD(Optimizer):
                 raise ValueError('unbias requires in_place=False because the correction assumes transient base memory')
             if unbias != "none" and group["scale"]:
                 raise ValueError('unbias requires scale=False; tensorwise norm matching would cancel its scalar correction')
+            if group["alignment_source"] not in ("probe", "memory"):
+                raise ValueError(f"Checkpoint has unsupported alignment_source: {group['alignment_source']}")
+            if group["gate_scope"] not in ("tensor", "global"):
+                raise ValueError(f"Checkpoint has unsupported gate_scope: {group['gate_scope']}")
+            if group["conflict_strategy"] not in ("soft", "hard_reset"):
+                raise ValueError(f"Checkpoint has unsupported conflict_strategy: {group['conflict_strategy']}")
 
             for parameter_id in group["params"]:
                 parameter_state = state.get(parameter_id)
@@ -282,6 +312,12 @@ class AGAM_SGD(Optimizer):
             with torch.enable_grad():
                 loss = closure()
 
+        gate_scopes = {group["gate_scope"] for group in self.param_groups}
+        if gate_scopes == {"global"}:
+            return self._step_global(loss)
+        if gate_scopes != {"tensor"}:
+            raise ValueError("AGAM-SGD cannot mix tensor and global gate scopes in one optimizer.")
+
         for group in self.param_groups:
             lr = group["lr"]
             beta = group["beta"]
@@ -293,6 +329,8 @@ class AGAM_SGD(Optimizer):
             gate_mode = group["gate_mode"]
             gradient_weight_mode = group["gradient_weight_mode"]
             unbias = group["unbias"]
+            alignment_source = group["alignment_source"]
+            conflict_strategy = group["conflict_strategy"]
 
             for p in group["params"]:
                 if p.grad is None:
@@ -319,11 +357,15 @@ class AGAM_SGD(Optimizer):
 
                 u = g.add(m_probe, alpha=beta) if nesterov else m_probe
 
-                g_norm, u_norm, cosine_sim, gate = get_alignment_stats(g, u, pwr)
+                alignment_reference = u if alignment_source == "probe" else m
+                g_norm, alignment_norm, cosine_sim, gate = get_alignment_stats(g, alignment_reference, pwr)
+                u_norm = alignment_norm if alignment_source == "probe" else torch.linalg.vector_norm(u)
                 beta_eff = _apply_gate(beta, gate, gate_mode)
                 beta_eff = torch.where(g_norm > 0.0, beta_eff, beta)
+                if conflict_strategy == "hard_reset":
+                    beta_eff = torch.where(cosine_sim < 0.0, torch.zeros_like(beta_eff), beta_eff)
                 if self.gate_observer is not None:
-                    self.gate_observer(p, cosine_sim, gate, beta_eff, g_norm, u_norm)
+                    self.gate_observer(p, cosine_sim, gate, beta_eff, g_norm, alignment_norm)
 
                 if gradient_weight_mode == "fixed":
                     m_eff = g.addcmul(m, beta_eff)  # beta_eff * m_{t-1} + g
@@ -357,6 +399,145 @@ class AGAM_SGD(Optimizer):
                     u_eff.div_(coefficient_mass)
 
                 p.sub_(u_eff, alpha=lr)
+
+        return loss
+
+    def _step_global(self, loss: Any) -> Any:
+        """Apply one cosine gate computed over the concatenated model vectors.
+
+        This two-pass path is deliberately separate from the canonical tensor-wise
+        path so the default update keeps its historical operation order exactly.
+        The model-wide cosine is the cosine of flattened, concatenated tensors;
+        it is not an unweighted average of per-tensor cosines.
+        """
+        structural_keys = (
+            "beta",
+            "pwr",
+            "in_place",
+            "scale",
+            "nesterov",
+            "gate_mode",
+            "gradient_weight_mode",
+            "unbias",
+            "alignment_source",
+            "conflict_strategy",
+        )
+        reference_group = self.param_groups[0]
+        for group in self.param_groups[1:]:
+            mismatched = [key for key in structural_keys if group[key] != reference_group[key]]
+            if mismatched:
+                raise ValueError(
+                    "Global AGAM-SGD requires identical structural settings across parameter groups; "
+                    f"mismatched: {', '.join(mismatched)}"
+                )
+
+        records: list[tuple[dict[str, Any], torch.nn.Parameter, torch.Tensor, dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor, int]] = []
+        dot = None
+        gradient_squared_norm = None
+        reference_squared_norm = None
+
+        for group in self.param_groups:
+            beta = group["beta"]
+            wd = group["weight_decay"]
+            nesterov = group["nesterov"]
+            gradient_weight_mode = group["gradient_weight_mode"]
+            alignment_source = group["alignment_source"]
+
+            for parameter in group["params"]:
+                if parameter.grad is None:
+                    continue
+                gradient = parameter.grad
+                state = self.state[parameter]
+                if "momentum_buffer" not in state:
+                    state["momentum_buffer"] = torch.zeros_like(parameter)
+                state.setdefault("step", 0)
+                state["step"] += 1
+                step = state["step"]
+                memory = state["momentum_buffer"]
+                if wd > 0.0:
+                    gradient = gradient.add(parameter, alpha=wd)
+                if gradient_weight_mode == "fixed":
+                    probe_moment = gradient.add(memory, alpha=beta)
+                else:
+                    probe_moment = gradient.lerp(memory, weight=beta)
+                probe_update = gradient.add(probe_moment, alpha=beta) if nesterov else probe_moment
+                alignment_reference = probe_update if alignment_source == "probe" else memory
+
+                local_dot = (gradient * alignment_reference).sum()
+                local_gradient_squared_norm = gradient.square().sum()
+                local_reference_squared_norm = alignment_reference.square().sum()
+                dot = local_dot if dot is None else dot + local_dot
+                gradient_squared_norm = (
+                    local_gradient_squared_norm
+                    if gradient_squared_norm is None
+                    else gradient_squared_norm + local_gradient_squared_norm
+                )
+                reference_squared_norm = (
+                    local_reference_squared_norm
+                    if reference_squared_norm is None
+                    else reference_squared_norm + local_reference_squared_norm
+                )
+                records.append(
+                    (group, parameter, gradient, state, memory, probe_moment, probe_update, step)
+                )
+
+        if not records:
+            return loss
+        assert dot is not None and gradient_squared_norm is not None and reference_squared_norm is not None
+
+        global_gradient_norm = gradient_squared_norm.sqrt()
+        global_reference_norm = reference_squared_norm.sqrt()
+        denominator = global_gradient_norm.clamp_min(1e-8) * global_reference_norm.clamp_min(1e-8)
+        cosine_sim = (dot / denominator).clamp(-1.0, 1.0)
+        gate = ((1.0 + cosine_sim) * 0.5) ** reference_group["pwr"]
+        beta_eff = _apply_gate(reference_group["beta"], gate, reference_group["gate_mode"])
+        beta_eff = torch.where(global_gradient_norm > 0.0, beta_eff, gradient_squared_norm.new_tensor(reference_group["beta"]))
+        if reference_group["conflict_strategy"] == "hard_reset":
+            beta_eff = torch.where(cosine_sim < 0.0, torch.zeros_like(beta_eff), beta_eff)
+
+        for group, parameter, gradient, state, memory, probe_moment, probe_update, step in records:
+            beta = group["beta"]
+            lr = group["lr"]
+            gradient_weight_mode = group["gradient_weight_mode"]
+            if self.gate_observer is not None:
+                self.gate_observer(
+                    parameter,
+                    cosine_sim,
+                    gate,
+                    beta_eff,
+                    torch.linalg.vector_norm(gradient),
+                    torch.linalg.vector_norm(
+                        probe_update if group["alignment_source"] == "probe" else memory
+                    ),
+                )
+
+            if gradient_weight_mode == "fixed":
+                effective_moment = gradient.addcmul(memory, beta_eff)
+            else:
+                effective_moment = gradient.lerp(memory, weight=beta_eff)
+            if self.alignment_observer is not None:
+                self.alignment_observer(parameter, gradient, memory, probe_moment, effective_moment)
+
+            if group["in_place"]:
+                memory.copy_(effective_moment)
+            else:
+                memory.copy_(probe_moment)
+            effective_update = (
+                gradient.addcmul(memory, beta_eff) if group["nesterov"] else effective_moment
+            )
+            if group["scale"]:
+                effective_update_norm = torch.linalg.vector_norm(effective_update) + 1e-8
+                probe_update_norm = torch.linalg.vector_norm(probe_update)
+                effective_update.mul_(probe_update_norm.clamp_min(1e-12) / effective_update_norm)
+
+            if group["unbias"] == "buffer":
+                beta_power = beta**step
+                numerator_term = gradient * (gate - 1.0) * beta_power
+                effective_update.add_(numerator_term).div_(1.0 - beta_power)
+            elif group["unbias"] == "estimator":
+                coefficient_mass = 1.0 - beta_eff * beta ** (step - 1)
+                effective_update.div_(coefficient_mass)
+            parameter.sub_(effective_update, alpha=lr)
 
         return loss
 

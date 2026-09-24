@@ -47,6 +47,38 @@ NUM_WORKERS = min(max(ALLOCATED_CPUS // max(NUM_GPUS, 1), 1), 16)
 EVAL_NUM_WORKERS = min(NUM_WORKERS, 6)
 MAX_MICRO_BATCH_SIZE = 512
 DEFAULT_MAL_SGDM_CONFIG = "False,1.0,False,attenuate"
+AGAM_COMPONENT_VARIANTS: dict[str, dict[str, Any]] = {
+    "canonical": {
+        "alignment_source": "probe",
+        "gate_scope": "tensor",
+        "conflict_strategy": "soft",
+        "in_place": False,
+    },
+    "previous_memory": {
+        "alignment_source": "memory",
+        "gate_scope": "tensor",
+        "conflict_strategy": "soft",
+        "in_place": False,
+    },
+    "global_gate": {
+        "alignment_source": "probe",
+        "gate_scope": "global",
+        "conflict_strategy": "soft",
+        "in_place": False,
+    },
+    "writeback": {
+        "alignment_source": "probe",
+        "gate_scope": "tensor",
+        "conflict_strategy": "soft",
+        "in_place": True,
+    },
+    "hard_reset": {
+        "alignment_source": "probe",
+        "gate_scope": "tensor",
+        "conflict_strategy": "hard_reset",
+        "in_place": False,
+    },
+}
 
 
 def parse_bool(value: str | bool) -> bool:
@@ -309,6 +341,15 @@ def parse_mal_config(value: str) -> dict[str, Any]:
     return parsed
 
 
+def resolve_agam_component_variant(value: str) -> dict[str, Any]:
+    """Return one pre-registered, single-component AGAM-SGD ablation."""
+    normalized = value.strip().lower()
+    if normalized not in AGAM_COMPONENT_VARIANTS:
+        choices = ", ".join(AGAM_COMPONENT_VARIANTS)
+        raise ValueError(f"Unknown AGAM_variant {value!r}; expected one of: {choices}.")
+    return dict(AGAM_COMPONENT_VARIANTS[normalized])
+
+
 def split_weight_decay_params(model: nn.Module, weight_decay: float) -> list[dict[str, Any]]:
     """Match the repository optimizers' bias/norm weight-decay exemption."""
     decay: list[nn.Parameter] = []
@@ -536,12 +577,34 @@ def main():
     mal_config = parse_mal_config(raw_mal_config)
     mal_align = str(mal_config.pop("align", "moment" if optimizer == "MAL_SGDM" else "metric"))
     optimizer_mal_config = dict(mal_config)
+    agam_variant_requested = "AGAM_variant" in config
+    agam_variant = str(config.get("AGAM_variant", "canonical")).strip().lower()
+    agam_component_config: dict[str, Any] = {}
     if optimizer == "MAL_SGDM":
         if isinstance(optimizer_mal_config["scale"], str):
             if optimizer_mal_config["scale"] == "moment":
                 raise ValueError('MAL-SGDM does not support scale="moment".')
             optimizer_mal_config["scale"] = optimizer_mal_config["scale"] == "step"
+        if agam_variant_requested:
+            expected_base = {
+                "in_place": False,
+                "pwr": 1.0,
+                "scale": False,
+                "gate_mode": "attenuate",
+                "gradient_weight_mode": "fixed",
+                "unbias": "none",
+            }
+            observed_base = {key: optimizer_mal_config[key] for key in expected_base}
+            if observed_base != expected_base or nest:
+                raise ValueError(
+                    "AGAM component ablations require the canonical non-Nesterov AGAM-SGD base: "
+                    "False,1.0,False,attenuate,moment,fixed,none."
+                )
+            agam_component_config = resolve_agam_component_variant(agam_variant)
+            optimizer_mal_config.update(agam_component_config)
     elif optimizer == "MAL_AdamW":
+        if agam_variant_requested:
+            raise ValueError("AGAM_variant is currently a controlled AGAM-SGD component ablation only.")
         # ``unbias`` is an SGDM-QHM option. MAL-AdamW always performs its exact
         # first-moment coefficient normalization internally.
         sgdm_unbias = optimizer_mal_config.pop("unbias")
@@ -560,12 +623,34 @@ def main():
         },
         allow_val_change=True,
     )
+    if agam_variant_requested:
+        effective_description = (
+            f"source={agam_component_config['alignment_source']};"
+            f"scope={agam_component_config['gate_scope']};"
+            f"writeback={str(agam_component_config['in_place']).lower()};"
+            f"conflict={agam_component_config['conflict_strategy']}"
+        )
+        run.config.update(
+            {
+                "AGAM_variant": agam_variant,
+                "AGAM_config": effective_description,
+                "method_name": "AGAM-SGD",
+                "agam_alignment_source": agam_component_config["alignment_source"],
+                "agam_gate_scope": agam_component_config["gate_scope"],
+                "agam_conflict_strategy": agam_component_config["conflict_strategy"],
+                "agam_writeback": agam_component_config["in_place"],
+                "mal_in_place": agam_component_config["in_place"],
+                "in_place": agam_component_config["in_place"],
+            },
+            allow_val_change=True,
+        )
     if optimizer == "AM_MSGD":
         run.config.update({"am_beta_max": BETA, "am_model_lambda": 0.1}, allow_val_change=True)
         run.name = f"{optimizer}_bmax:{BETA}_lambda:0.1_bs:{bs}_{lr}_{seed}"
     elif optimizer == "MAL_SGDM":
         run.name = (
-            f"{optimizer}_{optimizer_variant}_inp:{int(mal_config['in_place'])}"
+            f"{optimizer}_{agam_variant if agam_variant_requested else optimizer_variant}"
+            f"_inp:{int(optimizer_mal_config['in_place'])}"
             f"_pwr:{mal_config['pwr']}_scl:{str(mal_config['scale']).lower()}"
             f"_gate:{mal_config['gate_mode']}_gw:{mal_config['gradient_weight_mode']}"
             f"_ub:{mal_config['unbias']}_nest:{int(nest)}_bs:{bs}_{lr}_{seed}"
